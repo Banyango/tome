@@ -7,6 +7,7 @@ mod output;
 mod paths;
 mod query;
 mod rpc;
+mod service;
 mod store;
 mod validate;
 mod workflow;
@@ -98,6 +99,17 @@ enum DaemonCommand {
     Status,
     /// Run the daemon in the foreground (used by service units).
     Run,
+    /// Register the daemon as a login service (launchd on macOS, systemd --user on Linux).
+    Install {
+        /// Print the unit file instead of installing it.
+        #[arg(long)]
+        print: bool,
+        /// Write and register the unit without starting it now.
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Remove the login service registered by `tome daemon install`.
+    Uninstall,
 }
 
 fn main() {
@@ -130,6 +142,8 @@ fn dispatch(command: Command) -> CliResult<Report> {
             DaemonCommand::Start => lifecycle::start(),
             DaemonCommand::Stop => lifecycle::stop(),
             DaemonCommand::Status => lifecycle::status(),
+            DaemonCommand::Install { print, no_start } => service::install(print, no_start),
+            DaemonCommand::Uninstall => service::uninstall(),
             DaemonCommand::Run => unreachable!("handled in main"),
         },
         Command::Validate { workflow, params } => validate::run(&current_dir()?, workflow.as_deref(), &params),

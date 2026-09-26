@@ -3,6 +3,7 @@
 use crate::output::{exit, CliError, CliResult, ErrorKind, Report};
 use crate::paths;
 use crate::rpc;
+use crate::service;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::os::unix::process::CommandExt;
@@ -47,10 +48,21 @@ pub fn start() -> CliResult<Report> {
         return Ok(Report::new(json!({ "started": false, "already_running": true, "status": status }), human));
     }
 
-    spawn_detached()?;
+    // With a service installed, let the service manager own the process so
+    // it keeps supervising it.
+    let via = match service::installed() {
+        Some((platform, unit)) => {
+            service::start_installed(platform, &unit)?;
+            "service"
+        }
+        None => {
+            spawn_detached()?;
+            "process"
+        }
+    };
     let status = wait_until_up()?;
     let human = format!("tome daemon started (pid {})", status["pid"]);
-    Ok(Report::new(json!({ "started": true, "already_running": false, "status": status }), human))
+    Ok(Report::new(json!({ "started": true, "already_running": false, "via": via, "status": status }), human))
 }
 
 /// Start `tome daemon run` in its own process group, detached from this
@@ -88,6 +100,9 @@ pub fn wait_until_up() -> CliResult<Value> {
     }
 }
 
+/// Stopping is the same with or without a service: the daemon exits cleanly
+/// on `daemon.shutdown`, and both service units only restart it after a
+/// failure.
 pub fn stop() -> CliResult<Report> {
     let Some(status) = probe()? else {
         return Ok(Report::new(
