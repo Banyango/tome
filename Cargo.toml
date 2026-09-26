@@ -1,0 +1,19 @@
+[package]
+name = "tome"
+version = "0.1.0"
+edition = "2021"
+description = "Agentic workflow management CLI"
+
+[[bin]]
+name = "tome"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
+tempfile = "3"
