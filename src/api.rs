@@ -2,6 +2,7 @@
 //! database connection; these handlers run with it locked.
 
 use crate::output::{CliError, CliResult};
+use crate::gc;
 use crate::query;
 use crate::store::{self, NewRun, RunFilter, RunStatus, StepEvent, Store};
 use crate::workflow::{self, Invalid};
@@ -17,6 +18,7 @@ const METHODS: &[&str] = &[
     "runs.list",
     "runs.show",
     "runs.logs",
+    "runs.gc",
     "query",
 ];
 
@@ -37,6 +39,7 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> CliResult<Va
         "runs.list" => runs_list(store, params),
         "runs.show" => runs_show(store, params),
         "runs.logs" => runs_logs(store, params),
+        "runs.gc" => gc::collect(store, params),
         "query" => query_sql(store, params),
         _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
     }

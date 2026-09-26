@@ -377,6 +377,29 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Finished runs whose `finished_at` is before `cutoff`, oldest first.
+    pub fn finished_runs_before(&self, cutoff: NaiveDateTime) -> anyhow::Result<Vec<Run>> {
+        let sql = format!(
+            "{} WHERE status IN ('succeeded', 'failed', 'cancelled') AND finished_at < ? ORDER BY id",
+            run_select(false)
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![cutoff], |r| run_from_row(r, false))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Delete a run's rows from every table. Files on disk are the caller's
+    /// job.
+    pub fn delete_run(&mut self, id: i64) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        for table in ["step_events", "steps", "logs", "worktrees"] {
+            tx.execute(&format!("DELETE FROM {table} WHERE run_id = ?"), params![id])?;
+        }
+        tx.execute("DELETE FROM runs WHERE id = ?", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Move a run to a finished status. Errors if it's already finished.
     pub fn finish_run(&mut self, id: i64, status: RunStatus, reason: Option<&str>, summary: Option<&str>) -> CliResult<Run> {
         if !status.is_finished() {

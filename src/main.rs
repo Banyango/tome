@@ -1,6 +1,7 @@
 mod api;
 mod daemon;
 mod duration;
+mod gc;
 mod inspect;
 mod lifecycle;
 mod output;
@@ -52,6 +53,15 @@ enum Command {
     Query {
         /// A single read-only statement (SELECT, WITH, DESCRIBE, ...).
         sql: String,
+    },
+    /// Delete finished runs older than an age, with their logs and worktrees.
+    Gc {
+        /// Minimum age since the run finished, e.g. 7d, 12h, 2w.
+        #[arg(long, value_name = "AGE")]
+        older_than: String,
+        /// Show what would be deleted without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -154,6 +164,7 @@ fn dispatch(command: Command) -> CliResult<Report> {
             RunsCommand::Logs { id, step, tail } => inspect::logs(&id, step, tail),
         },
         Command::Query { sql } => inspect::query(&sql),
+        Command::Gc { older_than, dry_run } => gc::run(&older_than, dry_run),
     }
 }
 
