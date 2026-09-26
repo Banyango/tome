@@ -216,9 +216,48 @@ pub fn emit(mode: Mode, result: CliResult<Report>) -> i32 {
     }
 }
 
+/// Render a left-aligned text table with a header row.
+pub fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
+    let clean = |s: &str| s.replace(['\n', '\t'], " ");
+    let rows: Vec<Vec<String>> = rows.into_iter().map(|r| r.iter().map(|c| clean(c)).collect()).collect();
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < widths.len() {
+                widths[i] = widths[i].max(cell.chars().count());
+            }
+        }
+    }
+    let line = |cells: Vec<&str>| {
+        let last = cells.len().saturating_sub(1);
+        let mut out = String::new();
+        for (i, cell) in cells.iter().enumerate() {
+            if i == last {
+                out.push_str(cell);
+            } else {
+                let pad = widths[i] - cell.chars().count();
+                out.push_str(cell);
+                out.push_str(&" ".repeat(pad + 2));
+            }
+        }
+        out.trim_end().to_string() + "\n"
+    };
+    let mut out = line(headers.to_vec());
+    for row in &rows {
+        out.push_str(&line(row.iter().map(String::as_str).collect()));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_aligns_columns() {
+        let t = table(&["ID", "NAME"], vec![vec!["1".into(), "alpha".into()], vec!["10".into(), "b\nc".into()]]);
+        assert_eq!(t, "ID  NAME\n1   alpha\n10  b c\n");
+    }
 
     #[test]
     fn error_json_shape_is_stable() {

@@ -2,12 +2,26 @@
 //! database connection; these handlers run with it locked.
 
 use crate::output::{CliError, CliResult};
-use crate::store::{NewRun, RunStatus, StepEvent, Store};
+use crate::query;
+use crate::store::{self, NewRun, RunFilter, RunStatus, StepEvent, Store};
 use crate::workflow::{self, Invalid};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-const METHODS: &[&str] = &["run.create", "run.get", "run.finish", "step.report", "worktree.add"];
+const METHODS: &[&str] = &[
+    "run.create",
+    "run.get",
+    "run.finish",
+    "step.report",
+    "worktree.add",
+    "runs.list",
+    "runs.show",
+    "runs.logs",
+    "query",
+];
+
+/// `tome runs logs --tail N` reads at most this much from the end of a log.
+const LOG_TAIL_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 pub fn handles(method: &str) -> bool {
     METHODS.contains(&method)
@@ -20,6 +34,10 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> CliResult<Va
         "run.finish" => run_finish(store, params),
         "step.report" => step_report(store, params),
         "worktree.add" => worktree_add(store, params),
+        "runs.list" => runs_list(store, params),
+        "runs.show" => runs_show(store, params),
+        "runs.logs" => runs_logs(store, params),
+        "query" => query_sql(store, params),
         _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
     }
 }
@@ -99,6 +117,76 @@ fn worktree_add(store: &mut Store, p: &Value) -> CliResult<Value> {
         .add_worktree(run_id, &path, opt_str(p, "repo_path").map(Path::new), opt_str(p, "branch"))
         .map_err(|e| CliError::internal(format!("{e:#}")))?;
     Ok(json!({ "run_id": run_id, "path": path }))
+}
+
+/// `runs.list {status?, workflow?, limit?}`: newest first.
+fn runs_list(store: &mut Store, p: &Value) -> CliResult<Value> {
+    let status = match opt_str(p, "status") {
+        None => None,
+        Some(s) => Some(RunStatus::parse(s).ok_or_else(|| {
+            CliError::invalid(format!("invalid status `{s}` (use queued, running, succeeded, failed or cancelled)"))
+        })?),
+    };
+    let filter = RunFilter {
+        status,
+        workflow: opt_str(p, "workflow").map(str::to_string),
+        limit: p.get("limit").and_then(Value::as_u64).map(|n| n as usize),
+    };
+    Ok(json!({ "runs": store.list_runs(&filter).map_err(internal)? }))
+}
+
+/// `runs.show {id, snapshot?}`: the run with its steps, step history,
+/// worktrees and (freshly indexed) log files.
+fn runs_show(store: &mut Store, p: &Value) -> CliResult<Value> {
+    let id = req_id(p)?;
+    store.require_run(id)?;
+    let snapshot = p.get("snapshot").and_then(Value::as_bool).unwrap_or(false);
+    let run = store.get_run(id, snapshot).map_err(internal)?;
+    Ok(json!({
+        "run": run,
+        "steps": store.steps(id).map_err(internal)?,
+        "history": store.step_history(id).map_err(internal)?,
+        "worktrees": store.worktrees(id).map_err(internal)?,
+        "logs": store.index_logs(id).map_err(internal)?,
+    }))
+}
+
+/// `runs.logs {id, step?, tail?}`: log contents, whole or the last `tail`
+/// lines.
+fn runs_logs(store: &mut Store, p: &Value) -> CliResult<Value> {
+    let id = req_id(p)?;
+    store.require_run(id)?;
+    let tail = p.get("tail").and_then(Value::as_u64).map(|n| n as usize);
+    let mut logs = store.index_logs(id).map_err(internal)?;
+    if let Some(step) = opt_str(p, "step") {
+        let stem = store::log_file_stem(step);
+        logs.retain(|l| l.step == stem);
+        if logs.is_empty() {
+            return Err(CliError::not_found(format!("run {id} has no log for step `{step}`")));
+        }
+    }
+    let logs: Vec<Value> = logs
+        .into_iter()
+        .map(|l| {
+            let path = Path::new(&l.path);
+            let content = match tail {
+                Some(n) => store::read_tail_bytes(path, n, LOG_TAIL_MAX_BYTES),
+                None => std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default(),
+            };
+            json!({ "step": l.step, "path": l.path, "size": l.size, "content": content })
+        })
+        .collect();
+    Ok(json!({ "logs": logs }))
+}
+
+/// `query {sql}`: read-only SQL against the store.
+fn query_sql(store: &mut Store, p: &Value) -> CliResult<Value> {
+    let result = query::run(store, req_str(p, "sql")?)?;
+    Ok(json!({ "columns": result.columns, "rows": result.rows }))
+}
+
+fn internal(e: anyhow::Error) -> CliError {
+    CliError::internal(format!("{e:#}"))
 }
 
 pub fn req_id(p: &Value) -> CliResult<i64> {

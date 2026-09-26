@@ -1,9 +1,11 @@
 mod api;
 mod daemon;
 mod duration;
+mod inspect;
 mod lifecycle;
 mod output;
 mod paths;
+mod query;
 mod rpc;
 mod store;
 mod validate;
@@ -38,6 +40,51 @@ enum Command {
         /// Check a parameter value (key=value); repeatable.
         #[arg(long = "param", value_name = "KEY=VALUE")]
         params: Vec<String>,
+    },
+    /// Inspect current and past runs.
+    Runs {
+        #[command(subcommand)]
+        command: RunsCommand,
+    },
+    /// Run a read-only SQL query against the run store.
+    Query {
+        /// A single read-only statement (SELECT, WITH, DESCRIBE, ...).
+        sql: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RunsCommand {
+    /// List runs, newest first.
+    List {
+        /// Only runs with this status (queued, running, succeeded, failed, cancelled).
+        #[arg(long)]
+        status: Option<String>,
+        /// Only runs of this workflow.
+        #[arg(long)]
+        workflow: Option<String>,
+        /// Maximum number of runs to show.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Show a run: status, steps, history, worktrees and logs.
+    Show {
+        /// Run id.
+        id: String,
+        /// Include the workflow snapshot the run was started with.
+        #[arg(long)]
+        snapshot: bool,
+    },
+    /// Print a run's step logs.
+    Logs {
+        /// Run id.
+        id: String,
+        /// Only this step's log.
+        #[arg(long)]
+        step: Option<String>,
+        /// Only the last N lines of each log.
+        #[arg(long, value_name = "N")]
+        tail: Option<usize>,
     },
 }
 
@@ -86,6 +133,12 @@ fn dispatch(command: Command) -> CliResult<Report> {
             DaemonCommand::Run => unreachable!("handled in main"),
         },
         Command::Validate { workflow, params } => validate::run(&current_dir()?, workflow.as_deref(), &params),
+        Command::Runs { command } => match command {
+            RunsCommand::List { status, workflow, limit } => inspect::list(status, workflow, limit),
+            RunsCommand::Show { id, snapshot } => inspect::show(&id, snapshot),
+            RunsCommand::Logs { id, step, tail } => inspect::logs(&id, step, tail),
+        },
+        Command::Query { sql } => inspect::query(&sql),
     }
 }
 
