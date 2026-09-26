@@ -8,6 +8,7 @@
 use crate::api;
 use crate::output::{CliError, CliResult};
 use crate::paths;
+use crate::recovery;
 use crate::rpc::{codes, Request, Response};
 use crate::store::Store;
 use anyhow::{bail, Context};
@@ -82,7 +83,11 @@ pub fn run_foreground() -> anyhow::Result<()> {
     fs::create_dir_all(&home).with_context(|| format!("creating {}", home.display()))?;
 
     let lock = acquire_lock()?;
-    let store = Store::open(&paths::db_path(), &paths::runs_dir())?;
+    let mut store = Store::open(&paths::db_path(), &paths::runs_dir())?;
+    // Before accepting requests: no run survives its daemon.
+    for run in recovery::recover(&mut store, &recovery::NoopHooks).context("recovering interrupted runs")? {
+        eprintln!("tome daemon: run {} ({}) marked failed: {}", run.id, run.workflow_name, recovery::REASON);
+    }
     let socket = paths::socket_path();
     if socket.exists() {
         // We hold the lock, so whatever left this socket behind is gone.

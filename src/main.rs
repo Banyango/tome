@@ -6,6 +6,7 @@ mod lifecycle;
 mod output;
 mod paths;
 mod query;
+mod recovery;
 mod rpc;
 mod service;
 mod store;
