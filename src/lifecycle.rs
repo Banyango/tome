@@ -103,7 +103,9 @@ pub fn stop() -> CliResult<Report> {
     }
 
     let deadline = Instant::now() + STOP_TIMEOUT;
-    while probe()?.is_some() {
+    // A probe that lands while the daemon is exiting sees its connection
+    // dropped mid-request; that means "still stopping", not a failure.
+    while !matches!(probe(), Ok(None)) {
         if Instant::now() >= deadline {
             return Err(CliError::internal("the daemon did not stop in time"));
         }

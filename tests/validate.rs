@@ -1,0 +1,97 @@
+mod common;
+
+use common::Env;
+use std::fs;
+
+fn write(dir: &std::path::Path, file: &str, body: &str) {
+    fs::create_dir_all(dir).unwrap();
+    fs::write(dir.join(file), body).unwrap();
+}
+
+#[test]
+fn validates_all_and_project_overrides_global() {
+    let env = Env::new();
+    let global = env.home().join("workflows");
+    let project = env.project().join(".tome/workflows");
+    write(&global, "review.md", "---\nname: review\ndescription: global\n---\nbody\n");
+    write(&project, "review.md", "---\nname: review\ndescription: project\n---\nbody\n");
+
+    let (code, v) = env.json(&["validate"]);
+    assert_eq!(code, 0, "{v}");
+    let wfs = v["workflows"].as_array().unwrap();
+    assert_eq!(wfs.len(), 2);
+    assert_eq!(wfs[0]["scope"], "global");
+    assert!(wfs[0]["overridden_by"].as_str().unwrap().ends_with(".tome/workflows/review.md"));
+
+    // Lookup by name resolves the project copy.
+    let (code, v) = env.json(&["validate", "review"]);
+    assert_eq!(code, 0);
+    assert!(v["workflows"][0]["path"].as_str().unwrap().contains("/p/.tome/"));
+}
+
+#[test]
+fn project_lookup_walks_up_from_subdirectories() {
+    let env = Env::new();
+    write(&env.project().join(".tome/workflows"), "a.md", "---\nname: a\n---\n");
+    let sub = env.project().join("src/deep");
+    fs::create_dir_all(&sub).unwrap();
+    let out = env.cmd(&["--json", "validate", "a"]).current_dir(&sub).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn invalid_workflow_exits_2_with_line_numbers() {
+    let env = Env::new();
+    write(
+        &env.project().join(".tome/workflows"),
+        "bad.md",
+        "---\nname: bad\nconcurency: 2\n---\n## Step\nuse {{params.base}}\n",
+    );
+    let (code, v) = env.json(&["validate", "bad"]);
+    assert_eq!(code, 2);
+    assert_eq!(v["valid"], false);
+    let errors = v["workflows"][0]["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0]["line"], 3);
+    assert!(errors[0]["message"].as_str().unwrap().contains("concurency"));
+    assert_eq!(errors[1]["line"], 6);
+
+    // Human output has file:line: message.
+    let out = env.run(&["validate", "bad"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("bad.md:3: unknown frontmatter key `concurency`"));
+}
+
+#[test]
+fn validate_does_not_need_the_daemon_and_checks_params() {
+    let env = Env::new();
+    let path = env.project().join("wf.md");
+    fs::write(&path, "---\nname: wf\nparams:\n  n: {type: int}\n---\n{{params.n}}\n").unwrap();
+    let (code, _) = env.json(&["validate", "./wf.md"]);
+    assert_eq!(code, 0);
+    let (code, v) = env.json(&["validate", "./wf.md", "--param", "n=abc"]);
+    assert_eq!(code, 2, "{v}");
+    let (code, _) = env.json(&["validate", "./wf.md", "--param", "n=5"]);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn unknown_workflow_exits_4() {
+    let env = Env::new();
+    let (code, v) = env.json(&["validate", "nope"]);
+    assert_eq!(code, 4);
+    assert_eq!(v["error"]["kind"], "not_found");
+}
+
+#[test]
+fn duplicate_names_in_one_scope_are_invalid() {
+    let env = Env::new();
+    let dir = env.project().join(".tome/workflows");
+    write(&dir, "one.md", "---\nname: dup\n---\n");
+    write(&dir, "two.md", "---\nname: dup\n---\n");
+    let (code, _) = env.json(&["validate"]);
+    assert_eq!(code, 2);
+    let (code, v) = env.json(&["validate", "dup"]);
+    assert_eq!(code, 2);
+    assert_eq!(v["error"]["kind"], "invalid_workflow");
+}

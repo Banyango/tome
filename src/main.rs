@@ -1,8 +1,11 @@
 mod daemon;
+mod duration;
 mod lifecycle;
 mod output;
 mod paths;
 mod rpc;
+mod validate;
+mod workflow;
 
 use clap::{Parser, Subcommand};
 use output::{emit, CliResult, Mode, Report};
@@ -25,6 +28,14 @@ enum Command {
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
+    },
+    /// Validate workflows (all visible ones, or one by name or path).
+    Validate {
+        /// Workflow name or path to a workflow file.
+        workflow: Option<String>,
+        /// Check a parameter value (key=value); repeatable.
+        #[arg(long = "param", value_name = "KEY=VALUE")]
+        params: Vec<String>,
     },
 }
 
@@ -72,5 +83,10 @@ fn dispatch(command: Command) -> CliResult<Report> {
             DaemonCommand::Status => lifecycle::status(),
             DaemonCommand::Run => unreachable!("handled in main"),
         },
+        Command::Validate { workflow, params } => validate::run(&current_dir()?, workflow.as_deref(), &params),
     }
+}
+
+fn current_dir() -> CliResult<std::path::PathBuf> {
+    Ok(std::env::current_dir()?)
 }
