@@ -29,3 +29,11 @@ pub fn lock_path() -> PathBuf {
 pub fn daemon_log_path() -> PathBuf {
     tome_home().join("daemon.log")
 }
+
+pub fn db_path() -> PathBuf {
+    tome_home().join("tome.duckdb")
+}
+
+pub fn runs_dir() -> PathBuf {
+    tome_home().join("runs")
+}

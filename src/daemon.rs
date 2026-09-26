@@ -5,9 +5,11 @@
 //! `flock` on `~/.tome/daemon.lock`, so a stale socket left by a crash is
 //! detected and replaced safely.
 
-use crate::output::CliResult;
+use crate::api;
+use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::rpc::{codes, Request, Response};
+use crate::store::Store;
 use anyhow::{bail, Context};
 use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
@@ -16,13 +18,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub struct Daemon {
     started: Instant,
     started_at_unix: u64,
     socket: PathBuf,
+    /// `None` only once shutdown has closed the database.
+    store: Mutex<Option<Store>>,
     _lock: File,
 }
 
@@ -36,6 +40,7 @@ impl Daemon {
             "started_at_unix": self.started_at_unix,
             "home": paths::tome_home(),
             "socket": self.socket,
+            "database": paths::db_path(),
         })
     }
 
@@ -47,14 +52,25 @@ impl Daemon {
             "daemon.ping" => (Ok(json!({ "pong": true })), false),
             "daemon.status" => (Ok(self.status()), false),
             "daemon.shutdown" => (Ok(json!({ "stopping": true })), true),
+            method if api::handles(method) => (self.with_store(|store| api::dispatch(store, method, &req.params)), false),
             _ => return None,
         };
         Some(handled)
     }
 
+    fn with_store<T>(&self, f: impl FnOnce(&mut Store) -> CliResult<T>) -> CliResult<T> {
+        let mut guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
+        match guard.as_mut() {
+            Some(store) => f(store),
+            None => Err(CliError::internal("the daemon is shutting down")),
+        }
+    }
+
     /// Release resources and exit the process.
     fn shutdown(&self) -> ! {
         let _ = fs::remove_file(&self.socket);
+        // Dropping the store closes (and checkpoints) the database.
+        drop(self.store.lock().unwrap_or_else(|p| p.into_inner()).take());
         eprintln!("tome daemon: shutting down");
         std::process::exit(0);
     }
@@ -66,6 +82,7 @@ pub fn run_foreground() -> anyhow::Result<()> {
     fs::create_dir_all(&home).with_context(|| format!("creating {}", home.display()))?;
 
     let lock = acquire_lock()?;
+    let store = Store::open(&paths::db_path(), &paths::runs_dir())?;
     let socket = paths::socket_path();
     if socket.exists() {
         // We hold the lock, so whatever left this socket behind is gone.
@@ -78,6 +95,7 @@ pub fn run_foreground() -> anyhow::Result<()> {
         started: Instant::now(),
         started_at_unix: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         socket: socket.clone(),
+        store: Mutex::new(Some(store)),
         _lock: lock,
     });
     eprintln!("tome daemon: listening on {} (pid {})", socket.display(), std::process::id());
