@@ -1,0 +1,24 @@
+# Orchestrator
+
+## Definition
+
+The agent that carries out a [[run]]. The [[daemon]] launches it in its own visible [[session]], and it reads the [[workflow]]'s natural-English body and drives it live by calling tome commands.
+
+## Attributes
+
+- harness: `defaults.harness`, or `defaults.orchestrator_harness` if set (via the [[harness-adapter]])
+- bootstrap: a built-in prompt (the tome command reference and its duties), the resolved workflow body, any extra orchestrator instructions from the workflow, and the env vars `TOME_RUN_ID` and `TOME_OUTPUT=json`
+- duties: decide order, branching and looping; spawn workers; report [[step]] progress with `tome step start|done|fail`; end the run with `tome run finish --status succeeded|failed`
+- exits without finishing: the run fails with reason `orchestrator_exited`
+
+## Relationships
+
+- [[run]]: one orchestrator per run
+- [[step]]: carries out steps and reports them
+- [[action]]: performs actions using tome primitives
+- [[session]]: runs in its own session, which the user can watch and type into
+- [[daemon]]: launched by the daemon
+
+## Sources
+
+- features/002-running-a-workflow/feature.md
