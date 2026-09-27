@@ -42,7 +42,8 @@ pub struct Harness {
 fn presets() -> BTreeMap<String, Template> {
     // Claude Code, interactive, with the prompt as its first message. It may
     // run `tome` without asking, so it can report progress on its own.
-    let claude = ["claude", "--allowedTools", "Bash(tome:*)", "{{prompt}}"];
+    // `--allowedTools` takes a list, so `--` stops it swallowing the prompt.
+    let claude = ["claude", "--allowedTools", "Bash(tome:*)", "--", "{{prompt}}"];
     BTreeMap::from([("claude".to_string(), Template::Argv(claude.iter().map(|s| s.to_string()).collect()))])
 }
 
@@ -217,7 +218,7 @@ mod tests {
     #[test]
     fn claude_preset_passes_the_prompt_as_one_argument() {
         let h = Harness { name: "claude".into(), template: presets().remove("claude").unwrap() };
-        assert_eq!(h.command(&vars()), ["claude", "--allowedTools", "Bash(tome:*)", "do it's thing"]);
+        assert_eq!(h.command(&vars()), ["claude", "--allowedTools", "Bash(tome:*)", "--", "do it's thing"]);
     }
 
     #[test]
