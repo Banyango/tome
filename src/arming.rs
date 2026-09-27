@@ -8,7 +8,8 @@
 
 use crate::engine::Engine;
 use crate::store::NewFire;
-use crate::triggers::{self, outcome};
+use crate::triggers::{self, outcome, Event, FireRequest};
+use chrono::{DateTime, Local};
 use crate::workflow::{Library, Scope, Trigger, TriggerKind};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -130,6 +131,45 @@ pub fn scan(projects: &[PathBuf]) -> Scan {
     out
 }
 
+/// A cron time this late (the daemon was stopped, the machine asleep) is
+/// skipped rather than fired.
+const MISSED_AFTER: chrono::Duration = chrono::Duration::seconds(30);
+
+/// The next time of each armed cron trigger.
+#[derive(Debug, Default)]
+pub struct CronState {
+    next: HashMap<String, DateTime<Local>>,
+}
+
+impl CronState {
+    /// The cron triggers due at `now`, each with its scheduled time. A newly
+    /// armed trigger waits for its next time; a time missed by more than
+    /// `MISSED_AFTER` is skipped.
+    pub fn due(&mut self, armed: &[Armed], now: DateTime<Local>) -> Vec<(Armed, DateTime<Local>)> {
+        let mut out = Vec::new();
+        let mut next = HashMap::new();
+        for a in armed {
+            let TriggerKind::Cron { schedule, .. } = &a.trigger.kind else { continue };
+            let key = a.key();
+            let Some(at) = self.next.get(&key).copied().or_else(|| schedule.next_local(now)) else { continue };
+            if now < at {
+                next.insert(key, at);
+                continue;
+            }
+            if now - at <= MISSED_AFTER {
+                out.push((a.clone(), at));
+            } else {
+                eprintln!("tome daemon: skipped missed cron time {} of {} ({})", at.to_rfc3339(), a.name, a.trigger.describe());
+            }
+            if let Some(n) = schedule.next_local(now) {
+                next.insert(key, n);
+            }
+        }
+        self.next = next;
+        out
+    }
+}
+
 /// What the workflow files look like: when it changes, re-arm.
 fn signature(projects: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>, u64)> {
     let mut dirs = vec![crate::paths::tome_home().join("workflows")];
@@ -190,6 +230,7 @@ impl Engine {
         let mut current = Scan::default();
         // Broken workflows already recorded, with their error.
         let mut reported: HashMap<(PathBuf, Option<PathBuf>), String> = HashMap::new();
+        let mut cron = CronState::default();
         loop {
             let projects = self.live_projects();
             let now_sig = signature(&projects);
@@ -210,8 +251,25 @@ impl Engine {
                 current = next;
                 eprintln!("tome daemon: {} trigger(s) armed", current.armed.len());
             }
+            for (armed, at) in cron.due(&current.armed, Local::now()) {
+                let event = Event { scheduled: Some(at), ..Default::default() };
+                self.fire_armed(&armed, event);
+            }
             std::thread::sleep(tick());
         }
+    }
+
+    /// Fire an armed trigger off the loop's thread.
+    fn fire_armed(self: &Arc<Self>, armed: &Armed, event: Event) {
+        let req = FireRequest {
+            workflow_path: armed.workflow_path.clone(),
+            project: armed.project.clone(),
+            index: armed.index,
+            event,
+            dry_run: false,
+        };
+        let engine = Arc::clone(self);
+        std::thread::spawn(move || engine.fire(&req));
     }
 
     fn record_broken(&self, b: &Broken, was_armed: bool) {
@@ -238,4 +296,38 @@ impl Engine {
 
     /// A trigger couldn't act (notified in 004-7).
     pub(crate) fn trigger_failed(&self, _what: &str, _message: &str) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn armed(cron: &str) -> Armed {
+        let text = format!("---\nname: w\ntriggers:\n  - cron: \"{cron}\"\n---\n");
+        let wf = crate::workflow::parse(Path::new("w.md"), &text).unwrap();
+        Armed { workflow_path: "w.md".into(), name: "w".into(), project: None, index: 0, trigger: wf.frontmatter.triggers[0].clone() }
+    }
+
+    fn at(h: u32, m: u32, s: u32) -> DateTime<Local> {
+        Local.with_ymd_and_hms(2026, 3, 2, h, m, s).unwrap()
+    }
+
+    #[test]
+    fn cron_fires_on_schedule_and_skips_missed_times() {
+        let a = [armed("*/10 9-17 * * *")];
+        let mut state = CronState::default();
+        assert!(state.due(&a, at(9, 1, 0)).is_empty(), "arming waits for the next time");
+        assert!(state.due(&a, at(9, 9, 59)).is_empty());
+        let due = state.due(&a, at(9, 10, 1));
+        assert_eq!(due.iter().map(|(_, t)| *t).collect::<Vec<_>>(), [at(9, 10, 0)]);
+        assert!(state.due(&a, at(9, 10, 2)).is_empty(), "fires once");
+        // Asleep from 9:15 to 9:45: 9:20..9:40 are skipped, not caught up.
+        assert!(state.due(&a, at(9, 45, 0)).is_empty());
+        assert_eq!(state.due(&a, at(9, 50, 0)).len(), 1);
+        // Disarmed and re-armed: starts over from the next time.
+        state.due(&[], at(9, 51, 0));
+        assert!(state.due(&a, at(10, 5, 0)).is_empty());
+        assert_eq!(state.due(&a, at(10, 10, 0))[0].1, at(10, 10, 0));
+    }
 }
