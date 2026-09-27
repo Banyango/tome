@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 mod queues;
 mod workers;
 
-pub use queues::{Pulled, QueueInfo, QueueMessage, MAX_MESSAGE_BYTES};
-pub use workers::{Group, NewWorker, Worker, WorkerEnd, WorkerHistory, WorkerStatus};
+pub use queues::Pulled;
+pub use workers::{check_name, NewWorker, Worker, WorkerEnd, WorkerHistory, WorkerStatus};
 
 /// Schema migrations, applied in order. Never edit a released entry; append
 /// a new one instead. The daemon applies pending ones on startup.
@@ -551,13 +551,14 @@ impl Store {
     }
 
     /// End an unfinished run that didn't finish itself (cancelled, or failed
-    /// because its orchestrator went away): steps still running are failed
-    /// with `reason` first.
+    /// because its orchestrator went away): workers still active are
+    /// cancelled and steps still running are failed with `reason` first.
     pub fn abort_run(&mut self, id: i64, status: RunStatus, reason: &str, summary: Option<&str>) -> CliResult<Run> {
         let run = self.require_run(id)?;
         if run.status.is_finished() {
             return Err(CliError::invalid(format!("run {id} has already finished ({})", run.status.as_str())));
         }
+        self.end_active_workers(id, WorkerStatus::Cancelled, reason)?;
         for step in self.steps(id).map_err(internal_any)? {
             if step.status == "running" {
                 self.report_step(id, &step.name, StepEvent::Fail, Some(reason))?;

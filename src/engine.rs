@@ -12,7 +12,8 @@ use crate::api::{self, internal, opt_str, req_id, req_id_at, req_str};
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::session;
-use crate::store::{self, Run, RunStatus, StepEvent, StepHistory, Store};
+use crate::store::{self, Run, RunStatus, StepEvent, StepHistory, Store, WorkerHistory, WorkerStatus};
+use crate::workers;
 use serde_json::{json, Value};
 use crate::workflow::{self, OnConflict};
 use std::collections::{HashMap, HashSet};
@@ -41,7 +42,8 @@ const MONITOR_POLL: Duration = Duration::from_millis(500);
 /// The watchers of one run, and how far they've been sent.
 struct Watchers {
     senders: Vec<Sender<Value>>,
-    /// Highest step history id already sent.
+    /// Highest step or worker history id already sent (they share a
+    /// sequence).
     last_event: i64,
     status: RunStatus,
 }
@@ -79,7 +81,7 @@ impl Engine {
     }
 
     pub fn handles(method: &str) -> bool {
-        METHODS.contains(&method)
+        METHODS.contains(&method) || workers::METHODS.contains(&method)
     }
 
     pub fn dispatch(&self, method: &str, p: &Value) -> CliResult<Value> {
@@ -88,6 +90,7 @@ impl Engine {
             "run.finish" => self.finish(p).map(|run| json!(run)),
             "run.cancel" => self.cancel(req_id(p)?, opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED)).map(|run| json!(run)),
             "step.report" => self.step(p),
+            m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
     }
@@ -205,6 +208,15 @@ impl Engine {
             return self.cancel(id, opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED));
         }
         let run = self.with_store(|store| {
+            let active: Vec<String> =
+                store.workers(id)?.into_iter().filter(|w| !w.status.is_final()).map(|w| w.name).collect();
+            if !active.is_empty() && store.require_run(id)?.status == RunStatus::Running {
+                return Err(CliError::conflict(format!(
+                    "run {id} still has running workers: {}",
+                    active.join(", ")
+                ))
+                .with_hint("wait for them (`tome worker wait <name>`) or stop them (`tome worker kill <name>`) first"));
+            }
             let run = store.finish_run(id, status, opt_str(p, "reason"), opt_str(p, "summary"))?;
             self.sync(store, id);
             Ok(run)
@@ -228,19 +240,21 @@ impl Engine {
         Ok(run)
     }
 
-    fn recorded_sessions(&self, run_id: i64) -> Vec<store::Session> {
+    pub(crate) fn recorded_sessions(&self, run_id: i64) -> Vec<store::Session> {
         self.with_store(|store| store.sessions(run_id).map_err(internal)).unwrap_or_default()
     }
 
-    fn kill_sessions(&self, run_id: i64) {
+    pub(crate) fn kill_sessions(&self, run_id: i64) {
         orchestrator::kill_sessions(run_id, &self.recorded_sessions(run_id));
     }
 
     /// Fail running runs whose orchestrator has exited without finishing the
-    /// run (`orchestrator_exited`). Runs until the daemon closes the store.
+    /// run (`orchestrator_exited`), and end workers whose session is over.
+    /// Runs until the daemon closes the store.
     pub fn monitor(self: Arc<Self>) {
         loop {
             std::thread::sleep(MONITOR_POLL);
+            self.check_workers();
             let Ok(sessions) = self.with_store(|store| store.running_orchestrators().map_err(internal)) else {
                 return;
             };
@@ -257,16 +271,17 @@ impl Engine {
                     if store.require_run(s.run_id)?.status != RunStatus::Running {
                         return Ok(None);
                     }
+                    let cut = store.end_active_workers(s.run_id, WorkerStatus::Cancelled, orchestrator::EXITED)?;
                     let run = store.abort_run(s.run_id, RunStatus::Failed, orchestrator::EXITED, None)?;
                     self.sync(store, s.run_id);
-                    Ok(Some(run))
+                    Ok(Some((run, cut)))
                 });
-                if let Ok(Some(run)) = ended {
+                if let Ok(Some((run, cut))) = ended {
                     eprintln!("tome daemon: run {} ({}) failed: {}", run.id, run.workflow_name, orchestrator::EXITED);
                     // Its workers have no one to report to.
                     let recorded = self.recorded_sessions(run.id);
                     orchestrator::kill_sessions(run.id, &recorded);
-                    orchestrator::notify(&run, &recorded);
+                    orchestrator::notify(&run, &recorded, &cut);
                     self.promote(&run.workflow_name);
                 }
             }
@@ -307,12 +322,12 @@ impl Engine {
         let (tx, rx) = mpsc::channel();
         let replay = self.with_store(|store| {
             let run = store.require_run(id)?;
-            let history = store.step_history(id).map_err(internal)?;
+            let history = history(store, id, 0)?;
             if !run.status.is_finished() {
                 let mut watchers = self.watchers.lock().unwrap_or_else(|p| p.into_inner());
                 let w = watchers.entry(id).or_insert_with(|| Watchers {
                     senders: Vec::new(),
-                    last_event: history.last().map_or(0, |h| h.id),
+                    last_event: history.last().map_or(0, |(hid, _)| *hid),
                     status: run.status,
                 });
                 w.senders.push(tx);
@@ -328,7 +343,7 @@ impl Engine {
         if !run.status.is_finished() {
             replay.push(run_event(&run));
         }
-        replay.extend(history.iter().map(|h| step_event(id, h)));
+        replay.extend(history.into_iter().map(|(_, e)| e));
         if run.status.is_finished() {
             replay.push(run_event(&run));
         }
@@ -390,13 +405,12 @@ impl Engine {
 
     /// Send watchers of `run_id` whatever changed since they were last
     /// synced. Call with the store locked, after changing the run.
-    fn sync(&self, store: &Store, run_id: i64) {
+    pub(crate) fn sync(&self, store: &Store, run_id: i64) {
         let mut watchers = self.watchers.lock().unwrap_or_else(|p| p.into_inner());
         let Some(w) = watchers.get_mut(&run_id) else { return };
-        let (Ok(history), Ok(Some(run))) = (store.step_history(run_id), store.get_run(run_id, false)) else { return };
-        let mut events: Vec<Value> =
-            history.iter().filter(|h| h.id > w.last_event).map(|h| step_event(run_id, h)).collect();
-        w.last_event = history.last().map_or(w.last_event, |h| h.id.max(w.last_event));
+        let (Ok(history), Ok(Some(run))) = (history(store, run_id, w.last_event), store.get_run(run_id, false)) else { return };
+        w.last_event = history.last().map_or(w.last_event, |(id, _)| (*id).max(w.last_event));
+        let mut events: Vec<Value> = history.into_iter().map(|(_, e)| e).collect();
         if run.status != w.status {
             w.status = run.status;
             events.push(run_event(&run));
@@ -409,6 +423,20 @@ impl Engine {
             watchers.remove(&run_id);
         }
     }
+}
+
+/// A run's step and worker events after `after`, in order, with their ids.
+fn history(store: &Store, run_id: i64, after: i64) -> CliResult<Vec<(i64, Value)>> {
+    let mut out: Vec<(i64, Value)> = store
+        .step_history(run_id)
+        .map_err(internal)?
+        .iter()
+        .filter(|h| h.id > after)
+        .map(|h| (h.id, step_event(run_id, h)))
+        .collect();
+    out.extend(store.worker_history(run_id)?.iter().filter(|h| h.id > after).map(|h| (h.id, worker_event(run_id, h))));
+    out.sort_by_key(|(id, _)| *id);
+    Ok(out)
 }
 
 /// The concurrency limit in a run's workflow snapshot.
@@ -449,4 +477,29 @@ pub fn step_event(run_id: i64, h: &StepHistory) -> Value {
         "message": h.message,
         "time": h.occurred_at,
     })
+}
+
+/// `{"type": "worker", "run_id", "worker", "group", "event", "message", "time"}`
+/// (events: spawned, started, done, failed, cancelled), or for a group
+/// `{"type": "group", "run_id", "group", "event": "finished", "message", "time"}`.
+pub fn worker_event(run_id: i64, h: &WorkerHistory) -> Value {
+    match &h.worker {
+        Some(worker) => json!({
+            "type": "worker",
+            "run_id": run_id,
+            "worker": worker,
+            "group": h.group,
+            "event": h.event,
+            "message": h.message,
+            "time": h.occurred_at,
+        }),
+        None => json!({
+            "type": "group",
+            "run_id": run_id,
+            "group": h.group,
+            "event": h.event,
+            "message": h.message,
+            "time": h.occurred_at,
+        }),
+    }
 }

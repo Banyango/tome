@@ -10,8 +10,8 @@ use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::recovery::RecoveryHooks;
 use crate::session::{self, Backend, Cmux, Kind, Launch, Tmux};
-use crate::store::{Run, Session};
-use crate::workflow::{self, Frontmatter};
+use crate::store::{Run, Session, Worker};
+use crate::workflow::{self, Frontmatter, Workflow};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -42,14 +42,25 @@ pub struct Plan {
     pub prompt: String,
 }
 
-pub fn plan(run: &Run) -> CliResult<Plan> {
+/// The workflow a run was started with (its snapshot; `run` must have been
+/// read with it).
+pub fn snapshot(run: &Run) -> CliResult<Workflow> {
     let snapshot = run
         .workflow_snapshot
         .as_deref()
         .ok_or_else(|| CliError::internal(format!("run {} has no workflow snapshot", run.id)))?;
     let path = PathBuf::from(run.workflow_path.clone().unwrap_or_default());
-    let wf = workflow::parse_snapshot(&path, snapshot).map_err(|inv| inv.into_cli_error())?;
-    let cwd = run.project_path.as_ref().map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(paths::user_home);
+    workflow::parse_snapshot(&path, snapshot).map_err(|inv| inv.into_cli_error())
+}
+
+/// Where a run's sessions start: its project, else the user's home.
+pub fn run_cwd(run: &Run) -> PathBuf {
+    run.project_path.as_ref().map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(paths::user_home)
+}
+
+pub fn plan(run: &Run) -> CliResult<Plan> {
+    let wf = snapshot(run)?;
+    let cwd = run_cwd(run);
     Ok(Plan {
         harness: harness_for(&wf.frontmatter)?,
         backend: Kind::choose(wf.frontmatter.defaults.backend.as_deref())?,
@@ -112,7 +123,7 @@ pub fn launch(run: &Run, plan: &Plan) -> CliResult<Session> {
 }
 
 /// What a run's agents need to call back into tome.
-fn session_env(run_id: i64) -> Vec<(String, String)> {
+pub fn session_env(run_id: i64) -> Vec<(String, String)> {
     let mut env = vec![
         ("TOME_RUN_ID".to_string(), run_id.to_string()),
         ("TOME_OUTPUT".to_string(), "json".to_string()),
@@ -145,16 +156,21 @@ pub fn kill_sessions(run_id: i64, recorded: &[Session]) {
     Tmux::from_env().kill_prefix(&session::run_prefix(run_id));
 }
 
-/// Tell the user a run ended without finishing itself. It's always logged
-/// (stderr is the daemon log); a run whose orchestrator was in cmux also
-/// gets a cmux notification, unless `TOME_NOTIFY=off`.
-pub fn notify(run: &Run, sessions: &[Session]) {
-    let reason = run.reason.as_deref().unwrap_or("");
-    eprintln!("tome daemon: notify: run {} ({}) {}: {reason}", run.id, run.workflow_name, run.status.as_str());
+/// Tell the user a run ended without finishing itself, naming the workers
+/// that were cut off (`cut`). It's always logged (stderr is the daemon
+/// log); a run whose orchestrator was in cmux also gets a cmux
+/// notification, unless `TOME_NOTIFY=off`.
+pub fn notify(run: &Run, sessions: &[Session], cut: &[Worker]) {
+    let mut message = run.reason.clone().unwrap_or_default();
+    if !cut.is_empty() {
+        let names: Vec<&str> = cut.iter().map(|w| w.name.as_str()).collect();
+        message.push_str(&format!("; workers cut off: {}", names.join(", ")));
+    }
+    eprintln!("tome daemon: notify: run {} ({}) {}: {message}", run.id, run.workflow_name, run.status.as_str());
     let in_cmux = sessions.iter().any(|s| s.backend == Kind::Cmux.as_str());
     if in_cmux && std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
         let title = format!("tome: {} #{} {}", run.workflow_name, run.id, run.status.as_str());
-        Cmux.notify(&title, reason);
+        Cmux.notify(&title, &message);
     }
 }
 
@@ -166,7 +182,7 @@ impl RecoveryHooks for Hooks {
         kill_sessions(run.id, sessions);
     }
 
-    fn notify(&self, run: &Run, sessions: &[Session]) {
-        notify(run, sessions);
+    fn notify(&self, run: &Run, sessions: &[Session], cut: &[Worker]) {
+        notify(run, sessions, cut);
     }
 }

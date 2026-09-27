@@ -153,6 +153,8 @@ fn runs_show(store: &mut Store, p: &Value) -> CliResult<Value> {
         "run": run,
         "steps": store.steps(id).map_err(internal)?,
         "history": store.step_history(id).map_err(internal)?,
+        "workers": store.workers(id)?,
+        "groups": store.groups(id)?,
         "worktrees": store.worktrees(id).map_err(internal)?,
         "sessions": store
             .sessions(id)

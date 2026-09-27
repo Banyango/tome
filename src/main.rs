@@ -9,6 +9,7 @@ mod lifecycle;
 mod orchestrator;
 mod output;
 mod paths;
+mod primitives;
 mod query;
 mod recovery;
 mod rpc;
@@ -18,6 +19,7 @@ mod service;
 mod session;
 mod store;
 mod validate;
+mod workers;
 mod workflow;
 mod worktree;
 
@@ -75,6 +77,26 @@ enum Command {
     Step {
         #[command(subcommand)]
         command: StepCommand,
+    },
+    /// Spawn and track workers (used by the orchestrator; `done`/`fail` by workers).
+    Worker {
+        #[command(subcommand)]
+        command: WorkerCommand,
+    },
+    /// Group workers to wait on them together.
+    Group {
+        #[command(subcommand)]
+        command: GroupCommand,
+    },
+    /// Create git worktrees for a run.
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeCommand,
+    },
+    /// Pass messages between a run's orchestrator and workers.
+    Queue {
+        #[command(subcommand)]
+        command: QueueCommand,
     },
     /// Inspect current and past runs.
     Runs {
@@ -170,6 +192,170 @@ struct StepReport {
     /// Run id (defaults to TOME_RUN_ID).
     #[arg(long = "run", env = "TOME_RUN_ID", value_name = "ID")]
     run: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct RunArg {
+    /// Run id (defaults to TOME_RUN_ID).
+    #[arg(long = "run", env = "TOME_RUN_ID", value_name = "ID")]
+    run: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum WorkerCommand {
+    /// Start a worker: an agent with a task (--prompt), or a command (after `--`).
+    Spawn {
+        /// Worker name, unique in the run (default: w1, w2, ...).
+        #[arg(long)]
+        name: Option<String>,
+        /// Add the worker to this group (created on first use).
+        #[arg(long)]
+        group: Option<String>,
+        /// Give the worker its own git worktree on branch tome/<run>/<name>.
+        #[arg(long)]
+        worktree: bool,
+        /// What the worktree branches from (default: the current HEAD commit).
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+        /// Harness for an agent worker (default: the workflow's, else claude).
+        #[arg(long)]
+        harness: Option<String>,
+        /// Keep the worker's session open after it finishes.
+        #[arg(long)]
+        keep_open: bool,
+        /// The agent worker's task.
+        #[arg(long, conflicts_with = "prompt_file")]
+        prompt: Option<String>,
+        /// Read the agent worker's task from a file.
+        #[arg(long, value_name = "PATH")]
+        prompt_file: Option<std::path::PathBuf>,
+        #[command(flatten)]
+        run: RunArg,
+        /// The command worker's command and arguments.
+        #[arg(last = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Report that this worker's task is done (used by workers).
+    Done {
+        /// A line or two on what was done.
+        #[arg(long, short)]
+        summary: Option<String>,
+        /// Worker name (defaults to TOME_WORKER_ID).
+        #[arg(long, env = "TOME_WORKER_ID", hide_env_values = true)]
+        name: Option<String>,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Report that this worker's task failed (used by workers).
+    Fail {
+        /// What went wrong.
+        #[arg(long, short)]
+        summary: Option<String>,
+        /// Worker name (defaults to TOME_WORKER_ID).
+        #[arg(long, env = "TOME_WORKER_ID", hide_env_values = true)]
+        name: Option<String>,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Wait for a worker to finish, then print its status.
+    Wait {
+        name: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// A worker's status, summary, branch and worktree (all workers if no name).
+    Status {
+        name: Option<String>,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Stop a worker (it's marked cancelled).
+    Kill {
+        name: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+}
+
+#[derive(Subcommand)]
+enum GroupCommand {
+    /// Create a group up front.
+    Create {
+        name: String,
+        /// The first failure cancels the other members.
+        #[arg(long)]
+        fail_fast: bool,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Stop a group taking new members.
+    Close {
+        name: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Close a group and wait until all its members have finished.
+    Wait {
+        name: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// A group's state and its members' results.
+    Status {
+        name: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorktreeCommand {
+    /// Create a worktree that isn't tied to a worker.
+    Create {
+        name: String,
+        /// What the branch starts from (default: the current HEAD commit).
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+        #[command(flatten)]
+        run: RunArg,
+    },
+}
+
+#[derive(Subcommand)]
+enum QueueCommand {
+    /// Add a message to a queue (`-` reads it from stdin).
+    Push {
+        queue: String,
+        text: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Claim the next message (exit 3 if there's none).
+    Pull {
+        queue: String,
+        /// Wait for a message, for at most DURATION (e.g. 30s, 5m) or forever.
+        #[arg(long, value_name = "DURATION", num_args = 0..=1, default_missing_value = "forever")]
+        wait: Option<String>,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Remove a message you've claimed.
+    Ack {
+        id: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Stop a queue taking messages; pulls say `closed` once it's drained.
+    Close {
+        queue: String,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// List the run's queues.
+    Ls {
+        #[command(flatten)]
+        run: RunArg,
+    },
 }
 
 #[derive(Subcommand)]
@@ -286,6 +472,52 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             StepCommand::Start { name, report } => runcmd::step("start", Some(name), report.message, report.run),
             StepCommand::Done { name, report } => runcmd::step("done", name, report.message, report.run),
             StepCommand::Fail { name, report } => runcmd::step("fail", name, report.message, report.run),
+        },
+        Command::Worker { command } => match command {
+            WorkerCommand::Spawn {
+                name,
+                group,
+                worktree,
+                base,
+                harness,
+                keep_open,
+                prompt,
+                prompt_file,
+                run,
+                command,
+            } => primitives::spawn(primitives::Spawn {
+                run: run.run,
+                name,
+                group,
+                worktree,
+                base,
+                harness,
+                keep_open,
+                prompt,
+                prompt_file,
+                command,
+            }),
+            WorkerCommand::Done { summary, name, run } => primitives::report("done", summary, name, run.run),
+            WorkerCommand::Fail { summary, name, run } => primitives::report("fail", summary, name, run.run),
+            WorkerCommand::Wait { name, run } => primitives::worker_status(Some(name), true, run.run),
+            WorkerCommand::Status { name, run } => primitives::worker_status(name, false, run.run),
+            WorkerCommand::Kill { name, run } => primitives::kill(name, run.run),
+        },
+        Command::Group { command } => match command {
+            GroupCommand::Create { name, fail_fast, run } => primitives::group_create(name, fail_fast, run.run),
+            GroupCommand::Close { name, run } => primitives::group("group.close", name, false, run.run),
+            GroupCommand::Wait { name, run } => primitives::group("group.status", name, true, run.run),
+            GroupCommand::Status { name, run } => primitives::group("group.status", name, false, run.run),
+        },
+        Command::Worktree { command: WorktreeCommand::Create { name, base, run } } => {
+            primitives::worktree_create(name, base, run.run)
+        }
+        Command::Queue { command } => match command {
+            QueueCommand::Push { queue, text, run } => primitives::push(queue, text, run.run),
+            QueueCommand::Pull { queue, wait, run } => primitives::pull(queue, wait, run.run),
+            QueueCommand::Ack { id, run } => primitives::ack(id, run.run),
+            QueueCommand::Close { queue, run } => primitives::close(queue, run.run),
+            QueueCommand::Ls { run } => primitives::ls(run.run),
         },
         Command::Runs { command } => match command {
             RunsCommand::List { status, workflow, limit } => inspect::list(status, workflow, limit),

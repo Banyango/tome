@@ -3,11 +3,11 @@
 //! A run is only driven while the daemon that started it is alive, so any
 //! run still queued or running when a daemon starts was orphaned by a crash,
 //! a kill or a reboot. Those runs are marked failed with reason
-//! `daemon_restart`. Their worktrees are left in place for inspection
+//! `daemon_restart`, as are their running workers. Their worktrees are left in place for inspection
 //! (`tome gc` removes them later), and the hooks give later features a place
 //! to kill leftover agent sessions and tell the user.
 
-use crate::store::{Run, RunStatus, Session, StepEvent, Store};
+use crate::store::{Run, RunStatus, Session, StepEvent, Store, Worker, WorkerStatus};
 
 pub const REASON: &str = "daemon_restart";
 
@@ -16,8 +16,9 @@ pub trait RecoveryHooks {
     /// Kill the agent sessions the run left behind (`sessions` are the
     /// recorded ones).
     fn kill_sessions(&self, _run: &Run, _sessions: &[Session]) {}
-    /// Tell the user the run was interrupted.
-    fn notify(&self, _run: &Run, _sessions: &[Session]) {}
+    /// Tell the user the run was interrupted (`cut` are the workers it
+    /// failed).
+    fn notify(&self, _run: &Run, _sessions: &[Session], _cut: &[Worker]) {}
 }
 
 /// Fail every in-progress run. Returns the recovered runs (in their final
@@ -27,13 +28,14 @@ pub fn recover(store: &mut Store, hooks: &dyn RecoveryHooks) -> anyhow::Result<V
     for run in store.in_progress_runs()? {
         let sessions = store.sessions(run.id)?;
         hooks.kill_sessions(&run, &sessions);
+        let cut = store.end_active_workers(run.id, WorkerStatus::Failed, REASON)?;
         for step in store.steps(run.id)? {
             if step.status == "running" {
                 store.report_step(run.id, &step.name, StepEvent::Fail, Some(REASON))?;
             }
         }
         let run = store.finish_run(run.id, RunStatus::Failed, Some(REASON), None)?;
-        hooks.notify(&run, &sessions);
+        hooks.notify(&run, &sessions, &cut);
         recovered.push(run);
     }
     Ok(recovered)
@@ -56,8 +58,9 @@ mod tests {
         fn kill_sessions(&self, run: &Run, _: &[Session]) {
             self.calls.borrow_mut().push(format!("kill {} {}", run.id, run.status.as_str()));
         }
-        fn notify(&self, run: &Run, _: &[Session]) {
-            self.calls.borrow_mut().push(format!("notify {} {}", run.id, run.status.as_str()));
+        fn notify(&self, run: &Run, _: &[Session], cut: &[Worker]) {
+            let cut: Vec<&str> = cut.iter().map(|w| w.name.as_str()).collect();
+            self.calls.borrow_mut().push(format!("notify {} {} {cut:?}", run.id, run.status.as_str()));
         }
     }
 
@@ -91,12 +94,24 @@ mod tests {
             )
             .unwrap();
 
+        let spawn = |store: &mut Store, name| {
+            let new = crate::store::NewWorker { name: Some(name), kind: "command", group: None, harness: None, command: None, keep_open: false };
+            store.reserve_worker(live, &new).unwrap();
+        };
+        spawn(&mut store, "a");
+        store.start_worker(live, "a", "tome-2-w-a").unwrap();
+        spawn(&mut store, "b");
+        store.finish_worker(live, "b", WorkerStatus::Done, None, None, None, true).unwrap();
+
         let hooks = Recorder::default();
         let recovered = recover(&mut store, &hooks).unwrap();
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].id, live);
         assert_eq!(recovered[0].reason.as_deref(), Some(REASON));
-        assert_eq!(*hooks.calls.borrow(), [format!("kill {live} running"), format!("notify {live} failed")]);
+        assert_eq!(*hooks.calls.borrow(), [format!("kill {live} running"), format!("notify {live} failed [\"a\"]")]);
+        let a = store.require_worker(live, "a").unwrap();
+        assert_eq!((a.status, a.reason.as_deref()), (WorkerStatus::Failed, Some(REASON)));
+        assert_eq!(store.require_worker(live, "b").unwrap().status, WorkerStatus::Done);
 
         assert_eq!(store.steps(live).unwrap()[0].status, "failed");
         assert_eq!(store.worktrees(live).unwrap().len(), 1, "worktrees are kept");

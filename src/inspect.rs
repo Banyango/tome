@@ -129,6 +129,29 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
         out.push_str(&indent(&table(&["TIME", "EVENT", "STEP", "MESSAGE"], rows)));
     }
 
+    let workers = data["workers"].as_array().cloned().unwrap_or_default();
+    if !workers.is_empty() {
+        out.push_str("\nworkers:\n");
+        out.push_str(&indent(&crate::primitives::workers_table(&workers)));
+    }
+
+    let groups = data["groups"].as_array().cloned().unwrap_or_default();
+    if !groups.is_empty() {
+        out.push_str("\ngroups:\n");
+        let rows = groups
+            .iter()
+            .map(|g| {
+                vec![
+                    s(&g["name"]),
+                    s(&g["status"]),
+                    if g["fail_fast"] == true { "yes" } else { "no" }.to_string(),
+                    ts(&g["finished_at"]),
+                ]
+            })
+            .collect();
+        out.push_str(&indent(&table(&["GROUP", "STATUS", "FAIL-FAST", "FINISHED"], rows)));
+    }
+
     let worktrees = data["worktrees"].as_array().cloned().unwrap_or_default();
     if !worktrees.is_empty() {
         out.push_str("\nworktrees:\n");

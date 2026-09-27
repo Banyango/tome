@@ -19,6 +19,8 @@ pub mod exit {
     pub const INVALID: i32 = 2;
     /// The daemon isn't running (also `tome daemon status` when stopped).
     pub const DAEMON_UNAVAILABLE: i32 = 3;
+    /// `tome queue pull` found nothing to claim.
+    pub const EMPTY: i32 = 3;
     /// The requested object (run, workflow, ...) doesn't exist.
     pub const NOT_FOUND: i32 = 4;
     /// An attached run ended cancelled (Ctrl-C or `tome run cancel`).

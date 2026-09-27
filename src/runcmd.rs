@@ -129,6 +129,25 @@ fn event_line(ev: &Value) -> String {
             }
             line
         }
+        // `[14:02:31] worker w1 (g): done (tests pass)`
+        Some("worker") => {
+            let mut line = format!("[{time}] worker {}", s(&ev["worker"]));
+            if let Some(g) = ev["group"].as_str() {
+                line.push_str(&format!(" ({g})"));
+            }
+            line.push_str(&format!(": {}", s(&ev["event"])));
+            if let Some(m) = ev["message"].as_str().and_then(|m| m.lines().next()) {
+                line.push_str(&format!(" ({m})"));
+            }
+            line
+        }
+        Some("group") => {
+            let mut line = format!("[{time}] group {}: {}", s(&ev["group"]), s(&ev["event"]));
+            if let Some(m) = ev["message"].as_str() {
+                line.push_str(&format!(" ({m})"));
+            }
+            line
+        }
         _ => {
             let status = s(&ev["status"]);
             let mut line = format!("[{time}] run {} {status}", ev["run_id"]);
