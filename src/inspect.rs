@@ -88,6 +88,23 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
     field(&mut out, "summary", &run["summary"]);
     field(&mut out, "project", &run["project_path"]);
     field(&mut out, "workflow", &run["workflow_path"]);
+    if let Some(t) = run["trigger"].as_object() {
+        let mut cause = s(&t["trigger"]);
+        let paths: Vec<String> = t
+            .get("event")
+            .and_then(|e| e["paths"].as_array())
+            .into_iter()
+            .flatten()
+            .map(|p| format!("{} ({})", s(&p["path"]), s(&p["event"])))
+            .collect();
+        if !paths.is_empty() {
+            cause.push_str(&format!(": {}", paths.join(", ")));
+        }
+        if t.get("synthetic") == Some(&Value::Bool(true)) {
+            cause.push_str(" [fired by hand]");
+        }
+        out.push_str(&format!("  {:<10}{cause}\n", "trigger"));
+    }
     out.push_str(&format!("  {:<10}{}\n", "started", ts(&run["created_at"])));
     if !run["finished_at"].is_null() {
         out.push_str(&format!("  {:<10}{}\n", "finished", ts(&run["finished_at"])));

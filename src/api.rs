@@ -88,6 +88,7 @@ pub fn create_run(store: &mut Store, p: &Value, wf: &Workflow, status: RunStatus
                 project_path: project.as_deref(),
                 params: &params,
                 status,
+                trigger: p.get("cause").filter(|c| c.is_object()),
             },
             |id| {
                 body = wf.render_body(&params, &id.to_string(), trigger);

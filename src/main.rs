@@ -20,6 +20,8 @@ mod scaffold;
 mod service;
 mod session;
 mod store;
+mod triggers;
+mod triggerscmd;
 mod validate;
 mod workers;
 mod workflow;
@@ -104,6 +106,11 @@ enum Command {
     Runs {
         #[command(subcommand)]
         command: RunsCommand,
+    },
+    /// Fire and inspect workflow triggers.
+    Triggers {
+        #[command(subcommand)]
+        command: TriggersCommand,
     },
     /// Run a read-only SQL query against the run store.
     Query {
@@ -396,6 +403,24 @@ enum RunsCommand {
 }
 
 #[derive(Subcommand)]
+enum TriggersCommand {
+    /// Fire a workflow's trigger with a synthetic event.
+    Fire {
+        /// Workflow name or path to a workflow file.
+        workflow: String,
+        /// Which trigger (0-based); defaults to the first non-manual one.
+        #[arg(long)]
+        index: Option<usize>,
+        /// A changed path to report (file triggers); repeatable.
+        #[arg(long = "path", value_name = "PATH")]
+        paths: Vec<String>,
+        /// Show what would happen, with the resolved params, without doing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum DaemonCommand {
     /// Start the daemon in the background.
     Start,
@@ -525,6 +550,11 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             RunsCommand::List { status, workflow, limit } => inspect::list(status, workflow, limit),
             RunsCommand::Show { id, snapshot } => inspect::show(&id, snapshot),
             RunsCommand::Logs { id, step, tail } => inspect::logs(&id, step, tail),
+        },
+        Command::Triggers { command } => match command {
+            TriggersCommand::Fire { workflow, index, paths, dry_run } => {
+                triggerscmd::fire(&current_dir()?, &workflow, index, &paths, dry_run)
+            }
         },
         Command::Query { sql } => inspect::query(&sql),
         Command::Gc { older_than, dry_run } => gc::run(&older_than, dry_run),

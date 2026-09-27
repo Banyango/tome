@@ -17,9 +17,11 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 mod queues;
+mod triggers;
 mod workers;
 
 pub use queues::Pulled;
+pub use triggers::{Fire, NewFire, Project};
 pub use workers::{check_name, NewWorker, Worker, WorkerEnd, WorkerHistory, WorkerStatus};
 
 /// Schema migrations, applied in order. Never edit a released entry; append
@@ -156,6 +158,28 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE worktrees ADD COLUMN base VARCHAR;
     ALTER TABLE worktrees ADD COLUMN worker VARCHAR;
     ",
+    // 5: triggers
+    "
+    ALTER TABLE runs ADD COLUMN trigger_cause VARCHAR;
+    CREATE SEQUENCE trigger_fire_seq START 1;
+    CREATE TABLE trigger_fires (
+        id            BIGINT PRIMARY KEY DEFAULT nextval('trigger_fire_seq'),
+        workflow_path VARCHAR NOT NULL,
+        workflow_name VARCHAR NOT NULL,
+        project_path  VARCHAR,
+        trigger_index INTEGER NOT NULL,
+        trigger_desc  VARCHAR NOT NULL,
+        outcome       VARCHAR NOT NULL,
+        message       VARCHAR,
+        run_ids       VARCHAR NOT NULL,
+        fired_at      TIMESTAMP NOT NULL
+    );
+    CREATE TABLE projects (
+        path          VARCHAR PRIMARY KEY,
+        enabled       BOOLEAN NOT NULL,
+        registered_at TIMESTAMP NOT NULL
+    );
+    ",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -245,6 +269,9 @@ pub struct Run {
     pub summary: Option<String>,
     pub created_at: String,
     pub finished_at: Option<String>,
+    /// The trigger that started the run, if one did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow_snapshot: Option<String>,
 }
@@ -321,6 +348,8 @@ pub struct NewRun<'a> {
     pub params: &'a Map<String, Value>,
     /// `Running`, or `Queued` for a run waiting on a concurrency slot.
     pub status: RunStatus,
+    /// What started it, for a triggered run.
+    pub trigger: Option<&'a Value>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -430,8 +459,8 @@ impl Store {
         let id: i64 = tx.query_row("SELECT nextval('run_id_seq')", [], |r| r.get(0))?;
         let snapshot = render(id);
         tx.execute(
-            "INSERT INTO runs (id, workflow_name, workflow_path, project_path, params, workflow_snapshot, status, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO runs (id, workflow_name, workflow_path, project_path, params, workflow_snapshot, status, created_at, trigger_cause)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
                 new.workflow_name,
@@ -441,6 +470,7 @@ impl Store {
                 snapshot,
                 new.status.as_str(),
                 now(),
+                new.trigger.map(Value::to_string),
             ],
         )?;
         tx.commit()?;
@@ -823,7 +853,7 @@ fn internal_any(e: anyhow::Error) -> CliError {
 
 fn run_select(with_snapshot: bool) -> String {
     format!(
-        "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at{} FROM runs",
+        "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at, trigger_cause{} FROM runs",
         if with_snapshot { ", workflow_snapshot" } else { "" }
     )
 }
@@ -842,7 +872,8 @@ fn run_from_row(r: &Row<'_>, with_snapshot: bool) -> duckdb::Result<Run> {
         summary: r.get(7)?,
         created_at: fmt_ts(r.get(8)?),
         finished_at: r.get::<_, Option<NaiveDateTime>>(9)?.map(fmt_ts),
-        workflow_snapshot: if with_snapshot { r.get(10)? } else { None },
+        trigger: r.get::<_, Option<String>>(10)?.and_then(|t| serde_json::from_str(&t).ok()),
+        workflow_snapshot: if with_snapshot { r.get(11)? } else { None },
     })
 }
 
@@ -888,6 +919,7 @@ mod tests {
                     project_path: Some(Path::new("/proj")),
                     params: &params,
                     status: RunStatus::Running,
+                    trigger: None,
                 },
                 |id| format!("snapshot for run {id}"),
             )

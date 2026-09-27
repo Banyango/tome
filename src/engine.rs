@@ -13,6 +13,7 @@ use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::session;
 use crate::store::{self, Run, RunStatus, StepEvent, StepHistory, Store, WorkerHistory, WorkerStatus};
+use crate::triggers;
 use crate::workers;
 use serde_json::{json, Value};
 use crate::workflow::{self, OnConflict};
@@ -81,7 +82,7 @@ impl Engine {
     }
 
     pub fn handles(method: &str) -> bool {
-        METHODS.contains(&method) || workers::METHODS.contains(&method)
+        METHODS.contains(&method) || workers::METHODS.contains(&method) || triggers::METHODS.contains(&method)
     }
 
     pub fn dispatch(&self, method: &str, p: &Value) -> CliResult<Value> {
@@ -91,6 +92,7 @@ impl Engine {
             "run.cancel" => self.cancel(req_id(p)?, opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED)).map(|run| json!(run)),
             "step.report" => self.step(p),
             m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
+            m if triggers::METHODS.contains(&m) => self.dispatch_triggers(m, p),
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
     }
@@ -99,7 +101,7 @@ impl Engine {
     /// the workflow, record the run with its resolved snapshot, launch its
     /// orchestrator and return the run. At the workflow's concurrency limit
     /// the run is queued instead, or refused (`on_conflict: reject`).
-    fn start(&self, p: &Value) -> CliResult<Run> {
+    pub(crate) fn start(&self, p: &Value) -> CliResult<Run> {
         let wf = api::load_workflow(p)?;
         let fm = &wf.frontmatter;
         // An unknown harness or backend is a bad request: refuse before

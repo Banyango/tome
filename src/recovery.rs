@@ -78,6 +78,7 @@ mod tests {
                         project_path: None,
                         params: &params,
                         status: RunStatus::Running,
+                        trigger: None,
                     },
                     |_| String::new(),
                 )
