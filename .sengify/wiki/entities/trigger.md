@@ -2,24 +2,25 @@
 
 ## Definition
 
-An event that starts a [[workflow]] or moves it forward.
+A rule in [[workflow]] frontmatter that makes the [[daemon]] react to an event, either by starting a new detached [[run]] or by signalling runs of that workflow that are already going.
 
 ## Attributes
 
-- kinds:
-  - file created / edited
-  - [[group]] of tasks complete
-  - message received, from:
-    - a tome [[queue]]
-    - an external source (webhooks, etc.)
-    - agent output (pattern-matching a [[session]]'s pane output)
+- kinds (v1):
+  - `manual`: documentation only; `tome run` always works
+  - `file`: a glob, `on: [created, modified]`, `debounce`, `ignore`; changes are batched into one event; muted while any run of the workflow is active
+  - `cron`: a 5-field expression in local time; missed times are skipped
+- `to:` `new` (default), `running`, or `running-or-new`
+- `params:` fills in workflow params
+- event data: `{{trigger.*}}` placeholders in the body
+- deferred: webhooks, matching agent output, queue-message triggers
 
 ## Relationships
 
-- [[daemon]]: evaluates triggers
-- [[workflow]]: workflows declare their triggers
-- [[queue]]: a source of message-received triggers
-- [[group]]: fires the group-complete trigger
+- [[daemon]]: arms triggers for auto-registered projects and global workflows
+- [[workflow]]: workflows declare their triggers in frontmatter
+- [[run]]: a trigger starts runs, or signals running ones through their `events` [[queue]] and a nudge to the [[orchestrator]]'s pane
+- [[notification]]: sent when a trigger fails to start a run
 
 ## Planned Features
 
@@ -30,3 +31,4 @@ An event that starts a [[workflow]] or moves it forward.
 - intent.md
 - .sengify/sources/interview-2026-09-26.md
 - .sengify/sources/feature-set-2026-09-26.md
+- features/004-triggers/feature.md

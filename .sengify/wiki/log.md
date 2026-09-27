@@ -8,3 +8,5 @@
 - 2026-09-26 16:13 — feature — 002-running-a-workflow — pages touched: features/002-running-a-workflow/feature.md, features/001-foundation/feature.md (supersession note), index.md
 - 2026-09-26 16:17 — audit — 001-foundation revised to English, orchestrator-driven steps — pages touched: features/001-foundation/feature.md
 - 2026-09-26 16:19 — update — aligned entities with 002; added orchestrator — pages touched: features/001-foundation/feature.md, entities/step.md, entities/workflow.md, entities/action.md, entities/daemon.md, entities/orchestrator.md, index.md
+- 2026-09-26 23:10 — feature — 003-primitives — pages touched: features/003-primitives/feature.md, entities/worker.md, index.md
+- 2026-09-26 23:38 — feature — 004-triggers — pages touched: features/004-triggers/feature.md, entities/trigger.md, index.md

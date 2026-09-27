@@ -19,9 +19,12 @@
 - [Session](entities/session.md)
 - [Step](entities/step.md)
 - [Trigger](entities/trigger.md)
+- [Worker](entities/worker.md)
 - [Workflow](entities/workflow.md)
 - [Worktree](entities/worktree.md)
 
 ## Features
 - [001 - Foundation](features/001-foundation/feature.md)
 - [002 - Running a workflow](features/002-running-a-workflow/feature.md)
+- [003 - Primitives: workers, worktrees, groups and queues](features/003-primitives/feature.md)
+- [004 - Triggers](features/004-triggers/feature.md)
