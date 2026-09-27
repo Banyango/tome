@@ -231,6 +231,7 @@ impl Engine {
         // Broken workflows already recorded, with their error.
         let mut reported: HashMap<(PathBuf, Option<PathBuf>), String> = HashMap::new();
         let mut cron = CronState::default();
+        let mut files = crate::watch::Watcher::default();
         loop {
             let projects = self.live_projects();
             let now_sig = signature(&projects);
@@ -253,6 +254,10 @@ impl Engine {
             }
             for (armed, at) in cron.due(&current.armed, Local::now()) {
                 let event = Event { scheduled: Some(at), ..Default::default() };
+                self.fire_armed(&armed, event);
+            }
+            let active = |a: &Armed| self.active_runs(&a.name, &a.workflow_path).is_ok_and(|r| !r.is_empty());
+            for (armed, event) in files.poll(&current, std::time::Instant::now(), active) {
                 self.fire_armed(&armed, event);
             }
             std::thread::sleep(tick());

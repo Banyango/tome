@@ -280,3 +280,54 @@ fn missing_projects_are_dropped() {
     env.cmd(&["runs", "list"]).current_dir(&wt).output().unwrap();
     assert!(!listed(&env).iter().any(|p| p.contains("worktrees")));
 }
+
+fn start_fast_daemon(env: &Env) {
+    let out = env.cmd(&["daemon", "start"]).env("TOME_TRIGGER_TICK_MS", "100").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+fn runs(env: &Env) -> Vec<Value> {
+    env.json(&["runs", "list"]).1["runs"].as_array().cloned().unwrap_or_default()
+}
+
+#[test]
+fn file_changes_start_runs_in_the_project() {
+    let env = Env::new();
+    write_wf(
+        &env,
+        "specs",
+        "triggers:\n  - file: \"specs/**/*.md\"\n    debounce: 1\n    ignore: [\"specs/drafts/**\"]\n",
+        "## Go\nChanged: {{trigger.paths}}\n",
+    );
+    start_fast_daemon(&env);
+    // Registers the project; the glob matches nothing yet.
+    assert_eq!(ls(&env)["projects"][0]["triggers"][0]["trigger"], "file specs/**/*.md");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    fs::create_dir_all(env.project().join("specs/drafts")).unwrap();
+    fs::write(env.project().join("specs/a.md"), "a").unwrap();
+    fs::write(env.project().join("specs/b.md"), "b").unwrap();
+    fs::write(env.project().join("specs/drafts/x.md"), "x").unwrap();
+    common::eventually("a triggered run", || !runs(&env).is_empty());
+    let run = &runs(&env)[0];
+    assert_eq!(canonical(env.project()), run["project_path"].as_str().unwrap(), "runs start in the project root");
+    let (_, show) = env.json(&["runs", "show", &run["id"].to_string(), "--snapshot"]);
+    let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
+    assert!(snap.contains("Changed: specs/a.md (created), specs/b.md (created)"), "one batched event: {snap}");
+    assert_eq!(show["run"]["trigger"]["synthetic"], false);
+
+    // Muted while that run is active: this change is dropped, not queued.
+    fs::write(env.project().join("specs/a.md"), "edited by an agent").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let (code, _) = env.json(&["run", "finish", "--status", "succeeded", "--run", &run["id"].to_string()]);
+    assert_eq!(code, 0);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(runs(&env).len(), 1, "muted changes don't fire later");
+
+    fs::write(env.project().join("specs/drafts/y.md"), "ignored").unwrap();
+    fs::write(env.project().join("specs/b.md"), "edited").unwrap();
+    common::eventually("a second run", || runs(&env).len() == 2);
+    let (_, show) = env.json(&["runs", "show", "2", "--snapshot"]);
+    let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
+    assert!(snap.contains("Changed: specs/b.md (modified)"), "{snap}");
+}

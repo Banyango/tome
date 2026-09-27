@@ -24,6 +24,7 @@ mod store;
 mod triggers;
 mod triggerscmd;
 mod validate;
+mod watch;
 mod workers;
 mod workflow;
 mod worktree;
