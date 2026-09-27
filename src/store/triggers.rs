@@ -27,7 +27,8 @@ pub struct NewFire<'a> {
     pub workflow_path: &'a str,
     pub workflow_name: &'a str,
     pub project_path: Option<&'a str>,
-    pub trigger_index: usize,
+    /// `-1` for a problem with the whole workflow or project.
+    pub trigger_index: i64,
     pub trigger: &'a str,
     pub outcome: &'a str,
     pub message: Option<&'a str>,
@@ -71,7 +72,7 @@ impl Store {
                     f.workflow_path,
                     f.workflow_name,
                     f.project_path,
-                    f.trigger_index as i64,
+                    f.trigger_index,
                     f.trigger,
                     f.outcome,
                     f.message,
@@ -153,7 +154,7 @@ mod tests {
     use super::super::tests::store;
     use super::*;
 
-    fn fire<'a>(outcome: &'a str, index: usize, runs: &'a [i64]) -> NewFire<'a> {
+    fn fire<'a>(outcome: &'a str, index: i64, runs: &'a [i64]) -> NewFire<'a> {
         NewFire {
             workflow_path: "/p/.tome/workflows/a.md",
             workflow_name: "a",

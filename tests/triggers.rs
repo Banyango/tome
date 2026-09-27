@@ -15,7 +15,7 @@ fn outcomes(env: &Env) -> Vec<String> {
 }
 
 fn fires(env: &Env) -> Vec<Value> {
-    let (code, v) = env.json(&["query", "SELECT outcome, trigger_desc, message FROM trigger_fires ORDER BY id"]);
+    let (code, v) = env.json(&["query", "SELECT outcome, trigger_desc, message FROM trigger_fires WHERE trigger_index >= 0 ORDER BY id"]);
     assert_eq!(code, 0, "{v}");
     v["rows"].as_array().cloned().unwrap_or_default()
 }
@@ -184,4 +184,99 @@ fn running_targets_are_signalled_through_the_events_queue() {
     let (_, v) = env.json(&["query", "SELECT count(*) FROM worker_events WHERE event = 'trigger'"]);
     assert_eq!(v["rows"][0][0], 2, "{v}");
     assert_eq!(outcomes(&env), ["no_target", "started", "signalled", "signalled", "muted"]);
+}
+
+fn ls(env: &Env) -> Value {
+    let (code, v) = env.json(&["triggers", "ls"]);
+    assert_eq!(code, 0, "{v}");
+    v
+}
+
+fn canonical(p: std::path::PathBuf) -> String {
+    p.canonicalize().unwrap().display().to_string()
+}
+
+#[test]
+fn projects_register_themselves_and_their_triggers_are_listed() {
+    let env = Env::new();
+    write_wf(&env, "nightly", "triggers:\n  - manual\n  - cron: \"0 2 * * *\"\n", "## Go\nGo.\n");
+    let global = env.home().join("workflows");
+    fs::create_dir_all(&global).unwrap();
+    fs::write(global.join("inbox.md"), "---\nname: inbox\ntriggers:\n  - file: \"~/inbox/*.txt\"\n---\n## Go\nGo.\n").unwrap();
+    env.start_daemon();
+
+    // Any command in the project registers it.
+    let v = ls(&env);
+    let project = canonical(env.project());
+    assert_eq!(v["projects"][0]["path"], project.as_str(), "{v}");
+    assert_eq!(v["projects"][0]["enabled"], true);
+    let t = &v["projects"][0]["triggers"];
+    assert_eq!(t.as_array().unwrap().len(), 1, "manual triggers aren't armed: {v}");
+    assert_eq!((t[0]["workflow"].as_str(), t[0]["trigger"].as_str()), (Some("nightly"), Some("cron 0 2 * * *")));
+    assert!(t[0]["last"].is_null());
+    assert_eq!(v["global"]["triggers"][0]["trigger"], "file ~/inbox/*.txt");
+
+    // The last fire shows up.
+    env.json(&["triggers", "fire", "nightly"]);
+    let v = ls(&env);
+    assert_eq!(v["projects"][0]["triggers"][0]["last"]["outcome"], "started", "{v}");
+    let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
+    assert!(human.contains("nightly") && human.contains("started (run 1"), "{human}");
+
+    // Disabling sticks across a daemon restart.
+    let (code, v) = env.json(&["triggers", "disable"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(env.json(&["daemon", "stop"]).0, 0);
+    env.start_daemon();
+    assert_eq!(ls(&env)["projects"][0]["enabled"], false);
+    env.json(&["triggers", "enable", "--project", "."]);
+    assert_eq!(ls(&env)["projects"][0]["enabled"], true);
+}
+
+#[test]
+fn workflows_that_turn_invalid_are_disarmed_and_recorded() {
+    let env = Env::new();
+    write_wf(&env, "nightly", "triggers:\n  - cron: \"0 2 * * *\"\n", "## Go\nGo.\n");
+    env.start_daemon();
+    assert_eq!(ls(&env)["projects"][0]["triggers"].as_array().unwrap().len(), 1);
+
+    write_wf(&env, "nightly", "triggers:\n  - cron: \"0 25 * * *\"\n", "## Go\nGo.\n");
+    common::eventually("error recorded", || {
+        let (_, v) = env.json(&["query", "SELECT message FROM trigger_fires WHERE trigger_index = -1"]);
+        v["rows"][0][0].as_str().is_some_and(|m| m.contains("hour `25` is out of range"))
+    });
+    let v = ls(&env);
+    assert!(v["projects"][0]["triggers"].as_array().unwrap().is_empty(), "{v}");
+    let e = &v["projects"][0]["errors"][0];
+    assert_eq!(e["workflow"], "nightly");
+    assert_eq!(e["last"]["outcome"], "error");
+    let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
+    assert!(human.contains("nightly: not armed: workflow is invalid"), "{human}");
+
+    // Fixed again: re-armed.
+    write_wf(&env, "nightly", "triggers:\n  - cron: \"0 3 * * *\"\n", "## Go\nGo.\n");
+    let v = ls(&env);
+    assert_eq!(v["projects"][0]["triggers"][0]["trigger"], "cron 0 3 * * *", "{v}");
+}
+
+#[test]
+fn missing_projects_are_dropped() {
+    let env = Env::new();
+    env.start_daemon();
+    let other = env.home().parent().unwrap().join("other");
+    fs::create_dir_all(other.join(".tome/workflows")).unwrap();
+    let (code, v) = env.json(&["triggers", "disable", "--project", other.to_str().unwrap()]);
+    assert_eq!(code, 0, "{v}");
+    let listed = |env: &Env| -> Vec<String> {
+        ls(env)["projects"].as_array().unwrap().iter().map(|p| p["path"].as_str().unwrap().to_string()).collect()
+    };
+    assert!(listed(&env).contains(&canonical(other.clone())));
+    fs::remove_dir_all(&other).unwrap();
+    assert!(!listed(&env).iter().any(|p| p.ends_with("/other")));
+
+    // Worktrees inside `.tome/` never register as projects.
+    let wt = env.project().join(".tome/worktrees/1-a");
+    fs::create_dir_all(wt.join(".tome/workflows")).unwrap();
+    env.cmd(&["runs", "list"]).current_dir(&wt).output().unwrap();
+    assert!(!listed(&env).iter().any(|p| p.contains("worktrees")));
 }

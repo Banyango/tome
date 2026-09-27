@@ -101,6 +101,8 @@ pub fn run_foreground() -> anyhow::Result<()> {
     eprintln!("tome daemon: listening on {} (pid {})", socket.display(), std::process::id());
     let engine = Arc::clone(&daemon.engine);
     std::thread::spawn(move || engine.monitor());
+    let engine = Arc::clone(&daemon.engine);
+    std::thread::spawn(move || engine.trigger_loop());
 
     for stream in listener.incoming() {
         match stream {

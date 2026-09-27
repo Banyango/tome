@@ -7,6 +7,7 @@
 //! fire's outcome is recorded.
 
 use crate::api::{opt_str, req_str};
+use crate::arming;
 use crate::engine::Engine;
 use crate::output::{CliError, CliResult, ErrorKind};
 use crate::store::{NewFire, Run, RunStatus};
@@ -16,7 +17,7 @@ use chrono::{DateTime, Local, SecondsFormat};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
-pub const METHODS: &[&str] = &["triggers.fire"];
+pub const METHODS: &[&str] = &["triggers.fire", "triggers.ls", "triggers.enable", "project.register"];
 
 /// The queue signals are delivered on, and who they're from.
 pub const QUEUE: &str = "events";
@@ -99,7 +100,7 @@ pub fn load(path: &Path, project: Option<&Path>) -> Result<Workflow, workflow::I
     workflow::load(path).and_then(|wf| workflow::check_scope(wf, scope))
 }
 
-fn first_errors(inv: &workflow::Invalid) -> String {
+pub fn first_errors(inv: &workflow::Invalid) -> String {
     let n = inv.errors.len();
     let first = inv.errors.first().map(|d| format!("line {}: {}", d.line, d.message)).unwrap_or_default();
     if n > 1 {
@@ -121,8 +122,78 @@ impl Engine {
     pub(crate) fn dispatch_triggers(&self, method: &str, p: &Value) -> CliResult<Value> {
         match method {
             "triggers.fire" => self.fire_rpc(p),
+            "triggers.ls" => self.ls_rpc(),
+            "triggers.enable" => {
+                let path = req_str(p, "project")?;
+                let enabled = p["enabled"].as_bool().ok_or_else(|| CliError::invalid("`enabled` must be a boolean"))?;
+                Ok(json!(self.with_store(|store| store.set_project_enabled(path, enabled))?))
+            }
+            "project.register" => {
+                let path = req_str(p, "path")?;
+                let new = self.with_store(|store| store.register_project(path))?;
+                if new {
+                    eprintln!("tome daemon: registered project {path}");
+                }
+                Ok(json!({ "path": path, "new": new }))
+            }
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
+    }
+
+    /// `triggers.ls`: each registered project's armed triggers (and the
+    /// global ones) with their last fire, plus workflows whose triggers
+    /// can't be armed.
+    fn ls_rpc(&self) -> CliResult<Value> {
+        self.live_projects();
+        let projects = self.with_store(|store| store.projects())?;
+        let roots: Vec<PathBuf> = projects.iter().map(|p| PathBuf::from(&p.path)).collect();
+        let scan = arming::scan(&roots);
+        let fires = self.with_store(|store| store.last_fires())?;
+        let last = |path: &Path, project: Option<&Path>, index: i64| {
+            let (path, project) = (path.display().to_string(), project.map(|p| p.display().to_string()));
+            fires.iter().find(|f| f.workflow_path == path && f.project_path == project && f.trigger_index == index).cloned()
+        };
+        let section = |project: Option<&Path>| {
+            let triggers: Vec<Value> = scan
+                .armed
+                .iter()
+                .filter(|a| a.project.as_deref() == project)
+                .map(|a| {
+                    json!({
+                        "workflow": a.name,
+                        "workflow_path": a.workflow_path,
+                        "index": a.index,
+                        "kind": a.trigger.kind_name(),
+                        "trigger": a.trigger.describe(),
+                        "to": a.trigger.effective_target().as_str(),
+                        "last": last(&a.workflow_path, project, a.index as i64),
+                    })
+                })
+                .collect();
+            let errors: Vec<Value> = scan
+                .broken
+                .iter()
+                .filter(|b| b.project.as_deref() == project)
+                .map(|b| {
+                    json!({
+                        "workflow": b.name,
+                        "workflow_path": b.workflow_path,
+                        "message": b.message,
+                        "last": last(&b.workflow_path, project, arming::WHOLE),
+                    })
+                })
+                .collect();
+            (triggers, errors)
+        };
+        let projects: Vec<Value> = projects
+            .iter()
+            .map(|p| {
+                let (triggers, errors) = section(Some(Path::new(&p.path)));
+                json!({ "path": p.path, "enabled": p.enabled, "triggers": triggers, "errors": errors })
+            })
+            .collect();
+        let (triggers, errors) = section(None);
+        Ok(json!({ "projects": projects, "global": { "triggers": triggers, "errors": errors } }))
     }
 
     /// Queued and running runs of the workflow at `path`.
@@ -208,7 +279,7 @@ impl Engine {
                     workflow_path: &req.workflow_path.display().to_string(),
                     workflow_name: &name,
                     project_path: req.project.as_ref().map(|p| p.display().to_string()).as_deref(),
-                    trigger_index: req.index,
+                    trigger_index: req.index as i64,
                     trigger: &trigger_desc,
                     outcome: fired.outcome,
                     message: fired.message.as_deref(),

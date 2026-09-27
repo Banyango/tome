@@ -1,4 +1,5 @@
 mod api;
+mod arming;
 mod cron;
 mod daemon;
 mod duration;
@@ -404,6 +405,20 @@ enum RunsCommand {
 
 #[derive(Subcommand)]
 enum TriggersCommand {
+    /// List each project's armed triggers, with when each last fired.
+    Ls,
+    /// Resume a project's triggers.
+    Enable {
+        /// The project (default: the current one).
+        #[arg(long, value_name = "PATH")]
+        project: Option<std::path::PathBuf>,
+    },
+    /// Pause a project's triggers; the setting persists.
+    Disable {
+        /// The project (default: the current one).
+        #[arg(long, value_name = "PATH")]
+        project: Option<std::path::PathBuf>,
+    },
     /// Fire a workflow's trigger with a synthetic event.
     Fire {
         /// Workflow name or path to a workflow file.
@@ -463,6 +478,11 @@ fn main() {
         return;
     }
 
+    if !matches!(cli.command, Command::Daemon { .. }) {
+        if let Ok(cwd) = std::env::current_dir() {
+            triggerscmd::register(&cwd);
+        }
+    }
     let code = emit(mode, dispatch(cli.command, mode));
     std::process::exit(code);
 }
@@ -552,6 +572,9 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             RunsCommand::Logs { id, step, tail } => inspect::logs(&id, step, tail),
         },
         Command::Triggers { command } => match command {
+            TriggersCommand::Ls => triggerscmd::ls(),
+            TriggersCommand::Enable { project } => triggerscmd::enable(&current_dir()?, project, true),
+            TriggersCommand::Disable { project } => triggerscmd::enable(&current_dir()?, project, false),
             TriggersCommand::Fire { workflow, index, paths, dry_run } => {
                 triggerscmd::fire(&current_dir()?, &workflow, index, &paths, dry_run)
             }
