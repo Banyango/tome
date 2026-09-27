@@ -19,6 +19,7 @@ mod session;
 mod store;
 mod validate;
 mod workflow;
+mod worktree;
 
 use clap::{Parser, Subcommand};
 use output::{emit, CliResult, Mode, Report};

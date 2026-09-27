@@ -135,6 +135,16 @@ pub fn kill(s: &Session) -> bool {
     }
 }
 
+/// Type a line into a recorded session, as if the user had typed it and
+/// pressed Enter. Returns whether it was delivered.
+pub fn send_line(s: &Session, text: &str) -> bool {
+    match Kind::parse(&s.backend) {
+        Some(Kind::Tmux) => Tmux { socket: s.socket.clone() }.send_line(&s.name, text),
+        Some(Kind::Cmux) => s.handle.as_deref().is_some_and(|id| Cmux.send_line(id, text)),
+        None => false,
+    }
+}
+
 /// How to attach to (or show) a recorded session.
 pub fn attach_command(s: &Session) -> String {
     match (Kind::parse(&s.backend), &s.handle) {
@@ -240,6 +250,16 @@ impl Tmux {
     /// Kill a session. Returns whether it existed.
     pub fn kill(&self, name: &str) -> bool {
         self.run(&["kill-session", "-t", &format!("={name}")]).is_ok_and(|o| o.status.success())
+    }
+
+    /// Type `text` into the session's active pane, then Enter.
+    pub fn send_line(&self, name: &str, text: &str) -> bool {
+        if !self.is_alive(name) {
+            return false;
+        }
+        let target = format!("={name}:");
+        self.run(&["send-keys", "-t", &target, "-l", text]).is_ok_and(|o| o.status.success())
+            && self.run(&["send-keys", "-t", &target, "Enter"]).is_ok_and(|o| o.status.success())
     }
 
     /// Names of all sessions on the server.
@@ -359,6 +379,12 @@ impl Cmux {
     /// Close a workspace. Returns whether it was open.
     pub fn kill(&self, id: &str) -> bool {
         self.run(&["close-workspace", "--workspace", id]).is_ok_and(|o| o.status.success())
+    }
+
+    /// Type `text` into the workspace's terminal, then Enter.
+    pub fn send_line(&self, id: &str, text: &str) -> bool {
+        self.run(&["send", "--workspace", id, "--", text]).is_ok_and(|o| o.status.success())
+            && self.run(&["send-key", "--workspace", id, "enter"]).is_ok_and(|o| o.status.success())
     }
 
     /// Post a cmux notification.
@@ -527,6 +553,19 @@ mod tests {
         tmux.run(&["send-keys", "-t", "=tome-8-keep:", "C-c"]).unwrap();
         assert!(wait_until(Duration::from_secs(5), || !tmux.is_alive("tome-8-keep")));
         assert!(tmux.list().contains(&"tome-8-keep".to_string()), "pane lingers");
+    }
+
+    #[test]
+    fn lines_can_be_typed_into_a_session() {
+        let Some(server) = Server::new("send") else { return };
+        let tmux = &server.0;
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("got.txt");
+        let cmd = format!("read line; echo \"$line\" > {}; sleep 5", out.display());
+        launch(tmux, dir.path(), "tome-9-read", &["sh", "-c", &cmd]);
+        assert!(tmux.send_line("tome-9-read", "worker w1 done; it's $HOME"));
+        assert!(wait_until(Duration::from_secs(5), || fs::read_to_string(&out).is_ok_and(|s| s.trim() == "worker w1 done; it's $HOME")));
+        assert!(!tmux.send_line("tome-9-gone", "hello"));
     }
 
     #[test]

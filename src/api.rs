@@ -105,14 +105,23 @@ fn run_get(store: &mut Store, p: &Value) -> CliResult<Value> {
     Ok(json!(run))
 }
 
-/// `worktree.add {run_id, path, repo_path?, branch?}`: record a worktree a run
+/// `worktree.add {run_id, path, repo_path?, branch?, base?}`: record a worktree a run
 /// created so gc can clean it up.
 fn worktree_add(store: &mut Store, p: &Value) -> CliResult<Value> {
     let run_id = p.get("run_id").and_then(Value::as_i64).ok_or_else(|| CliError::invalid("missing integer `run_id`"))?;
     store.require_run(run_id)?;
     let path = PathBuf::from(req_str(p, "path")?);
     store
-        .add_worktree(run_id, &path, opt_str(p, "repo_path").map(Path::new), opt_str(p, "branch"))
+        .add_worktree(
+            run_id,
+            &store::NewWorktree {
+                path: &path,
+                repo_path: opt_str(p, "repo_path").map(Path::new),
+                branch: opt_str(p, "branch"),
+                base: opt_str(p, "base"),
+                worker: None,
+            },
+        )
         .map_err(|e| CliError::internal(format!("{e:#}")))?;
     Ok(json!({ "run_id": run_id, "path": path }))
 }

@@ -16,6 +16,12 @@ use serde_json::{Map, Value};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+mod queues;
+mod workers;
+
+pub use queues::{Pulled, QueueInfo, QueueMessage, MAX_MESSAGE_BYTES};
+pub use workers::{Group, NewWorker, Worker, WorkerEnd, WorkerHistory, WorkerStatus};
+
 /// Schema migrations, applied in order. Never edit a released entry; append
 /// a new one instead. The daemon applies pending ones on startup.
 const MIGRATIONS: &[&str] = &[
@@ -87,6 +93,69 @@ const MIGRATIONS: &[&str] = &[
     ",
     // 3: the backend's own id for a session (a cmux workspace id)
     "ALTER TABLE sessions ADD COLUMN handle VARCHAR;",
+    // 4: workers, groups, queues; worktrees remember their base and worker
+    "
+    CREATE TABLE workers (
+        run_id      BIGINT NOT NULL,
+        name        VARCHAR NOT NULL,
+        kind        VARCHAR NOT NULL,
+        status      VARCHAR NOT NULL,
+        reason      VARCHAR,
+        summary     VARCHAR,
+        group_name  VARCHAR,
+        harness     VARCHAR,
+        command     VARCHAR,
+        session     VARCHAR,
+        worktree    VARCHAR,
+        branch      VARCHAR,
+        base        VARCHAR,
+        keep_open   BOOLEAN NOT NULL,
+        exit_code   INTEGER,
+        created_at  TIMESTAMP NOT NULL,
+        started_at  TIMESTAMP,
+        finished_at TIMESTAMP,
+        PRIMARY KEY (run_id, name)
+    );
+    CREATE TABLE worker_groups (
+        run_id      BIGINT NOT NULL,
+        name        VARCHAR NOT NULL,
+        fail_fast   BOOLEAN NOT NULL,
+        closed      BOOLEAN NOT NULL,
+        created_at  TIMESTAMP NOT NULL,
+        finished_at TIMESTAMP,
+        PRIMARY KEY (run_id, name)
+    );
+    -- Shares the step event sequence so a run's history orders as one.
+    CREATE TABLE worker_events (
+        id          BIGINT PRIMARY KEY DEFAULT nextval('step_event_seq'),
+        run_id      BIGINT NOT NULL,
+        worker      VARCHAR,
+        group_name  VARCHAR,
+        event       VARCHAR NOT NULL,
+        message     VARCHAR,
+        occurred_at TIMESTAMP NOT NULL
+    );
+    CREATE TABLE queues (
+        run_id     BIGINT NOT NULL,
+        name       VARCHAR NOT NULL,
+        closed     BOOLEAN NOT NULL,
+        created_at TIMESTAMP NOT NULL,
+        PRIMARY KEY (run_id, name)
+    );
+    CREATE SEQUENCE queue_message_seq START 1;
+    CREATE TABLE queue_messages (
+        id         BIGINT PRIMARY KEY DEFAULT nextval('queue_message_seq'),
+        run_id     BIGINT NOT NULL,
+        queue      VARCHAR NOT NULL,
+        body       VARCHAR NOT NULL,
+        sender     VARCHAR NOT NULL,
+        created_at TIMESTAMP NOT NULL,
+        claimed_by VARCHAR,
+        claimed_at TIMESTAMP
+    );
+    ALTER TABLE worktrees ADD COLUMN base VARCHAR;
+    ALTER TABLE worktrees ADD COLUMN worker VARCHAR;
+    ",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -213,7 +282,21 @@ pub struct Worktree {
     pub path: String,
     pub repo_path: Option<String>,
     pub branch: Option<String>,
+    /// What the branch was made from (a branch name or commit).
+    pub base: Option<String>,
+    /// The worker it was made for, if any.
+    pub worker: Option<String>,
     pub created_at: String,
+}
+
+/// A worktree to record.
+#[derive(Debug)]
+pub struct NewWorktree<'a> {
+    pub path: &'a Path,
+    pub repo_path: Option<&'a Path>,
+    pub branch: Option<&'a str>,
+    pub base: Option<&'a str>,
+    pub worker: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -424,7 +507,18 @@ impl Store {
     /// job.
     pub fn delete_run(&mut self, id: i64) -> anyhow::Result<()> {
         let tx = self.conn.transaction()?;
-        for table in ["step_events", "steps", "logs", "worktrees", "sessions"] {
+        for table in [
+            "step_events",
+            "steps",
+            "logs",
+            "worktrees",
+            "sessions",
+            "workers",
+            "worker_groups",
+            "worker_events",
+            "queues",
+            "queue_messages",
+        ] {
             tx.execute(&format!("DELETE FROM {table} WHERE run_id = ?"), params![id])?;
         }
         tx.execute("DELETE FROM runs WHERE id = ?", params![id])?;
@@ -640,20 +734,35 @@ impl Store {
 
     // --- worktrees ---------------------------------------------------------
 
-    pub fn add_worktree(&mut self, run_id: i64, path: &Path, repo_path: Option<&Path>, branch: Option<&str>) -> anyhow::Result<()> {
+    pub fn add_worktree(&mut self, run_id: i64, w: &NewWorktree<'_>) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO worktrees (run_id, path, repo_path, branch, created_at) VALUES (?, ?, ?, ?, ?)",
-            params![run_id, path.display().to_string(), repo_path.map(|p| p.display().to_string()), branch, now()],
+            "INSERT OR REPLACE INTO worktrees (run_id, path, repo_path, branch, base, worker, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                run_id,
+                w.path.display().to_string(),
+                w.repo_path.map(|p| p.display().to_string()),
+                w.branch,
+                w.base,
+                w.worker,
+                now()
+            ],
         )?;
         Ok(())
     }
 
     pub fn worktrees(&self, run_id: i64) -> anyhow::Result<Vec<Worktree>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT path, repo_path, branch, created_at FROM worktrees WHERE run_id = ? ORDER BY created_at, path")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT path, repo_path, branch, base, worker, created_at FROM worktrees WHERE run_id = ? ORDER BY created_at, path",
+        )?;
         let rows = stmt.query_map(params![run_id], |r| {
-            Ok(Worktree { path: r.get(0)?, repo_path: r.get(1)?, branch: r.get(2)?, created_at: fmt_ts(r.get(3)?) })
+            Ok(Worktree {
+                path: r.get(0)?,
+                repo_path: r.get(1)?,
+                branch: r.get(2)?,
+                base: r.get(3)?,
+                worker: r.get(4)?,
+                created_at: fmt_ts(r.get(5)?),
+            })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -762,13 +871,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn store() -> (tempfile::TempDir, Store) {
+    pub fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open_in_memory(&dir.path().join("runs")).unwrap();
         (dir, store)
     }
 
-    fn new_run(store: &mut Store, name: &str) -> Run {
+    pub fn new_run(store: &mut Store, name: &str) -> Run {
         let params = json!({"base": "main"}).as_object().unwrap().clone();
         store
             .create_run(

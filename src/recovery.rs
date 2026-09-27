@@ -84,7 +84,12 @@ mod tests {
         let (done, live) = (new(), new());
         store.finish_run(done, RunStatus::Succeeded, None, None).unwrap();
         store.report_step(live, "Build", StepEvent::Start, None).unwrap();
-        store.add_worktree(live, Path::new("/tmp/wt"), None, None).unwrap();
+        store
+            .add_worktree(
+                live,
+                &crate::store::NewWorktree { path: Path::new("/tmp/wt"), repo_path: None, branch: None, base: None, worker: None },
+            )
+            .unwrap();
 
         let hooks = Recorder::default();
         let recovered = recover(&mut store, &hooks).unwrap();
