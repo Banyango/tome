@@ -6,6 +6,10 @@
 //! never by deleting a directory tree directly. If git can't remove one that
 //! still exists, the run is kept so the worktree isn't forgotten, and the
 //! failure is reported.
+//!
+//! The branch tome made for a worktree (`tome/<run>/<name>`) is deleted with
+//! it only if it's merged into the base it was made from; otherwise it's
+//! kept and listed, so no work is lost silently.
 
 use crate::duration;
 use crate::output::{CliError, CliResult, Report};
@@ -13,8 +17,8 @@ use crate::paths;
 use crate::rpc;
 use crate::store::{self, Store, Worktree};
 use serde_json::{json, Value};
+use crate::worktree::{self, git};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 // --- client ----------------------------------------------------------------
 
@@ -34,6 +38,14 @@ pub fn run(older_than: &str, dry_run: bool) -> CliResult<Report> {
         out.push_str(&format!("{verb} run {} ({}, {})\n", r["id"], r["workflow_name"].as_str().unwrap_or("?"), r["status"].as_str().unwrap_or("?")));
         for w in r["worktrees"].as_array().into_iter().flatten() {
             out.push_str(&format!("  worktree {}\n", w["path"].as_str().unwrap_or("?")));
+        }
+        for b in r["branches"].as_array().into_iter().flatten() {
+            let (name, base) = (b["branch"].as_str().unwrap_or("?"), b["base"].as_str().unwrap_or("?"));
+            match (b["deleted"].as_bool(), dry_run) {
+                (Some(true), true) => out.push_str(&format!("  branch {name} (merged into {base})\n")),
+                (Some(true), false) => out.push_str(&format!("  deleted branch {name} (merged into {base})\n")),
+                _ => out.push_str(&format!("  kept branch {name}: {}\n", b["note"].as_str().unwrap_or("?"))),
+            }
         }
     }
     for r in &kept {
@@ -69,12 +81,14 @@ pub fn collect(store: &mut Store, p: &Value) -> CliResult<Value> {
     let mut kept = Vec::new();
     for run in store.finished_runs_before(cutoff).map_err(internal)? {
         let worktrees = store.worktrees(run.id).map_err(internal)?;
-        let entry = json!({
+        let branches: Vec<Value> = worktrees.iter().filter_map(branch_plan).collect();
+        let mut entry = json!({
             "id": run.id,
             "workflow_name": run.workflow_name,
             "status": run.status,
             "finished_at": run.finished_at,
             "worktrees": worktrees,
+            "branches": branches,
         });
         if dry_run {
             deleted.push(entry);
@@ -85,6 +99,8 @@ pub fn collect(store: &mut Store, p: &Value) -> CliResult<Value> {
             kept.push(json!({ "id": run.id, "error": errors.join("; ") }));
             continue;
         }
+        // Worktrees are gone, so their branches can be deleted now.
+        entry["branches"] = json!(worktrees.iter().filter_map(delete_branch).collect::<Vec<_>>());
         let dir = store.run_dir(run.id);
         if dir.exists() {
             std::fs::remove_dir_all(&dir)
@@ -94,6 +110,36 @@ pub fn collect(store: &mut Store, p: &Value) -> CliResult<Value> {
         deleted.push(entry);
     }
     Ok(json!({ "dry_run": dry_run, "cutoff": store::fmt_ts(cutoff), "deleted": deleted, "kept": kept }))
+}
+
+/// What gc would do with the branch tome made for a worktree: delete it
+/// only if it's merged into its base. `None` for worktrees without one (a
+/// worktree tome only recorded).
+fn branch_plan(w: &Worktree) -> Option<Value> {
+    let (branch, base) = (w.branch.as_deref()?, w.base.as_deref()?);
+    let repo = PathBuf::from(w.repo_path.as_deref()?);
+    let (deleted, note) = match worktree::merged(&repo, branch, base) {
+        Some(true) => (true, None),
+        Some(false) => (false, Some(format!("not merged into {base}"))),
+        None => (false, Some(format!("can't tell whether it's merged into {base}"))),
+    };
+    Some(json!({ "branch": branch, "base": base, "worker": w.worker, "deleted": deleted, "note": note }))
+}
+
+/// Delete a removed worktree's branch if it's merged; report what happened.
+fn delete_branch(w: &Worktree) -> Option<Value> {
+    let mut plan = branch_plan(w)?;
+    if plan["deleted"] == true {
+        let repo = PathBuf::from(w.repo_path.as_deref()?);
+        if let Err(e) = git(&repo, &["branch", "-D", w.branch.as_deref()?]) {
+            // Already gone is as good as deleted.
+            if git(&repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", plan["branch"].as_str()?)]).is_ok() {
+                plan["deleted"] = json!(false);
+                plan["note"] = json!(format!("git couldn't delete it: {e}"));
+            }
+        }
+    }
+    Some(plan)
 }
 
 /// Remove a worktree through git. A worktree that's already gone is fine
@@ -125,13 +171,4 @@ fn main_repo_of(worktree: &Path) -> Option<PathBuf> {
         return None;
     }
     common.parent().map(Path::to_path_buf)
-}
-
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().map_err(|e| format!("running git: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
 }

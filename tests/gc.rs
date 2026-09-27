@@ -91,3 +91,47 @@ fn gc_requires_valid_age() {
     assert_eq!(v["error"]["kind"], "invalid");
     assert_eq!(env.run(&["gc"]).status.code(), Some(2));
 }
+
+#[test]
+fn gc_deletes_merged_worker_branches_and_keeps_unmerged_ones() {
+    let env = Env::new();
+    env.start_daemon();
+    let path = env.project().join("build.md");
+    std::fs::write(&path, "---\nname: build\n---\ngo\n").unwrap();
+    let id = env.rpc_ok("run.create", json!({ "workflow_path": path }))["id"].as_i64().unwrap();
+
+    let repo = env.dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let commit = |dir: &Path, msg: &str| {
+        git(dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", msg])
+    };
+    commit(&repo, "init");
+    // `merged` has nothing main lacks; `unmerged` has a commit of its own.
+    for name in ["merged", "unmerged"] {
+        let wt = env.dir.path().join(name);
+        git(&repo, &["worktree", "add", "-q", "-b", &format!("tome/{id}/{name}"), wt.to_str().unwrap()]);
+        env.rpc_ok(
+            "worktree.add",
+            json!({ "run_id": id, "path": wt, "repo_path": repo, "branch": format!("tome/{id}/{name}"), "base": "main" }),
+        );
+    }
+    commit(&env.dir.path().join("unmerged"), "work");
+    env.rpc_ok("run.finish", json!({ "id": id, "status": "succeeded" }));
+
+    let (_, v) = env.json(&["gc", "--older-than", "0s", "--dry-run"]);
+    let branches = &v["deleted"][0]["branches"];
+    assert_eq!(branches[0]["deleted"], true, "{v}");
+    assert_eq!(branches[1]["deleted"], false, "{v}");
+
+    let out = env.run(&["gc", "--older-than", "0s"]);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains(&format!("deleted branch tome/{id}/merged (merged into main)")), "{text}");
+    assert!(text.contains(&format!("kept branch tome/{id}/unmerged: not merged into main")), "{text}");
+
+    let branches = Command::new("git").arg("-C").arg(&repo).args(["branch", "--list"]).output().unwrap();
+    let branches = String::from_utf8_lossy(&branches.stdout);
+    assert!(!branches.lines().any(|l| l.trim() == format!("tome/{id}/merged")), "{branches}");
+    assert!(branches.lines().any(|l| l.trim() == format!("tome/{id}/unmerged")), "{branches}");
+}
