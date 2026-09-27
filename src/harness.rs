@@ -6,7 +6,7 @@
 //! ```yaml
 //! harnesses:
 //!   claude:
-//!     command: ["claude", "{{prompt}}"]        # argv: one element per argument
+//!     command: ["claude", "--model", "opus", "{{prompt}}"]   # argv: one element per argument
 //!   aider:
 //!     command: aider --message-file {{prompt_file}}   # string: run with `sh -c`
 //! ```
@@ -40,7 +40,10 @@ pub struct Harness {
 }
 
 fn presets() -> BTreeMap<String, Template> {
-    BTreeMap::from([("claude".to_string(), Template::Argv(vec!["claude".into(), "{{prompt}}".into()]))])
+    // Claude Code, interactive, with the prompt as its first message. It may
+    // run `tome` without asking, so it can report progress on its own.
+    let claude = ["claude", "--allowedTools", "Bash(tome:*)", "{{prompt}}"];
+    BTreeMap::from([("claude".to_string(), Template::Argv(claude.iter().map(|s| s.to_string()).collect()))])
 }
 
 pub fn config_path() -> PathBuf {
@@ -195,7 +198,7 @@ mod tests {
     #[test]
     fn claude_preset_passes_the_prompt_as_one_argument() {
         let h = Harness { name: "claude".into(), template: presets().remove("claude").unwrap() };
-        assert_eq!(h.command(&vars()), ["claude", "do it's thing"]);
+        assert_eq!(h.command(&vars()), ["claude", "--allowedTools", "Bash(tome:*)", "do it's thing"]);
     }
 
     #[test]

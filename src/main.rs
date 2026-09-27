@@ -6,6 +6,7 @@ mod gc;
 mod harness;
 mod inspect;
 mod lifecycle;
+mod orchestrator;
 mod output;
 mod paths;
 mod query;

@@ -9,12 +9,15 @@
 //! way.
 
 use crate::api::{self, internal, opt_str, req_id, req_id_at, req_str};
+use crate::orchestrator::{self, Hooks};
 use crate::output::{CliError, CliResult};
+use crate::recovery::RecoveryHooks;
+use crate::session::Tmux;
 use crate::store::{self, Run, RunStatus, StepEvent, StepHistory, Store};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Why a run was cancelled, recorded as the run's `reason`.
@@ -31,6 +34,8 @@ pub mod reason {
 const WATCH_POLL: Duration = Duration::from_millis(200);
 /// How often a watch re-syncs from the store, as a safety net.
 const WATCH_RESYNC: Duration = Duration::from_secs(1);
+/// How often the monitor checks that running runs' orchestrators are alive.
+const MONITOR_POLL: Duration = Duration::from_millis(500);
 
 /// The watchers of one run, and how far they've been sent.
 struct Watchers {
@@ -46,11 +51,19 @@ pub struct Engine {
     /// `None` only once shutdown has closed the database.
     store: Mutex<Option<Store>>,
     watchers: Mutex<HashMap<i64, Watchers>>,
+    /// Runs whose orchestrator is being started; the monitor leaves them be.
+    launching: Mutex<HashSet<i64>>,
+    tmux: Tmux,
 }
 
 impl Engine {
     pub fn new(store: Store) -> Engine {
-        Engine { store: Mutex::new(Some(store)), watchers: Mutex::new(HashMap::new()) }
+        Engine {
+            store: Mutex::new(Some(store)),
+            watchers: Mutex::new(HashMap::new()),
+            launching: Mutex::new(HashSet::new()),
+            tmux: Tmux::from_env(),
+        }
     }
 
     pub fn with_store<T>(&self, f: impl FnOnce(&mut Store) -> CliResult<T>) -> CliResult<T> {
@@ -81,14 +94,45 @@ impl Engine {
     }
 
     /// `run.start {workflow_path, source?, project_path?, params?}`: validate
-    /// the workflow, record the run with its resolved snapshot and return it
-    /// straight away.
+    /// the workflow, record the run with its resolved snapshot, launch its
+    /// orchestrator and return the run.
     fn start(&self, p: &Value) -> CliResult<Run> {
         let wf = api::load_workflow(p)?;
-        self.with_store(|store| {
+        // An unknown harness is a bad request: refuse before recording a run.
+        orchestrator::harness_for(&wf.frontmatter)?;
+        let run = self.with_store(|store| {
             let (run, _body) = api::create_run(store, p, &wf, RunStatus::Running)?;
             Ok(run)
-        })
+        })?;
+        self.launch(run)
+    }
+
+    /// Start a running run's orchestrator. If that fails the run is marked
+    /// failed (`launch_failed`) and the error returned.
+    fn launch(&self, run: Run) -> CliResult<Run> {
+        self.launching.lock().unwrap_or_else(|p| p.into_inner()).insert(run.id);
+        let result = orchestrator::plan(&run).and_then(|plan| {
+            // Recorded first, so that the monitor sees it as soon as it runs.
+            self.with_store(|store| {
+                store
+                    .add_session(run.id, &plan.session, orchestrator::ROLE, crate::session::BACKEND, self.tmux.socket.as_deref(), Some(&plan.harness.name))
+                    .map_err(internal)
+            })?;
+            orchestrator::launch(&self.tmux, &run, &plan)
+        });
+        self.launching.lock().unwrap_or_else(|p| p.into_inner()).remove(&run.id);
+        match result {
+            Ok(()) => Ok(run),
+            Err(e) => {
+                let _ = self.with_store(|store| {
+                    let failed = store.abort_run(run.id, RunStatus::Failed, orchestrator::LAUNCH_FAILED, Some(&e.message));
+                    self.sync(store, run.id);
+                    failed
+                });
+                self.kill_sessions(run.id);
+                Err(e)
+            }
+        }
     }
 
     /// `run.start {..., attach: true}`: start the run and stream it on this
@@ -109,24 +153,66 @@ impl Engine {
         let status = RunStatus::parse(status)
             .filter(|s| s.is_finished())
             .ok_or_else(|| CliError::invalid(format!("invalid status `{status}` (use succeeded, failed or cancelled)")))?;
+        if status == RunStatus::Cancelled {
+            return self.cancel(id, opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED));
+        }
         self.with_store(|store| {
-            let run = if status == RunStatus::Cancelled {
-                store.cancel_run(id, opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED))
-            } else {
-                store.finish_run(id, status, opt_str(p, "reason"), opt_str(p, "summary"))
-            }?;
+            let run = store.finish_run(id, status, opt_str(p, "reason"), opt_str(p, "summary"))?;
             self.sync(store, id);
             Ok(run)
         })
     }
 
-    /// Cancel an unfinished run (`run.cancel {id, reason?}`).
+    /// Cancel an unfinished run (`run.cancel {id, reason?}`): mark it
+    /// cancelled, then kill its sessions. Its worktrees are kept, and no
+    /// notification is sent.
     pub fn cancel(&self, id: i64, reason: &str) -> CliResult<Run> {
-        self.with_store(|store| {
+        let run = self.with_store(|store| {
             let run = store.cancel_run(id, reason)?;
             self.sync(store, id);
             Ok(run)
-        })
+        })?;
+        self.kill_sessions(id);
+        Ok(run)
+    }
+
+    fn kill_sessions(&self, run_id: i64) {
+        let recorded = self.with_store(|store| store.sessions(run_id).map_err(internal)).unwrap_or_default();
+        orchestrator::kill_sessions(run_id, &recorded);
+    }
+
+    /// Fail running runs whose orchestrator has exited without finishing the
+    /// run (`orchestrator_exited`). Runs until the daemon closes the store.
+    pub fn monitor(self: Arc<Self>) {
+        loop {
+            std::thread::sleep(MONITOR_POLL);
+            let Ok(sessions) = self.with_store(|store| store.running_orchestrators().map_err(internal)) else {
+                return;
+            };
+            for s in sessions {
+                if self.launching.lock().unwrap_or_else(|p| p.into_inner()).contains(&s.run_id) {
+                    continue;
+                }
+                if (Tmux { socket: s.socket.clone() }).is_alive(&s.name) {
+                    continue;
+                }
+                let ended = self.with_store(|store| {
+                    // It may have finished while we looked.
+                    if store.require_run(s.run_id)?.status != RunStatus::Running {
+                        return Ok(None);
+                    }
+                    let run = store.abort_run(s.run_id, RunStatus::Failed, orchestrator::EXITED, None)?;
+                    self.sync(store, s.run_id);
+                    Ok(Some(run))
+                });
+                if let Ok(Some(run)) = ended {
+                    eprintln!("tome daemon: run {} ({}) failed: {}", run.id, run.workflow_name, orchestrator::EXITED);
+                    // Its workers have no one to report to.
+                    self.kill_sessions(run.id);
+                    Hooks.notify(&run);
+                }
+            }
+        }
     }
 
     /// `step.report {run_id, step?, event: start|done|fail, message?}`.

@@ -138,6 +138,22 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
         }
     }
 
+    let sessions = data["sessions"].as_array().cloned().unwrap_or_default();
+    if !sessions.is_empty() {
+        out.push_str("\nsessions:\n");
+        let rows = sessions
+            .iter()
+            .map(|x| {
+                let attach = match x["socket"].as_str() {
+                    Some(sock) => format!("tmux -L {sock} attach -t {}", s(&x["name"])),
+                    None => format!("tmux attach -t {}", s(&x["name"])),
+                };
+                vec![s(&x["name"]), s(&x["role"]), x["harness"].as_str().unwrap_or("").to_string(), attach]
+            })
+            .collect();
+        out.push_str(&indent(&table(&["SESSION", "ROLE", "HARNESS", "ATTACH"], rows)));
+    }
+
     let logs = data["logs"].as_array().cloned().unwrap_or_default();
     if !logs.is_empty() {
         out.push_str("\nlogs:\n");

@@ -7,6 +7,7 @@
 
 use crate::api;
 use crate::engine::{Engine, Sink};
+use crate::orchestrator;
 use crate::output::CliResult;
 use crate::paths;
 use crate::recovery;
@@ -79,7 +80,7 @@ pub fn run_foreground() -> anyhow::Result<()> {
     let lock = acquire_lock()?;
     let mut store = Store::open(&paths::db_path(), &paths::runs_dir())?;
     // Before accepting requests: no run survives its daemon.
-    for run in recovery::recover(&mut store, &recovery::NoopHooks).context("recovering interrupted runs")? {
+    for run in recovery::recover(&mut store, &orchestrator::Hooks).context("recovering interrupted runs")? {
         eprintln!("tome daemon: run {} ({}) marked failed: {}", run.id, run.workflow_name, recovery::REASON);
     }
     let socket = paths::socket_path();
@@ -98,6 +99,8 @@ pub fn run_foreground() -> anyhow::Result<()> {
         _lock: lock,
     });
     eprintln!("tome daemon: listening on {} (pid {})", socket.display(), std::process::id());
+    let engine = Arc::clone(&daemon.engine);
+    std::thread::spawn(move || engine.monitor());
 
     for stream in listener.incoming() {
         match stream {

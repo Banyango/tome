@@ -72,6 +72,19 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (run_id, path)
     );
     ",
+    // 2: agent sessions (the orchestrator's, and later workers')
+    "
+    CREATE TABLE sessions (
+        run_id     BIGINT NOT NULL,
+        name       VARCHAR NOT NULL,
+        role       VARCHAR NOT NULL,
+        backend    VARCHAR NOT NULL,
+        socket     VARCHAR,
+        harness    VARCHAR,
+        created_at TIMESTAMP NOT NULL,
+        PRIMARY KEY (run_id, name)
+    );
+    ",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -198,6 +211,18 @@ pub struct Worktree {
     pub path: String,
     pub repo_path: Option<String>,
     pub branch: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Session {
+    #[serde(skip)]
+    pub run_id: i64,
+    pub name: String,
+    pub role: String,
+    pub backend: String,
+    pub socket: Option<String>,
+    pub harness: Option<String>,
     pub created_at: String,
 }
 
@@ -394,7 +419,7 @@ impl Store {
     /// job.
     pub fn delete_run(&mut self, id: i64) -> anyhow::Result<()> {
         let tx = self.conn.transaction()?;
-        for table in ["step_events", "steps", "logs", "worktrees"] {
+        for table in ["step_events", "steps", "logs", "worktrees", "sessions"] {
             tx.execute(&format!("DELETE FROM {table} WHERE run_id = ?"), params![id])?;
         }
         tx.execute("DELETE FROM runs WHERE id = ?", params![id])?;
@@ -423,6 +448,13 @@ impl Store {
     /// Cancel an unfinished run: any step still running is failed with
     /// `reason`, then the run is marked `cancelled`.
     pub fn cancel_run(&mut self, id: i64, reason: &str) -> CliResult<Run> {
+        self.abort_run(id, RunStatus::Cancelled, reason, None)
+    }
+
+    /// End an unfinished run that didn't finish itself (cancelled, or failed
+    /// because its orchestrator went away): steps still running are failed
+    /// with `reason` first.
+    pub fn abort_run(&mut self, id: i64, status: RunStatus, reason: &str, summary: Option<&str>) -> CliResult<Run> {
         let run = self.require_run(id)?;
         if run.status.is_finished() {
             return Err(CliError::invalid(format!("run {id} has already finished ({})", run.status.as_str())));
@@ -432,7 +464,7 @@ impl Store {
                 self.report_step(id, &step.name, StepEvent::Fail, Some(reason))?;
             }
         }
-        self.finish_run(id, RunStatus::Cancelled, Some(reason), None)
+        self.finish_run(id, status, Some(reason), summary)
     }
 
     // --- steps -------------------------------------------------------------
@@ -589,6 +621,48 @@ impl Store {
             .prepare("SELECT path, repo_path, branch, created_at FROM worktrees WHERE run_id = ? ORDER BY created_at, path")?;
         let rows = stmt.query_map(params![run_id], |r| {
             Ok(Worktree { path: r.get(0)?, repo_path: r.get(1)?, branch: r.get(2)?, created_at: fmt_ts(r.get(3)?) })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+}
+
+impl Store {
+    // --- sessions ----------------------------------------------------------
+
+    pub fn add_session(&mut self, run_id: i64, name: &str, role: &str, backend: &str, socket: Option<&str>, harness: Option<&str>) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO sessions (run_id, name, role, backend, socket, harness, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![run_id, name, role, backend, socket, harness, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn sessions(&self, run_id: i64) -> anyhow::Result<Vec<Session>> {
+        self.query_sessions("WHERE s.run_id = ? ORDER BY s.created_at, s.name", params![run_id])
+    }
+
+    /// The orchestrator sessions of running runs.
+    pub fn running_orchestrators(&self) -> anyhow::Result<Vec<Session>> {
+        self.query_sessions(
+            "JOIN runs r ON r.id = s.run_id WHERE r.status = 'running' AND s.role = 'orchestrator' ORDER BY s.run_id",
+            params![],
+        )
+    }
+
+    fn query_sessions(&self, rest: &str, args: &[&dyn duckdb::ToSql]) -> anyhow::Result<Vec<Session>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT s.run_id, s.name, s.role, s.backend, s.socket, s.harness, s.created_at FROM sessions s {rest}"))?;
+        let rows = stmt.query_map(args, |r| {
+            Ok(Session {
+                run_id: r.get(0)?,
+                name: r.get(1)?,
+                role: r.get(2)?,
+                backend: r.get(3)?,
+                socket: r.get(4)?,
+                harness: r.get(5)?,
+                created_at: fmt_ts(r.get(6)?),
+            })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }

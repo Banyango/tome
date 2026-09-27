@@ -9,7 +9,7 @@ use crate::output::{CliError, CliResult};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub const BACKEND: &str = "tmux";
 
@@ -158,23 +158,24 @@ pub fn run_prefix(run_id: i64) -> String {
     format!("tome-{run_id}-")
 }
 
-/// Poll until `f` holds or `limit` passes.
-pub fn wait_until(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + limit;
-    loop {
-        if f() {
-            return true;
-        }
-        if Instant::now() > deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    /// Poll until `f` holds or `limit` passes.
+    pub fn wait_until(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + limit;
+        loop {
+            if f() {
+                return true;
+            }
+            if Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
 
     /// A private tmux server, killed on drop.
     struct Server(Tmux);

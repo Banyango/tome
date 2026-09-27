@@ -11,17 +11,13 @@ use crate::store::{Run, RunStatus, StepEvent, Store};
 
 pub const REASON: &str = "daemon_restart";
 
-/// Called for each recovered run. The defaults do nothing for now.
+/// Called for each recovered run (the daemon's are `orchestrator::Hooks`).
 pub trait RecoveryHooks {
     /// Kill any agent/multiplexer sessions the run left behind.
     fn kill_sessions(&self, _run: &Run) {}
     /// Tell the user the run was interrupted.
     fn notify(&self, _run: &Run) {}
 }
-
-pub struct NoopHooks;
-
-impl RecoveryHooks for NoopHooks {}
 
 /// Fail every in-progress run. Returns the recovered runs (in their final
 /// state).

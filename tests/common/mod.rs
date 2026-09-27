@@ -18,7 +18,29 @@ impl Env {
         let dir = tempfile::Builder::new().prefix("tm").tempdir_in("/tmp").unwrap();
         let env = Env { dir };
         std::fs::create_dir_all(env.project()).unwrap();
+        std::fs::create_dir_all(env.home()).unwrap();
+        // Never launch a real agent: the default harness idles until killed.
+        env.set_config(IDLE_CONFIG);
         env
+    }
+
+    /// Replace `~/.tome/config.yaml`.
+    pub fn set_config(&self, yaml: &str) {
+        std::fs::write(self.home().join("config.yaml"), yaml).unwrap();
+    }
+
+    /// This env's private tmux server (`tmux -L <name>`).
+    pub fn tmux_socket(&self) -> String {
+        format!("tome-{}", self.dir.path().file_name().unwrap().to_string_lossy())
+    }
+
+    pub fn tmux(&self, args: &[&str]) -> Output {
+        Command::new("tmux").args(["-L", &self.tmux_socket()]).args(args).env_remove("TMUX").output().unwrap()
+    }
+
+    /// Whether a tmux session exists on this env's server.
+    pub fn has_session(&self, name: &str) -> bool {
+        self.tmux(&["has-session", "-t", &format!("={name}")]).status.success()
     }
 
     pub fn home(&self) -> PathBuf {
@@ -35,6 +57,9 @@ impl Env {
             .env("TOME_HOME", self.home())
             .env("HOME", self.dir.path())
             .env_remove("TOME_OUTPUT")
+            .env_remove("TOME_RUN_ID")
+            .env_remove("TMUX")
+            .env("TOME_TMUX_SOCKET", self.tmux_socket())
             .current_dir(self.project());
         cmd
     }
@@ -88,10 +113,23 @@ pub fn rpc_at(socket: &Path, method: &str, params: Value) -> Value {
     serde_json::from_str(&line).unwrap()
 }
 
+/// Overrides the `claude` preset, which every workflow without a harness uses.
+pub const IDLE_CONFIG: &str = "harnesses:\n  claude: [sleep, \"600\"]\n";
+
+/// Poll until `f` holds; panics after 10s.
+pub fn eventually(what: &str, mut f: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !f() {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 impl Drop for Env {
     fn drop(&mut self) {
         if self.socket().exists() {
             let _ = self.run(&["daemon", "stop"]);
         }
+        let _ = self.tmux(&["kill-server"]);
     }
 }

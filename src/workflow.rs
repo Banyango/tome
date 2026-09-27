@@ -24,7 +24,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub const TOP_LEVEL_KEYS: &[&str] =
-    &["name", "description", "triggers", "params", "defaults", "concurrency", "on_conflict"];
+    &["name", "description", "triggers", "params", "defaults", "concurrency", "on_conflict", "orchestrator"];
 pub const DEFAULTS_KEYS: &[&str] = &["backend", "harness", "orchestrator_harness", "timeout", "on_failure"];
 pub const PARAM_KEYS: &[&str] = &["type", "default", "description"];
 
@@ -141,6 +141,9 @@ pub struct Frontmatter {
     pub concurrency: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_conflict: Option<OnConflict>,
+    /// Extra instructions for the orchestrator, added to its bootstrap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -216,6 +219,16 @@ pub fn load(path: &Path) -> Result<Workflow, Invalid> {
 }
 
 pub fn parse(path: &Path, source: &str) -> Result<Workflow, Invalid> {
+    parse_source(path, source, true)
+}
+
+/// Parse a run's workflow snapshot. Its placeholders are already
+/// substituted, so a param value that looks like one isn't an error.
+pub fn parse_snapshot(path: &Path, source: &str) -> Result<Workflow, Invalid> {
+    parse_source(path, source, false)
+}
+
+fn parse_source(path: &Path, source: &str, placeholders: bool) -> Result<Workflow, Invalid> {
     let invalid = |name: Option<String>, errors: Vec<Diagnostic>| Invalid { path: path.to_path_buf(), name, errors };
 
     let lines: Vec<&str> = source.lines().collect();
@@ -256,6 +269,7 @@ pub fn parse(path: &Path, source: &str) -> Result<Workflow, Invalid> {
         defaults: Defaults::default(),
         concurrency: None,
         on_conflict: None,
+        orchestrator: None,
     };
 
     for (key, value) in &map {
@@ -286,6 +300,11 @@ pub fn parse(path: &Path, source: &str) -> Result<Workflow, Invalid> {
                 Some("reject") => fm.on_conflict = Some(OnConflict::Reject),
                 _ => errors.push(Diagnostic::new(line, "`on_conflict` must be `queue` or `reject`")),
             },
+            "orchestrator" => match value {
+                Yaml::String(s) => fm.orchestrator = Some(s.clone()),
+                Yaml::Null => {}
+                _ => errors.push(Diagnostic::new(line, "`orchestrator` must be a string of extra instructions")),
+            },
             other => errors.push(Diagnostic::new(
                 line,
                 format!("unknown frontmatter key `{other}` (expected one of: {})", TOP_LEVEL_KEYS.join(", ")),
@@ -296,7 +315,9 @@ pub fn parse(path: &Path, source: &str) -> Result<Workflow, Invalid> {
         errors.push(Diagnostic::new(1, "missing required frontmatter key `name`"));
     }
 
-    errors.extend(check_placeholders(&body, body_line, &fm.params));
+    if placeholders {
+        errors.extend(check_placeholders(&body, body_line, &fm.params));
+    }
 
     let name = (!fm.name.is_empty()).then(|| fm.name.clone());
     if !errors.is_empty() {
