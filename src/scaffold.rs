@@ -68,6 +68,7 @@ params:
   base: {{type: string, default: main, description: "Branch to start from"}}
 # Optional keys:
 # defaults:
+#   backend: cmux               # where agents run: tmux or cmux (default: cmux inside cmux, else tmux)
 #   harness: claude             # agent CLI for the steps (see ~/.tome/config.yaml)
 #   orchestrator_harness: claude
 #   timeout: 30m

@@ -144,11 +144,7 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
         let rows = sessions
             .iter()
             .map(|x| {
-                let attach = match x["socket"].as_str() {
-                    Some(sock) => format!("tmux -L {sock} attach -t {}", s(&x["name"])),
-                    None => format!("tmux attach -t {}", s(&x["name"])),
-                };
-                vec![s(&x["name"]), s(&x["role"]), x["harness"].as_str().unwrap_or("").to_string(), attach]
+                vec![s(&x["name"]), s(&x["role"]), x["harness"].as_str().unwrap_or("").to_string(), s(&x["attach"])]
             })
             .collect();
         out.push_str(&indent(&table(&["SESSION", "ROLE", "HARNESS", "ATTACH"], rows)));

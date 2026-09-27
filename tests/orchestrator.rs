@@ -166,6 +166,18 @@ fn unknown_harness_is_refused_without_a_run() {
 }
 
 #[test]
+fn unknown_backend_is_refused_without_a_run() {
+    let env = Env::new();
+    write_wf(&env, "build", "---\nname: build\ndefaults:\n  backend: screen\n---\n## Build\nGo.\n");
+    env.start_daemon();
+    let (code, err) = env.json(&["run", "build", "--detach"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err["error"]["message"].as_str().unwrap().contains("unknown session backend `screen`"), "{err}");
+    let (_, runs) = env.json(&["runs", "list"]);
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 0);
+}
+
+#[test]
 fn daemon_restart_kills_orphaned_sessions() {
     let env = Env::new();
     write_wf(&env, "build", "---\nname: build\n---\n## Build\nGo.\n");
@@ -185,7 +197,8 @@ fn daemon_restart_kills_orphaned_sessions() {
 
 /// Opt-in: drives a real Claude Code orchestrator. Needs `claude` on PATH and
 /// logged in; run with `TOME_SMOKE_CLAUDE=1 cargo test --test orchestrator -- --ignored`.
-/// Attach with `tmux -L <socket> attach` (printed below) to watch or unblock it.
+/// From a cmux terminal it opens in a cmux workspace ("tome: hello #1");
+/// otherwise attach with the tmux command printed below to watch or unblock it.
 #[test]
 #[ignore]
 fn smoke_real_claude_preset() {
@@ -193,7 +206,7 @@ fn smoke_real_claude_preset() {
         eprintln!("skipping: set TOME_SMOKE_CLAUDE=1 to run");
         return;
     }
-    let env = Env::new();
+    let env = Env::cmux().unwrap_or_else(Env::new);
     env.set_config(""); // the built-in `claude` preset
     write_wf(
         &env,
@@ -201,7 +214,9 @@ fn smoke_real_claude_preset() {
         "---\nname: hello\n---\n## Greet\nReport this step, write the word hello to a file named hello.txt in the current directory, then finish the run as succeeded.\n",
     );
     env.start_daemon();
-    eprintln!("watch with: tmux -L {} attach -t tome-1-hello", env.tmux_socket());
+    if env.backend == "tmux" {
+        eprintln!("watch with: tmux -L {} attach -t tome-1-hello", env.tmux_socket());
+    }
     let (code, events) = run_attached(&env, &["hello"]);
     assert_eq!(code, 0, "{events:?}");
     assert!(summary(&events).contains(&"Greet done".to_string()), "{events:?}");

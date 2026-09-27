@@ -7,16 +7,17 @@
 //! (`tome gc` removes them later), and the hooks give later features a place
 //! to kill leftover agent sessions and tell the user.
 
-use crate::store::{Run, RunStatus, StepEvent, Store};
+use crate::store::{Run, RunStatus, Session, StepEvent, Store};
 
 pub const REASON: &str = "daemon_restart";
 
 /// Called for each recovered run (the daemon's are `orchestrator::Hooks`).
 pub trait RecoveryHooks {
-    /// Kill any agent/multiplexer sessions the run left behind.
-    fn kill_sessions(&self, _run: &Run) {}
+    /// Kill the agent sessions the run left behind (`sessions` are the
+    /// recorded ones).
+    fn kill_sessions(&self, _run: &Run, _sessions: &[Session]) {}
     /// Tell the user the run was interrupted.
-    fn notify(&self, _run: &Run) {}
+    fn notify(&self, _run: &Run, _sessions: &[Session]) {}
 }
 
 /// Fail every in-progress run. Returns the recovered runs (in their final
@@ -24,14 +25,15 @@ pub trait RecoveryHooks {
 pub fn recover(store: &mut Store, hooks: &dyn RecoveryHooks) -> anyhow::Result<Vec<Run>> {
     let mut recovered = Vec::new();
     for run in store.in_progress_runs()? {
-        hooks.kill_sessions(&run);
+        let sessions = store.sessions(run.id)?;
+        hooks.kill_sessions(&run, &sessions);
         for step in store.steps(run.id)? {
             if step.status == "running" {
                 store.report_step(run.id, &step.name, StepEvent::Fail, Some(REASON))?;
             }
         }
         let run = store.finish_run(run.id, RunStatus::Failed, Some(REASON), None)?;
-        hooks.notify(&run);
+        hooks.notify(&run, &sessions);
         recovered.push(run);
     }
     Ok(recovered)
@@ -51,10 +53,10 @@ mod tests {
     }
 
     impl RecoveryHooks for Recorder {
-        fn kill_sessions(&self, run: &Run) {
+        fn kill_sessions(&self, run: &Run, _: &[Session]) {
             self.calls.borrow_mut().push(format!("kill {} {}", run.id, run.status.as_str()));
         }
-        fn notify(&self, run: &Run) {
+        fn notify(&self, run: &Run, _: &[Session]) {
             self.calls.borrow_mut().push(format!("notify {} {}", run.id, run.status.as_str()));
         }
     }

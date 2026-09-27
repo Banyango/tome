@@ -50,19 +50,38 @@ pub fn config_path() -> PathBuf {
     paths::tome_home().join("config.yaml")
 }
 
+/// The config file's text, if there is one.
+fn read_config() -> CliResult<Option<String>> {
+    let path = config_path();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(CliError::internal(format!("reading {}: {e}", path.display()))),
+    }
+}
+
+fn config_error(e: impl std::fmt::Display) -> CliError {
+    CliError::invalid(format!("{}: {e}", config_path().display())).with_hint("see `harnesses:` in the tome docs")
+}
+
 /// Every known harness: the presets, overridden or extended by the config.
 pub fn all() -> CliResult<BTreeMap<String, Template>> {
     let mut out = presets();
-    let path = config_path();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-        Err(e) => return Err(CliError::internal(format!("reading {}: {e}", path.display()))),
-    };
-    out.extend(parse_config(&text).map_err(|e| {
-        CliError::invalid(format!("{}: {e}", path.display())).with_hint("see `harnesses:` in the tome docs")
-    })?);
+    if let Some(text) = read_config()? {
+        out.extend(parse_config(&text).map_err(config_error)?);
+    }
     Ok(out)
+}
+
+/// A top-level string setting in the config, e.g. `backend: cmux`.
+pub fn config_str(key: &str) -> CliResult<Option<String>> {
+    let Some(text) = read_config()? else { return Ok(None) };
+    let doc: Yaml = serde_yaml::from_str(&text).map_err(config_error)?;
+    match doc.get(key) {
+        None | Some(Yaml::Null) => Ok(None),
+        Some(Yaml::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(config_error(format!("`{key}` must be a string"))),
+    }
 }
 
 /// Look a harness up by name.

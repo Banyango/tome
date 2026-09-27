@@ -1,32 +1,155 @@
-//! Sessions on tmux: named, visible terminals that agents run in. The user can
-//! `tmux attach -t <name>` to watch one and type into it.
+//! Sessions: named, visible terminals that agents run in, on one of two
+//! backends:
 //!
-//! tome uses the default tmux server, or the one named by `TOME_TMUX_SOCKET`
-//! (passed as `tmux -L`), which tests use to stay isolated.
+//! - **tmux**: a detached session the user can `tmux attach -t <name>` to.
+//!   tome uses the default server, or the one named by `TOME_TMUX_SOCKET`
+//!   (passed as `tmux -L`), which tests use to stay isolated.
+//! - **cmux**: a workspace in the cmux app the daemon runs under. It needs
+//!   the `CMUX_*` environment of a terminal inside cmux (cmux only lets its
+//!   own processes in), which a daemon started from one inherits.
+//!
+//! A run's backend is the workflow's `defaults.backend`, else `TOME_BACKEND`,
+//! else `backend:` in `~/.tome/config.yaml`, else cmux when the daemon runs
+//! inside cmux and tmux otherwise.
+//!
+//! Either way the session's command is a launcher script that sets the
+//! agent's environment, captures its output to a log and `exec`s it, so the
+//! session ends when the agent does.
 
-use crate::harness::shell_quote;
+use crate::harness::{self, shell_quote};
 use crate::output::{CliError, CliResult};
+use crate::store::Session;
+use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-pub const BACKEND: &str = "tmux";
-
 /// How long a launched command waits for its output to be captured before
-/// starting anyway.
+/// starting anyway (tmux attaches capture after the session starts).
 const CAPTURE_WAIT: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, Default)]
-pub struct Tmux {
-    /// `tmux -L <socket>`; `None` is the default server.
-    pub socket: Option<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Tmux,
+    Cmux,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Tmux => "tmux",
+            Kind::Cmux => "cmux",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Kind> {
+        match s {
+            "tmux" => Some(Kind::Tmux),
+            "cmux" => Some(Kind::Cmux),
+            _ => None,
+        }
+    }
+
+    /// The backend for a run whose workflow asks for `requested` (see the
+    /// module docs for the order).
+    pub fn choose(requested: Option<&str>) -> CliResult<Kind> {
+        let env = std::env::var("TOME_BACKEND").ok().filter(|s| !s.is_empty());
+        let (name, source) = match (requested, env) {
+            (Some(r), _) => (r.to_string(), "the workflow's `defaults.backend`"),
+            (None, Some(e)) => (e, "TOME_BACKEND"),
+            (None, None) => match harness::config_str("backend")? {
+                Some(c) => (c, "`backend` in the tome config"),
+                None => return Ok(if Cmux::inside() { Kind::Cmux } else { Kind::Tmux }),
+            },
+        };
+        Kind::parse(&name).ok_or_else(|| {
+            CliError::invalid(format!("unknown session backend `{name}` (from {source})")).with_hint("use tmux or cmux")
+        })
+    }
+}
+
+/// A backend to start sessions on.
+pub enum Backend {
+    Tmux(Tmux),
+    Cmux(Cmux),
+}
+
+impl Backend {
+    pub fn new(kind: Kind) -> Backend {
+        match kind {
+            Kind::Tmux => Backend::Tmux(Tmux::from_env()),
+            Kind::Cmux => Backend::Cmux(Cmux),
+        }
+    }
+
+    pub fn kind(&self) -> Kind {
+        match self {
+            Backend::Tmux(_) => Kind::Tmux,
+            Backend::Cmux(_) => Kind::Cmux,
+        }
+    }
+
+    /// Start `launch` and return how to find it again: the session record
+    /// minus the run, role and harness, which the caller fills in.
+    pub fn launch(&self, launch: &Launch) -> CliResult<Session> {
+        let (socket, handle) = match self {
+            Backend::Tmux(t) => {
+                t.launch(launch)?;
+                (t.socket.clone(), None)
+            }
+            Backend::Cmux(c) => (None, Some(c.launch(launch)?)),
+        };
+        Ok(Session {
+            run_id: 0,
+            name: launch.name.to_string(),
+            role: String::new(),
+            backend: self.kind().as_str().to_string(),
+            socket,
+            handle,
+            harness: None,
+            created_at: String::new(),
+        })
+    }
+}
+
+/// Whether a recorded session's command is still running; `None` if that
+/// can't be told right now (e.g. cmux isn't answering).
+pub fn is_alive(s: &Session) -> Option<bool> {
+    match Kind::parse(&s.backend) {
+        Some(Kind::Tmux) => Some(Tmux { socket: s.socket.clone() }.is_alive(&s.name)),
+        Some(Kind::Cmux) => match &s.handle {
+            Some(id) => Cmux.is_alive(id),
+            None => Some(false),
+        },
+        None => Some(false),
+    }
+}
+
+/// Kill a recorded session. Returns whether it existed.
+pub fn kill(s: &Session) -> bool {
+    match Kind::parse(&s.backend) {
+        Some(Kind::Tmux) => Tmux { socket: s.socket.clone() }.kill(&s.name),
+        Some(Kind::Cmux) => s.handle.as_deref().is_some_and(|id| Cmux.kill(id)),
+        None => false,
+    }
+}
+
+/// How to attach to (or show) a recorded session.
+pub fn attach_command(s: &Session) -> String {
+    match (Kind::parse(&s.backend), &s.handle) {
+        (Some(Kind::Cmux), Some(id)) => format!("cmux select-workspace --workspace {id}"),
+        _ => match &s.socket {
+            Some(sock) => format!("tmux -L {sock} attach -t {}", s.name),
+            None => format!("tmux attach -t {}", s.name),
+        },
+    }
 }
 
 /// What to run in a new session.
 pub struct Launch<'a> {
     pub name: &'a str,
-    /// Window title, e.g. `tome: build #42`.
+    /// Window (tmux) or workspace (cmux) title, e.g. `tome: build #42`.
     pub title: &'a str,
     pub cwd: &'a Path,
     pub argv: &'a [String],
@@ -35,6 +158,14 @@ pub struct Launch<'a> {
     pub script: &'a Path,
     /// Where to append the session's output.
     pub log: &'a Path,
+}
+
+// --- tmux ------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+pub struct Tmux {
+    /// `tmux -L <socket>`; `None` is the default server.
+    pub socket: Option<String>,
 }
 
 impl Tmux {
@@ -65,14 +196,14 @@ impl Tmux {
     /// capturing its output to `launch.log`.
     pub fn launch(&self, launch: &Launch) -> CliResult<()> {
         if !Tmux::available() {
-            return Err(CliError::internal("tmux isn't installed").with_hint("install tmux to run workflows"));
+            return Err(CliError::internal("tmux isn't installed").with_hint("install tmux, or use `backend: cmux`"));
         }
         if self.is_alive(launch.name) {
             return Err(CliError::internal(format!("tmux session `{}` already exists", launch.name)));
         }
         let ready = launch.script.with_extension("ready");
         let _ = fs::remove_file(&ready);
-        fs::write(launch.script, script(launch, &ready))?;
+        fs::write(launch.script, script(launch, Capture::AfterStart(&ready)))?;
 
         let cwd = launch.cwd.to_string_lossy();
         let script = launch.script.to_string_lossy();
@@ -125,20 +256,156 @@ impl Tmux {
     }
 }
 
-/// The launcher: set the environment, wait until output capture is attached,
-/// then become the command.
-fn script(launch: &Launch, ready: &Path) -> String {
+// --- cmux ------------------------------------------------------------------
+
+/// The cmux app, through its CLI. Sessions are workspaces, known by id: the
+/// app is shared with the user (and any other tome home), so tome only ever
+/// touches workspaces it recorded, never ones that merely look like its own.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Cmux;
+
+impl Cmux {
+    fn cmd(&self) -> Command {
+        let mut cmd = Command::new("cmux");
+        cmd.env("CMUX_QUIET", "1").stdin(Stdio::null());
+        cmd
+    }
+
+    fn run(&self, args: &[&str]) -> std::io::Result<Output> {
+        self.cmd().args(args).output()
+    }
+
+    /// Whether this process runs inside cmux (and so may use it).
+    pub fn inside() -> bool {
+        ["CMUX_SOCKET_PATH", "CMUX_WORKSPACE_ID"].iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+    }
+
+    /// Whether cmux answers.
+    pub fn available(&self) -> bool {
+        self.run(&["ping"]).is_ok_and(|o| o.status.success())
+    }
+
+    fn unavailable(&self) -> CliError {
+        let why = if Cmux::inside() { "cmux isn't answering" } else { "the tome daemon isn't running inside cmux" };
+        CliError::internal(format!("can't start a cmux workspace: {why}")).with_hint(
+            "start the daemon from a cmux terminal (`tome daemon stop`, then any tome command there), or use `backend: tmux`",
+        )
+    }
+
+    /// Open a workspace (in the background) running `launch`, and return
+    /// its id. Its output is captured with `script`, which keeps the agent
+    /// on a terminal.
+    pub fn launch(&self, launch: &Launch) -> CliResult<String> {
+        if !self.available() {
+            return Err(self.unavailable());
+        }
+        fs::write(launch.script, script(launch, Capture::Script))?;
+        // `--command` is typed into the workspace's shell; the leading space
+        // keeps it out of shell history, `exec` closes the workspace with it.
+        let command = format!(" exec sh {}", shell_quote(&launch.script.to_string_lossy()));
+        let out = self.run(&[
+            "new-workspace",
+            "--name",
+            launch.title,
+            "--cwd",
+            &launch.cwd.to_string_lossy(),
+            "--command",
+            &command,
+            "--focus",
+            "false",
+        ])?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let reference = stdout.trim().strip_prefix("OK ").filter(|_| out.status.success()).ok_or_else(|| {
+            CliError::internal(format!(
+                "cmux couldn't open a workspace for `{}`: {}",
+                launch.name,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        })?;
+        match self.workspaces().and_then(|ws| ws.into_iter().find(|w| w.reference == reference)) {
+            Some(w) => Ok(w.id),
+            None => {
+                let _ = self.run(&["close-workspace", "--workspace", reference]);
+                Err(CliError::internal(format!("cmux opened {reference} but tome couldn't find its id")))
+            }
+        }
+    }
+
+    /// Every workspace in every window; `None` if cmux didn't answer.
+    fn workspaces(&self) -> Option<Vec<Workspace>> {
+        let out = self.run(&["tree", "--all", "--json"]).ok().filter(|o| o.status.success())?;
+        let tree: Value = serde_json::from_slice(&out.stdout).ok()?;
+        let windows = tree["windows"].as_array()?;
+        Some(
+            windows
+                .iter()
+                .flat_map(|w| w["workspaces"].as_array().into_iter().flatten())
+                .filter_map(|w| {
+                    Some(Workspace {
+                        id: w["id"].as_str()?.to_string(),
+                        reference: w["ref"].as_str()?.to_string(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Whether the workspace is still open (it closes when its command
+    /// exits); `None` if cmux didn't answer.
+    pub fn is_alive(&self, id: &str) -> Option<bool> {
+        Some(self.workspaces()?.iter().any(|w| w.id == id))
+    }
+
+    /// Close a workspace. Returns whether it was open.
+    pub fn kill(&self, id: &str) -> bool {
+        self.run(&["close-workspace", "--workspace", id]).is_ok_and(|o| o.status.success())
+    }
+
+    /// Post a cmux notification.
+    pub fn notify(&self, title: &str, body: &str) -> bool {
+        self.run(&["notify", "--title", title, "--body", body]).is_ok_and(|o| o.status.success())
+    }
+}
+
+struct Workspace {
+    id: String,
+    /// `workspace:<n>`
+    reference: String,
+}
+
+// --- launcher --------------------------------------------------------------
+
+enum Capture<'a> {
+    /// The backend captures output once the session has started (tmux
+    /// `pipe-pane`), then creates this file: wait for it.
+    AfterStart(&'a Path),
+    /// Record it with `script`, which runs the command on a new terminal.
+    Script,
+}
+
+/// The launcher: set the environment, arrange for output capture, then
+/// become the command.
+fn script(launch: &Launch, capture: Capture) -> String {
     let mut s = String::from("#!/bin/sh\n");
     for (k, v) in launch.env {
         s.push_str(&format!("export {k}={}\n", shell_quote(v)));
     }
-    let tries = CAPTURE_WAIT.as_millis() / 50;
-    s.push_str(&format!(
-        "i=0; while [ ! -e {} ] && [ $i -lt {tries} ]; do sleep 0.05; i=$((i+1)); done\n",
-        shell_quote(&ready.to_string_lossy())
-    ));
     let argv: Vec<String> = launch.argv.iter().map(|a| shell_quote(a)).collect();
-    s.push_str(&format!("exec {}\n", argv.join(" ")));
+    match capture {
+        Capture::AfterStart(ready) => {
+            let tries = CAPTURE_WAIT.as_millis() / 50;
+            s.push_str(&format!(
+                "i=0; while [ ! -e {} ] && [ $i -lt {tries} ]; do sleep 0.05; i=$((i+1)); done\n",
+                shell_quote(&ready.to_string_lossy())
+            ));
+            s.push_str(&format!("exec {}\n", argv.join(" ")));
+        }
+        Capture::Script => {
+            // BSD script: -a append, -F flush each write, -q no banner.
+            let log = shell_quote(&launch.log.to_string_lossy());
+            s.push_str(&format!("exec script -q -a -F {log} {}\n", argv.join(" ")));
+        }
+    }
     s
 }
 

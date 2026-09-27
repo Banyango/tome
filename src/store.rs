@@ -85,6 +85,8 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (run_id, name)
     );
     ",
+    // 3: the backend's own id for a session (a cmux workspace id)
+    "ALTER TABLE sessions ADD COLUMN handle VARCHAR;",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -221,7 +223,10 @@ pub struct Session {
     pub name: String,
     pub role: String,
     pub backend: String,
+    /// `tmux -L <socket>`; `None` is the default server.
     pub socket: Option<String>,
+    /// The backend's id for the session, when names aren't enough (cmux).
+    pub handle: Option<String>,
     pub harness: Option<String>,
     pub created_at: String,
 }
@@ -657,10 +662,11 @@ impl Store {
 impl Store {
     // --- sessions ----------------------------------------------------------
 
-    pub fn add_session(&mut self, run_id: i64, name: &str, role: &str, backend: &str, socket: Option<&str>, harness: Option<&str>) -> anyhow::Result<()> {
+    /// Record a session (its `created_at` is set to now).
+    pub fn add_session(&mut self, s: &Session) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO sessions (run_id, name, role, backend, socket, harness, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            params![run_id, name, role, backend, socket, harness, now()],
+            "INSERT OR REPLACE INTO sessions (run_id, name, role, backend, socket, handle, harness, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.harness, now()],
         )?;
         Ok(())
     }
@@ -680,7 +686,7 @@ impl Store {
     fn query_sessions(&self, rest: &str, args: &[&dyn duckdb::ToSql]) -> anyhow::Result<Vec<Session>> {
         let mut stmt = self
             .conn
-            .prepare(&format!("SELECT s.run_id, s.name, s.role, s.backend, s.socket, s.harness, s.created_at FROM sessions s {rest}"))?;
+            .prepare(&format!("SELECT s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.harness, s.created_at FROM sessions s {rest}"))?;
         let rows = stmt.query_map(args, |r| {
             Ok(Session {
                 run_id: r.get(0)?,
@@ -688,8 +694,9 @@ impl Store {
                 role: r.get(2)?,
                 backend: r.get(3)?,
                 socket: r.get(4)?,
-                harness: r.get(5)?,
-                created_at: fmt_ts(r.get(6)?),
+                handle: r.get(5)?,
+                harness: r.get(6)?,
+                created_at: fmt_ts(r.get(7)?),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)

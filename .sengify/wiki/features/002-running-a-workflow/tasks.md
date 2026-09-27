@@ -41,3 +41,9 @@ The workflow frontmatter can set `concurrency: N` with `on_conflict: queue | rej
 **Blocked by:** none
 
 `tome workflow new <name> [-d <description>] [--global] [--force]` writes a starter workflow that passes validation: frontmatter with `name`, `description`, an example param and the optional keys commented out, and a body with example steps. It goes where `tome run <name>` will find it: the nearest project `.tome/workflows` (created in the working directory if there is none), or `~/.tome/workflows` with `--global`. It refuses (exit `2`) an invalid name, an existing file unless `--force`, and a second workflow with the same name in the same directory. Creating a project workflow that overrides a global one is allowed and reported. Works without the daemon. An agent can test it by creating a workflow, validating it, and starting a detached run of it by name.
+
+### 002-7. cmux sessions
+
+**Blocked by:** 002-3, 002-4
+
+Agent sessions can run as cmux workspaces as well as tmux sessions. A run's backend is `defaults.backend` (`tmux` or `cmux`), else `TOME_BACKEND`, else `backend:` in `~/.tome/config.yaml`, else cmux when the daemon runs inside cmux and tmux otherwise; an unknown backend is refused (exit `2`) before a run is recorded. A cmux session is an unfocused workspace titled `tome: <workflow> #<id>`, recorded by its workspace id; it closes when the agent exits, its output is captured to the run's log with `script` (the agent keeps a terminal), and cancel, the monitor and recovery close only recorded workspaces, since the app is shared with the user. A run that ends without finishing itself posts a cmux notification (`TOME_NOTIFY=off` disables it). An agent can test it from a cmux terminal by driving a run with a stub orchestrator, then closing, cancelling and orphaning workspaces.

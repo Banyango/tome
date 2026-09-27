@@ -9,7 +9,7 @@ use crate::harness::{self, Harness, Vars};
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::recovery::RecoveryHooks;
-use crate::session::{self, Launch, Tmux};
+use crate::session::{self, Backend, Cmux, Kind, Launch, Tmux};
 use crate::store::{Run, Session};
 use crate::workflow::{self, Frontmatter};
 use std::fs;
@@ -35,6 +35,7 @@ pub fn harness_for(fm: &Frontmatter) -> CliResult<Harness> {
 /// A run's orchestrator, ready to launch.
 pub struct Plan {
     pub harness: Harness,
+    pub backend: Kind,
     pub session: String,
     pub title: String,
     pub cwd: PathBuf,
@@ -51,6 +52,7 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
     let cwd = run.project_path.as_ref().map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(paths::user_home);
     Ok(Plan {
         harness: harness_for(&wf.frontmatter)?,
+        backend: Kind::choose(wf.frontmatter.defaults.backend.as_deref())?,
         session: session::run_session_name(run.id, &run.workflow_name, ROLE),
         title: format!("tome: {} #{}", run.workflow_name, run.id),
         cwd,
@@ -81,9 +83,11 @@ pub fn bootstrap(run: &Run, fm: &Frontmatter, body: &str) -> String {
     out
 }
 
-/// Start the orchestrator's session. The launcher script, the bootstrap
-/// prompt and the session's output all go in the run's directory.
-pub fn launch(tmux: &Tmux, run: &Run, plan: &Plan) -> CliResult<()> {
+/// Start the orchestrator's session and return its record. The launcher
+/// script, the bootstrap prompt and the session's output all go in the
+/// run's directory.
+pub fn launch(run: &Run, plan: &Plan) -> CliResult<Session> {
+    let backend = Backend::new(plan.backend);
     let dir = paths::runs_dir().join(run.id.to_string());
     fs::create_dir_all(&dir)?;
     let prompt_file = dir.join("orchestrator-prompt.md");
@@ -95,26 +99,30 @@ pub fn launch(tmux: &Tmux, run: &Run, plan: &Plan) -> CliResult<()> {
         session: &plan.session,
         cwd: &plan.cwd.to_string_lossy(),
     });
-    tmux.launch(&Launch {
+    let session = backend.launch(&Launch {
         name: &plan.session,
         title: &plan.title,
         cwd: &plan.cwd,
         argv: &argv,
-        env: &session_env(tmux, run.id),
+        env: &session_env(run.id),
         script: &dir.join("orchestrator.sh"),
         log: &dir.join(format!("{ROLE}.log")),
-    })
+    })?;
+    Ok(Session { run_id: run.id, role: ROLE.to_string(), harness: Some(plan.harness.name.clone()), ..session })
 }
 
 /// What a run's agents need to call back into tome.
-fn session_env(tmux: &Tmux, run_id: i64) -> Vec<(String, String)> {
+fn session_env(run_id: i64) -> Vec<(String, String)> {
     let mut env = vec![
         ("TOME_RUN_ID".to_string(), run_id.to_string()),
         ("TOME_OUTPUT".to_string(), "json".to_string()),
         ("TOME_HOME".to_string(), paths::tome_home().to_string_lossy().into_owned()),
     ];
-    if let Some(socket) = &tmux.socket {
-        env.push(("TOME_TMUX_SOCKET".to_string(), socket.clone()));
+    // So that the agent's tome commands reach the same daemon and servers.
+    for key in ["TOME_TMUX_SOCKET", "TOME_BACKEND"] {
+        if let Some(v) = std::env::var(key).ok().filter(|v| !v.is_empty()) {
+            env.push((key.to_string(), v));
+        }
     }
     // Make sure `tome` resolves to this tome.
     let path = std::env::var("PATH").unwrap_or_default();
@@ -126,31 +134,39 @@ fn session_env(tmux: &Tmux, run_id: i64) -> Vec<(String, String)> {
     env
 }
 
-/// Kill every session of a run: the recorded ones (on the server they were
-/// started on) and any other `tome-<id>-*` session on the current server.
+/// Kill every session of a run: the recorded ones (on whatever backend and
+/// server they were started on) and any other `tome-<id>-*` tmux session on
+/// the current server. cmux is shared with the user, so only recorded
+/// workspaces are closed there.
 pub fn kill_sessions(run_id: i64, recorded: &[Session]) {
     for s in recorded {
-        Tmux { socket: s.socket.clone() }.kill(&s.name);
+        session::kill(s);
     }
     Tmux::from_env().kill_prefix(&session::run_prefix(run_id));
+}
+
+/// Tell the user a run ended without finishing itself. It's always logged
+/// (stderr is the daemon log); a run whose orchestrator was in cmux also
+/// gets a cmux notification, unless `TOME_NOTIFY=off`.
+pub fn notify(run: &Run, sessions: &[Session]) {
+    let reason = run.reason.as_deref().unwrap_or("");
+    eprintln!("tome daemon: notify: run {} ({}) {}: {reason}", run.id, run.workflow_name, run.status.as_str());
+    let in_cmux = sessions.iter().any(|s| s.backend == Kind::Cmux.as_str());
+    if in_cmux && std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
+        let title = format!("tome: {} #{} {}", run.workflow_name, run.id, run.status.as_str());
+        Cmux.notify(&title, reason);
+    }
 }
 
 /// The daemon's hooks for runs that end without finishing themselves.
 pub struct Hooks;
 
 impl RecoveryHooks for Hooks {
-    fn kill_sessions(&self, run: &Run) {
-        kill_sessions(run.id, &[]);
+    fn kill_sessions(&self, run: &Run, sessions: &[Session]) {
+        kill_sessions(run.id, sessions);
     }
 
-    /// Notifications are a later feature; for now the daemon log says it.
-    fn notify(&self, run: &Run) {
-        eprintln!(
-            "tome daemon: notify: run {} ({}) {}: {}",
-            run.id,
-            run.workflow_name,
-            run.status.as_str(),
-            run.reason.as_deref().unwrap_or("")
-        );
+    fn notify(&self, run: &Run, sessions: &[Session]) {
+        notify(run, sessions);
     }
 }

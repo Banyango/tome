@@ -9,10 +9,9 @@
 //! way.
 
 use crate::api::{self, internal, opt_str, req_id, req_id_at, req_str};
-use crate::orchestrator::{self, Hooks};
+use crate::orchestrator;
 use crate::output::{CliError, CliResult};
-use crate::recovery::RecoveryHooks;
-use crate::session::Tmux;
+use crate::session;
 use crate::store::{self, Run, RunStatus, StepEvent, StepHistory, Store};
 use serde_json::{json, Value};
 use crate::workflow::{self, OnConflict};
@@ -55,7 +54,6 @@ pub struct Engine {
     watchers: Mutex<HashMap<i64, Watchers>>,
     /// Runs whose orchestrator is being started; the monitor leaves them be.
     launching: Mutex<HashSet<i64>>,
-    tmux: Tmux,
 }
 
 impl Engine {
@@ -64,7 +62,6 @@ impl Engine {
             store: Mutex::new(Some(store)),
             watchers: Mutex::new(HashMap::new()),
             launching: Mutex::new(HashSet::new()),
-            tmux: Tmux::from_env(),
         }
     }
 
@@ -102,8 +99,10 @@ impl Engine {
     fn start(&self, p: &Value) -> CliResult<Run> {
         let wf = api::load_workflow(p)?;
         let fm = &wf.frontmatter;
-        // An unknown harness is a bad request: refuse before recording a run.
+        // An unknown harness or backend is a bad request: refuse before
+        // recording a run.
         orchestrator::harness_for(fm)?;
+        session::Kind::choose(fm.defaults.backend.as_deref())?;
         let run = self.with_store(|store| {
             let status = match fm.concurrency {
                 None => RunStatus::Running,
@@ -163,13 +162,11 @@ impl Engine {
     fn launch(&self, run: Run) -> CliResult<Run> {
         self.launching.lock().unwrap_or_else(|p| p.into_inner()).insert(run.id);
         let result = orchestrator::plan(&run).and_then(|plan| {
-            // Recorded first, so that the monitor sees it as soon as it runs.
-            self.with_store(|store| {
-                store
-                    .add_session(run.id, &plan.session, orchestrator::ROLE, crate::session::BACKEND, self.tmux.socket.as_deref(), Some(&plan.harness.name))
-                    .map_err(internal)
-            })?;
-            orchestrator::launch(&self.tmux, &run, &plan)
+            let session = orchestrator::launch(&run, &plan)?;
+            // Recorded before the monitor may look (it skips launching runs).
+            self.with_store(|store| store.add_session(&session).map_err(internal)).inspect_err(|_| {
+                session::kill(&session);
+            })
         });
         self.launching.lock().unwrap_or_else(|p| p.into_inner()).remove(&run.id);
         match result {
@@ -231,9 +228,12 @@ impl Engine {
         Ok(run)
     }
 
+    fn recorded_sessions(&self, run_id: i64) -> Vec<store::Session> {
+        self.with_store(|store| store.sessions(run_id).map_err(internal)).unwrap_or_default()
+    }
+
     fn kill_sessions(&self, run_id: i64) {
-        let recorded = self.with_store(|store| store.sessions(run_id).map_err(internal)).unwrap_or_default();
-        orchestrator::kill_sessions(run_id, &recorded);
+        orchestrator::kill_sessions(run_id, &self.recorded_sessions(run_id));
     }
 
     /// Fail running runs whose orchestrator has exited without finishing the
@@ -248,7 +248,8 @@ impl Engine {
                 if self.launching.lock().unwrap_or_else(|p| p.into_inner()).contains(&s.run_id) {
                     continue;
                 }
-                if (Tmux { socket: s.socket.clone() }).is_alive(&s.name) {
+                // Alive, or can't tell right now: look again next time.
+                if session::is_alive(&s) != Some(false) {
                     continue;
                 }
                 let ended = self.with_store(|store| {
@@ -263,8 +264,9 @@ impl Engine {
                 if let Ok(Some(run)) = ended {
                     eprintln!("tome daemon: run {} ({}) failed: {}", run.id, run.workflow_name, orchestrator::EXITED);
                     // Its workers have no one to report to.
-                    self.kill_sessions(run.id);
-                    Hooks.notify(&run);
+                    let recorded = self.recorded_sessions(run.id);
+                    orchestrator::kill_sessions(run.id, &recorded);
+                    orchestrator::notify(&run, &recorded);
                     self.promote(&run.workflow_name);
                 }
             }
