@@ -21,6 +21,8 @@ pub mod exit {
     pub const DAEMON_UNAVAILABLE: i32 = 3;
     /// The requested object (run, workflow, ...) doesn't exist.
     pub const NOT_FOUND: i32 = 4;
+    /// An attached run ended cancelled (Ctrl-C or `tome run cancel`).
+    pub const CANCELLED: i32 = 130;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,11 +170,19 @@ pub struct Report {
     pub data: Value,
     pub human: String,
     pub exit_code: i32,
+    /// Already printed while the command ran (e.g. a streamed run).
+    pub printed: bool,
 }
 
 impl Report {
     pub fn new(data: Value, human: impl Into<String>) -> Self {
-        Report { data, human: human.into(), exit_code: exit::OK }
+        Report { data, human: human.into(), exit_code: exit::OK, printed: false }
+    }
+
+    /// Output that was already written as it happened; `emit` only sets the
+    /// exit code.
+    pub fn printed(data: Value, exit_code: i32) -> Self {
+        Report { data, human: String::new(), exit_code, printed: true }
     }
 
     pub fn with_exit(mut self, code: i32) -> Self {
@@ -183,6 +193,7 @@ impl Report {
 
 pub fn emit(mode: Mode, result: CliResult<Report>) -> i32 {
     match result {
+        Ok(report) if report.printed => report.exit_code,
         Ok(report) => {
             match mode {
                 Mode::Json => println!("{}", report.data),

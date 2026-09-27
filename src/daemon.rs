@@ -6,11 +6,11 @@
 //! detected and replaced safely.
 
 use crate::api;
-use crate::engine::Engine;
+use crate::engine::{Engine, Sink};
 use crate::output::CliResult;
 use crate::paths;
 use crate::recovery;
-use crate::rpc::{codes, Request, Response};
+use crate::rpc::{self, codes, Request, Response};
 use crate::store::Store;
 use anyhow::{bail, Context};
 use serde_json::{json, Value};
@@ -139,6 +139,12 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
             continue;
         }
         let (resp, shutdown) = match serde_json::from_str::<Request>(&line) {
+            Ok(req) if streams(&req) => match stream_run(daemon, &req, &mut writer) {
+                Some(Ok(value)) => (Response::ok(req.id, value), false),
+                Some(Err(err)) => (Response::from_cli_error(req.id, &err), false),
+                // The caller went away mid-stream.
+                None => return,
+            },
             Ok(req) => match daemon.handle(&req) {
                 Some((Ok(value), shutdown)) => (Response::ok(req.id, value), shutdown),
                 Some((Err(err), shutdown)) => (Response::from_cli_error(req.id, &err), shutdown),
@@ -149,14 +155,68 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
             },
             Err(e) => (Response::err(Value::Null, codes::PARSE_ERROR, format!("invalid request: {e}"), None), false),
         };
-        let mut out = serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into());
-        out.push('\n');
-        if writer.write_all(out.as_bytes()).is_err() {
+        if write_line(&mut writer, &resp).is_err() {
             return;
         }
-        let _ = writer.flush();
         if shutdown {
             daemon.shutdown();
         }
     }
+}
+
+/// Requests answered with a stream of `run.event` notifications before
+/// their response: `run.start {attach: true}` and `run.watch`.
+fn streams(req: &Request) -> bool {
+    req.method == "run.watch" || (req.method == "run.start" && req.params["attach"] == true)
+}
+
+/// Serve a streaming request. `None` if the caller disconnected first.
+fn stream_run(daemon: &Daemon, req: &Request, writer: &mut UnixStream) -> Option<CliResult<Value>> {
+    let mut sink = SocketSink { out: writer };
+    let result = if req.method == "run.watch" {
+        match api::req_id(&req.params) {
+            Ok(id) => daemon.engine.watch(id, req.params["cancel_on_disconnect"] == true, &mut sink),
+            Err(e) => Some(Err(e)),
+        }
+    } else {
+        daemon.engine.start_attached(&req.params, &mut sink)
+    };
+    result.map(|r| r.map(|run| json!(run)))
+}
+
+/// Writes events to a client as JSON-RPC notifications.
+struct SocketSink<'a> {
+    out: &'a mut UnixStream,
+}
+
+impl Sink for SocketSink<'_> {
+    fn send(&mut self, event: &Value) -> std::io::Result<()> {
+        write_line(self.out, &json!({ "jsonrpc": rpc::JSONRPC, "method": rpc::EVENT, "params": event }))
+    }
+
+    /// The client never writes during a stream, so a readable socket with
+    /// nothing to read means it closed its end.
+    fn gone(&mut self) -> bool {
+        let fd = self.out.as_raw_fd();
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: polling and peeking one valid descriptor we own.
+        unsafe {
+            if libc::poll(&mut pfd, 1, 0) <= 0 {
+                return false;
+            }
+            if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                return true;
+            }
+            let mut byte = 0u8;
+            let n = libc::recv(fd, (&mut byte as *mut u8).cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT);
+            n == 0 || (n < 0 && !matches!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted))
+        }
+    }
+}
+
+fn write_line(out: &mut UnixStream, value: &impl serde::Serialize) -> std::io::Result<()> {
+    let mut line = serde_json::to_string(value).unwrap_or_else(|_| "{}".into());
+    line.push('\n');
+    out.write_all(line.as_bytes())?;
+    out.flush()
 }

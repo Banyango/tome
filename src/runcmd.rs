@@ -3,12 +3,17 @@
 //! The run-side commands are what an orchestrator calls. They find their run
 //! through `--run <id>` or `TOME_RUN_ID`.
 
-use crate::output::{CliError, CliResult, Report};
+use crate::engine::reason;
+use crate::output::{exit, CliError, CliResult, Mode, Report};
 use crate::paths;
 use crate::rpc;
 use crate::workflow::Library;
+use chrono::{Local, NaiveDateTime, TimeZone};
 use serde_json::{json, Value};
+use std::cell::Cell;
+use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn call(method: &str, params: Value) -> CliResult<Value> {
     rpc::call(&paths::socket_path(), method, params)
@@ -38,6 +43,108 @@ pub fn start_detached(cwd: &Path, target: &str, params: &[String]) -> CliResult<
     let run = call("run.start", start_params(cwd, target, params)?)?;
     let human = format!("run {} {} ({})", run["id"], run["status"].as_str().unwrap_or("?"), s(&run["workflow_name"]));
     Ok(Report::new(run, human))
+}
+
+/// `tome run <wf>`: start the run and stream its events until it finishes,
+/// one line per transition (NDJSON in JSON mode). Exits with the run's
+/// outcome: `0` succeeded, `1` failed, `130` cancelled.
+///
+/// Ctrl-C (or SIGTERM/SIGHUP) cancels the run and waits for the daemon to
+/// confirm; a second one exits right away. If this process dies instead, the
+/// daemon notices the closed connection and cancels the run itself.
+pub fn start_attached(cwd: &Path, target: &str, params: &[String], mode: Mode) -> CliResult<Report> {
+    let mut start = start_params(cwd, target, params)?;
+    start["attach"] = json!(true);
+    let mut client = rpc::Client::connect(&paths::socket_path())?;
+    install_signal_handlers();
+
+    let run_id: Cell<Option<i64>> = Cell::new(None);
+    let mut cancel_sent = false;
+    let run = client.stream(
+        "run.start",
+        start,
+        |event| {
+            run_id.set(run_id.get().or(event["run_id"].as_i64()));
+            print_event(event, mode);
+        },
+        || {
+            match SIGNALS.load(Ordering::SeqCst) {
+                0 => {}
+                1 => {
+                    if let (Some(id), false) = (run_id.get(), cancel_sent) {
+                        cancel_sent = true;
+                        // Finished in the meantime is fine: its final event is on the way.
+                        let _ = call("run.cancel", json!({ "id": id, "reason": reason::INTERRUPTED }));
+                    }
+                }
+                _ => std::process::exit(exit::CANCELLED),
+            }
+            Ok(())
+        },
+    )?;
+    let code = match run["status"].as_str() {
+        Some("succeeded") => exit::OK,
+        Some("cancelled") => exit::CANCELLED,
+        _ => exit::FAILURE,
+    };
+    Ok(Report::printed(run, code))
+}
+
+/// Signals received while attached.
+static SIGNALS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    SIGNALS.fetch_add(1, Ordering::SeqCst);
+}
+
+fn install_signal_handlers() {
+    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: the handler only touches an atomic.
+        unsafe { libc::signal(sig, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t) };
+    }
+}
+
+fn print_event(event: &Value, mode: Mode) {
+    let line = match mode {
+        Mode::Json => event.to_string(),
+        Mode::Human => event_line(event),
+    };
+    // Nowhere to report a closed stdout; the run carries on regardless.
+    let _ = writeln!(std::io::stdout(), "{line}");
+}
+
+/// `[14:02:31] Implement: done (tests pass)` / `[14:02:31] run 42 succeeded: shipped`
+fn event_line(ev: &Value) -> String {
+    let time = ev["time"].as_str().and_then(clock).unwrap_or_default();
+    match ev["type"].as_str() {
+        Some("step") => {
+            let what = match ev["event"].as_str() {
+                Some("start") => "started",
+                Some("done") => "done",
+                _ => "failed",
+            };
+            let mut line = format!("[{time}] {}: {what}", s(&ev["step"]));
+            if let Some(m) = ev["message"].as_str() {
+                line.push_str(&format!(" ({m})"));
+            }
+            line
+        }
+        _ => {
+            let status = s(&ev["status"]);
+            let mut line = format!("[{time}] run {} {status}", ev["run_id"]);
+            match ev["summary"].as_str().or(ev["reason"].as_str()) {
+                Some(detail) if status != "running" && status != "queued" => line.push_str(&format!(": {detail}")),
+                _ => line.push_str(&format!(" ({})", s(&ev["workflow"]))),
+            }
+            line
+        }
+    }
+}
+
+/// A stored UTC timestamp as local `HH:MM:SS`.
+fn clock(utc: &str) -> Option<String> {
+    let naive = NaiveDateTime::parse_from_str(utc, "%Y-%m-%dT%H:%M:%S%.fZ").ok()?;
+    Some(Local.from_utc_datetime(&naive).format("%H:%M:%S").to_string())
 }
 
 /// `tome run finish --status succeeded|failed [--summary ...]`

@@ -246,11 +246,11 @@ fn main() {
         return;
     }
 
-    let code = emit(mode, dispatch(cli.command));
+    let code = emit(mode, dispatch(cli.command, mode));
     std::process::exit(code);
 }
 
-fn dispatch(command: Command) -> CliResult<Report> {
+fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
     match command {
         Command::Daemon { command } => match command {
             DaemonCommand::Start => lifecycle::start(),
@@ -272,10 +272,11 @@ fn dispatch(command: Command) -> CliResult<Report> {
         },
         Command::Run { command: None, workflow, params, detach } => {
             let workflow = workflow.expect("clap requires a workflow");
-            if !detach {
-                return Err(output::CliError::invalid("attached runs aren't supported yet; pass --detach"));
+            if detach {
+                runcmd::start_detached(&current_dir()?, &workflow, &params)
+            } else {
+                runcmd::start_attached(&current_dir()?, &workflow, &params, mode)
             }
-            runcmd::start_detached(&current_dir()?, &workflow, &params)
         }
         Command::Step { command } => match command {
             StepCommand::Start { name, report } => runcmd::step("start", Some(name), report.message, report.run),

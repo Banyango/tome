@@ -14,6 +14,13 @@ use std::time::Duration;
 
 pub const JSONRPC: &str = "2.0";
 
+/// Method of the notifications a streaming request (`run.start {attach}`,
+/// `run.watch`) receives before its response; `params` is the event.
+pub const EVENT: &str = "run.event";
+
+/// How long a streaming read waits before giving the caller a turn.
+const STREAM_POLL: Duration = Duration::from_millis(200);
+
 /// JSON-RPC error codes.
 pub mod codes {
     pub const PARSE_ERROR: i64 = -32700;
@@ -127,15 +134,7 @@ impl Client {
     }
 
     pub fn call(&mut self, method: &str, params: Value) -> CliResult<Value> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let req = Request { jsonrpc: JSONRPC.into(), id: json!(id), method: method.into(), params };
-        let mut line = serde_json::to_string(&req).map_err(|e| CliError::internal(e.to_string()))?;
-        line.push('\n');
-        self.writer
-            .write_all(line.as_bytes())
-            .map_err(|e| CliError::internal(format!("failed to send request to daemon: {e}")))?;
-
+        self.send(method, params)?;
         let mut buf = String::new();
         let n = self
             .reader
@@ -144,13 +143,65 @@ impl Client {
         if n == 0 {
             return Err(CliError::internal("daemon closed the connection without responding"));
         }
-        let resp: Response = serde_json::from_str(&buf)
-            .map_err(|e| CliError::internal(format!("malformed daemon response: {e}")))?;
-        match (resp.result, resp.error) {
-            (_, Some(err)) => Err(err.into_cli_error()),
-            (Some(result), None) => Ok(result),
-            (None, None) => Ok(Value::Null),
+        parse_response(buf.as_bytes())
+    }
+
+    /// Make a streaming request: `on_event` gets each `run.event`
+    /// notification until the response arrives. While nothing arrives,
+    /// `on_idle` is called every [`STREAM_POLL`]; an error from it ends the
+    /// stream.
+    pub fn stream(
+        &mut self,
+        method: &str,
+        params: Value,
+        mut on_event: impl FnMut(&Value),
+        mut on_idle: impl FnMut() -> CliResult<()>,
+    ) -> CliResult<Value> {
+        self.send(method, params)?;
+        self.reader.get_ref().set_read_timeout(Some(STREAM_POLL))?;
+        // Kept across timeouts: a read can stop mid-line.
+        let mut buf = Vec::new();
+        loop {
+            match self.reader.read_until(b'\n', &mut buf) {
+                Ok(0) => return Err(CliError::internal("the daemon closed the connection mid-run")),
+                Ok(_) if buf.ends_with(b"\n") => {
+                    let line = std::mem::take(&mut buf);
+                    let msg: Value = serde_json::from_slice(&line)
+                        .map_err(|e| CliError::internal(format!("malformed daemon message: {e}")))?;
+                    if msg["method"] == EVENT {
+                        on_event(&msg["params"]);
+                    } else {
+                        return parse_response(&line);
+                    }
+                }
+                Ok(_) => {}
+                Err(e) if matches!(e.kind(), IoErrorKind::WouldBlock | IoErrorKind::TimedOut | IoErrorKind::Interrupted) => {
+                    on_idle()?
+                }
+                Err(e) => return Err(CliError::internal(format!("failed to read from the daemon: {e}"))),
+            }
         }
+    }
+
+    fn send(&mut self, method: &str, params: Value) -> CliResult<()> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let req = Request { jsonrpc: JSONRPC.into(), id: json!(id), method: method.into(), params };
+        let mut line = serde_json::to_string(&req).map_err(|e| CliError::internal(e.to_string()))?;
+        line.push('\n');
+        self.writer
+            .write_all(line.as_bytes())
+            .map_err(|e| CliError::internal(format!("failed to send request to daemon: {e}")))
+    }
+}
+
+fn parse_response(line: &[u8]) -> CliResult<Value> {
+    let resp: Response =
+        serde_json::from_slice(line).map_err(|e| CliError::internal(format!("malformed daemon response: {e}")))?;
+    match (resp.result, resp.error) {
+        (_, Some(err)) => Err(err.into_cli_error()),
+        (Some(result), None) => Ok(result),
+        (None, None) => Ok(Value::Null),
     }
 }
 
