@@ -1,6 +1,7 @@
 mod api;
 mod daemon;
 mod duration;
+mod engine;
 mod gc;
 mod inspect;
 mod lifecycle;
@@ -9,6 +10,7 @@ mod paths;
 mod query;
 mod recovery;
 mod rpc;
+mod runcmd;
 mod service;
 mod store;
 mod validate;
@@ -44,6 +46,26 @@ enum Command {
         #[arg(long = "param", value_name = "KEY=VALUE")]
         params: Vec<String>,
     },
+    /// Start a workflow run (`tome run <workflow>`), or finish/cancel one.
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+    Run {
+        #[command(subcommand)]
+        command: Option<RunCommand>,
+        /// Workflow name or path to a workflow file.
+        #[arg(required = true)]
+        workflow: Option<String>,
+        /// Set a parameter (key=value); repeatable.
+        #[arg(long = "param", value_name = "KEY=VALUE")]
+        params: Vec<String>,
+        /// Return the run id right away instead of streaming the run.
+        #[arg(long)]
+        detach: bool,
+    },
+    /// Report step progress for a run (used by the orchestrator).
+    Step {
+        #[command(subcommand)]
+        command: StepCommand,
+    },
     /// Inspect current and past runs.
     Runs {
         #[command(subcommand)]
@@ -63,6 +85,63 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum RunCommand {
+    /// End a run with its final status (used by the orchestrator).
+    Finish {
+        /// Final status: succeeded or failed.
+        #[arg(long)]
+        status: String,
+        /// A short summary of the outcome.
+        #[arg(long)]
+        summary: Option<String>,
+        /// Run id (defaults to TOME_RUN_ID).
+        #[arg(long = "run", env = "TOME_RUN_ID", value_name = "ID")]
+        run: Option<String>,
+    },
+    /// Cancel a run: kill its sessions, keep its worktrees.
+    Cancel {
+        /// Run id (defaults to TOME_RUN_ID).
+        #[arg(env = "TOME_RUN_ID")]
+        id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum StepCommand {
+    /// Report that a step has started (again, if it's being retried).
+    Start {
+        /// Step name, usually the workflow heading it carries out.
+        name: String,
+        #[command(flatten)]
+        report: StepReport,
+    },
+    /// Report that a step is done (defaults to the running step).
+    Done {
+        /// Step name.
+        name: Option<String>,
+        #[command(flatten)]
+        report: StepReport,
+    },
+    /// Report that a step failed (defaults to the running step).
+    Fail {
+        /// Step name.
+        name: Option<String>,
+        #[command(flatten)]
+        report: StepReport,
+    },
+}
+
+#[derive(clap::Args)]
+struct StepReport {
+    /// A short note recorded with the transition.
+    #[arg(long, short)]
+    message: Option<String>,
+    /// Run id (defaults to TOME_RUN_ID).
+    #[arg(long = "run", env = "TOME_RUN_ID", value_name = "ID")]
+    run: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -158,6 +237,22 @@ fn dispatch(command: Command) -> CliResult<Report> {
             DaemonCommand::Run => unreachable!("handled in main"),
         },
         Command::Validate { workflow, params } => validate::run(&current_dir()?, workflow.as_deref(), &params),
+        Command::Run { command: Some(command), .. } => match command {
+            RunCommand::Finish { status, summary, run } => runcmd::finish(run, &status, summary),
+            RunCommand::Cancel { id } => runcmd::cancel(id),
+        },
+        Command::Run { command: None, workflow, params, detach } => {
+            let workflow = workflow.expect("clap requires a workflow");
+            if !detach {
+                return Err(output::CliError::invalid("attached runs aren't supported yet; pass --detach"));
+            }
+            runcmd::start_detached(&current_dir()?, &workflow, &params)
+        }
+        Command::Step { command } => match command {
+            StepCommand::Start { name, report } => runcmd::step("start", Some(name), report.message, report.run),
+            StepCommand::Done { name, report } => runcmd::step("done", name, report.message, report.run),
+            StepCommand::Fail { name, report } => runcmd::step("fail", name, report.message, report.run),
+        },
         Command::Runs { command } => match command {
             RunsCommand::List { status, workflow, limit } => inspect::list(status, workflow, limit),
             RunsCommand::Show { id, snapshot } => inspect::show(&id, snapshot),

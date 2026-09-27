@@ -206,6 +206,8 @@ pub struct NewRun<'a> {
     pub workflow_path: Option<&'a Path>,
     pub project_path: Option<&'a Path>,
     pub params: &'a Map<String, Value>,
+    /// `Running`, or `Queued` for a run waiting on a concurrency slot.
+    pub status: RunStatus,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -324,7 +326,7 @@ impl Store {
                 new.project_path.map(|p| p.display().to_string()),
                 Value::Object(new.params.clone()).to_string(),
                 snapshot,
-                RunStatus::Running.as_str(),
+                new.status.as_str(),
                 now(),
             ],
         )?;
@@ -418,7 +420,35 @@ impl Store {
         self.require_run(id)
     }
 
+    /// Cancel an unfinished run: any step still running is failed with
+    /// `reason`, then the run is marked `cancelled`.
+    pub fn cancel_run(&mut self, id: i64, reason: &str) -> CliResult<Run> {
+        let run = self.require_run(id)?;
+        if run.status.is_finished() {
+            return Err(CliError::invalid(format!("run {id} has already finished ({})", run.status.as_str())));
+        }
+        for step in self.steps(id).map_err(internal_any)? {
+            if step.status == "running" {
+                self.report_step(id, &step.name, StepEvent::Fail, Some(reason))?;
+            }
+        }
+        self.finish_run(id, RunStatus::Cancelled, Some(reason), None)
+    }
+
     // --- steps -------------------------------------------------------------
+
+    /// The step a bare `tome step done|fail` refers to: the most recently
+    /// started step that's still running.
+    pub fn current_step(&self, run_id: i64) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT name FROM steps WHERE run_id = ? AND status = 'running' ORDER BY started_at DESC, name LIMIT 1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
 
     /// Record a step transition reported by the orchestrator.
     pub fn report_step(&mut self, run_id: i64, step: &str, event: StepEvent, message: Option<&str>) -> CliResult<Step> {
@@ -633,7 +663,13 @@ mod tests {
         let params = json!({"base": "main"}).as_object().unwrap().clone();
         store
             .create_run(
-                NewRun { workflow_name: name, workflow_path: None, project_path: Some(Path::new("/proj")), params: &params },
+                NewRun {
+                    workflow_name: name,
+                    workflow_path: None,
+                    project_path: Some(Path::new("/proj")),
+                    params: &params,
+                    status: RunStatus::Running,
+                },
                 |id| format!("snapshot for run {id}"),
             )
             .unwrap()
@@ -712,6 +748,23 @@ mod tests {
         assert!(store.finish_run(run.id, RunStatus::Failed, None, None).is_err());
         assert!(store.report_step(run.id, "x", StepEvent::Start, None).is_err());
         assert_eq!(store.finish_run(999, RunStatus::Failed, None, None).unwrap_err().kind, crate::output::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn cancel_fails_running_steps() {
+        let (_d, mut store) = store();
+        let run = new_run(&mut store, "wf");
+        store.report_step(run.id, "Build", StepEvent::Start, None).unwrap();
+        store.report_step(run.id, "Build", StepEvent::Done, None).unwrap();
+        store.report_step(run.id, "Test", StepEvent::Start, None).unwrap();
+        assert_eq!(store.current_step(run.id).unwrap().as_deref(), Some("Test"));
+        let done = store.cancel_run(run.id, "user_cancelled").unwrap();
+        assert_eq!(done.status, RunStatus::Cancelled);
+        assert_eq!(done.reason.as_deref(), Some("user_cancelled"));
+        let steps = store.steps(run.id).unwrap();
+        assert_eq!(steps.iter().map(|s| s.status.as_str()).collect::<Vec<_>>(), ["done", "failed"]);
+        assert!(store.current_step(run.id).unwrap().is_none());
+        assert!(store.cancel_run(run.id, "again").is_err());
     }
 
     #[test]

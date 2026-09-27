@@ -71,7 +71,13 @@ mod tests {
         let mut new = || {
             store
                 .create_run(
-                    NewRun { workflow_name: "w", workflow_path: None, project_path: None, params: &params },
+                    NewRun {
+                        workflow_name: "w",
+                        workflow_path: None,
+                        project_path: None,
+                        params: &params,
+                        status: RunStatus::Running,
+                    },
                     |_| String::new(),
                 )
                 .unwrap()

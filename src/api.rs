@@ -4,16 +4,14 @@
 use crate::output::{CliError, CliResult};
 use crate::gc;
 use crate::query;
-use crate::store::{self, NewRun, RunFilter, RunStatus, StepEvent, Store};
-use crate::workflow::{self, Invalid};
+use crate::store::{self, NewRun, Run, RunFilter, RunStatus, Store};
+use crate::workflow::{self, Invalid, Workflow};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 const METHODS: &[&str] = &[
     "run.create",
     "run.get",
-    "run.finish",
-    "step.report",
     "worktree.add",
     "runs.list",
     "runs.show",
@@ -33,8 +31,6 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> CliResult<Va
     match method {
         "run.create" => run_create(store, params),
         "run.get" => run_get(store, params),
-        "run.finish" => run_finish(store, params),
-        "step.report" => step_report(store, params),
         "worktree.add" => worktree_add(store, params),
         "runs.list" => runs_list(store, params),
         "runs.show" => runs_show(store, params),
@@ -47,17 +43,30 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> CliResult<Va
 
 /// `run.create {workflow_path, project_path?, source?, params?: ["k=v", ...]}`
 ///
-/// Re-validates the workflow (the same checks as `tome validate`), resolves
-/// params, and saves the resolved snapshot with the run so later edits to the
-/// file only affect new runs.
+/// Records a running run without launching anything. `run.start` is what
+/// `tome run` uses.
 fn run_create(store: &mut Store, p: &Value) -> CliResult<Value> {
+    let wf = load_workflow(p)?;
+    let (run, _) = create_run(store, p, &wf, RunStatus::Running)?;
+    Ok(json!(run))
+}
+
+/// The workflow a `run.create`/`run.start` request names: `source` if given
+/// (what the CLI read), otherwise the file at `workflow_path`. Invalid
+/// workflows are `invalid_workflow` errors (exit 2).
+pub fn load_workflow(p: &Value) -> CliResult<Workflow> {
     let path = PathBuf::from(req_str(p, "workflow_path")?);
-    let wf = match p.get("source").and_then(Value::as_str) {
+    match p.get("source").and_then(Value::as_str) {
         Some(source) => workflow::parse(&path, source),
         None => workflow::load(&path),
     }
-    .map_err(Invalid::into_cli_error)?;
+    .map_err(Invalid::into_cli_error)
+}
 
+/// Resolve the request's `params` against the workflow and record the run
+/// with its resolved snapshot, so later edits to the file only affect new
+/// runs. Also returns the rendered body.
+pub fn create_run(store: &mut Store, p: &Value, wf: &Workflow, status: RunStatus) -> CliResult<(Run, String)> {
     let args: Vec<String> = match p.get("params") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(items)) => items.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect(),
@@ -67,18 +76,23 @@ fn run_create(store: &mut Store, p: &Value) -> CliResult<Value> {
     let params = wf.resolve_params(&overrides, true).map_err(Invalid::into_cli_error)?;
     let project = opt_str(p, "project_path").map(PathBuf::from);
 
+    let mut body = String::new();
     let run = store
         .create_run(
             NewRun {
                 workflow_name: wf.name(),
-                workflow_path: Some(&path),
+                workflow_path: Some(&wf.path),
                 project_path: project.as_deref(),
                 params: &params,
+                status,
             },
-            |id| wf.render_snapshot(&params, &id.to_string()),
+            |id| {
+                body = wf.render_body(&params, &id.to_string());
+                wf.render_snapshot(&params, &id.to_string())
+            },
         )
-        .map_err(|e| CliError::internal(format!("{e:#}")))?;
-    Ok(json!(run))
+        .map_err(internal)?;
+    Ok((run, body))
 }
 
 /// `run.get {id}`: the run including its workflow snapshot.
@@ -89,25 +103,6 @@ fn run_get(store: &mut Store, p: &Value) -> CliResult<Value> {
         .map_err(|e| CliError::internal(format!("{e:#}")))?
         .ok_or_else(|| CliError::not_found(format!("no run with id {id}")))?;
     Ok(json!(run))
-}
-
-/// `run.finish {id, status, reason?, summary?}`
-fn run_finish(store: &mut Store, p: &Value) -> CliResult<Value> {
-    let id = req_id(p)?;
-    let status = req_str(p, "status")?;
-    let status = RunStatus::parse(status)
-        .filter(|s| s.is_finished())
-        .ok_or_else(|| CliError::invalid(format!("invalid status `{status}` (use succeeded, failed or cancelled)")))?;
-    Ok(json!(store.finish_run(id, status, opt_str(p, "reason"), opt_str(p, "summary"))?))
-}
-
-/// `step.report {run_id, step, event: start|done|fail, message?}`
-fn step_report(store: &mut Store, p: &Value) -> CliResult<Value> {
-    let run_id = p.get("run_id").and_then(Value::as_i64).ok_or_else(|| CliError::invalid("missing integer `run_id`"))?;
-    let event = req_str(p, "event")?;
-    let event = StepEvent::parse(event)
-        .ok_or_else(|| CliError::invalid(format!("invalid event `{event}` (use start, done or fail)")))?;
-    Ok(json!(store.report_step(run_id, req_str(p, "step")?, event, opt_str(p, "message"))?))
 }
 
 /// `worktree.add {run_id, path, repo_path?, branch?}`: record a worktree a run
@@ -188,17 +183,22 @@ fn query_sql(store: &mut Store, p: &Value) -> CliResult<Value> {
     Ok(json!({ "columns": result.columns, "rows": result.rows }))
 }
 
-fn internal(e: anyhow::Error) -> CliError {
+pub fn internal(e: anyhow::Error) -> CliError {
     CliError::internal(format!("{e:#}"))
 }
 
 pub fn req_id(p: &Value) -> CliResult<i64> {
-    match p.get("id") {
+    req_id_at(p, "id")
+}
+
+/// A run id given as a number or a string like `42` / `#42`.
+pub fn req_id_at(p: &Value, key: &str) -> CliResult<i64> {
+    match p.get(key) {
         Some(Value::Number(n)) => n.as_i64(),
         Some(Value::String(s)) => s.trim().trim_start_matches('#').parse().ok(),
         _ => None,
     }
-    .ok_or_else(|| CliError::invalid("missing or invalid run `id`"))
+    .ok_or_else(|| CliError::invalid(format!("missing or invalid run `{key}`")))
 }
 
 pub fn req_str<'a>(p: &'a Value, key: &str) -> CliResult<&'a str> {
