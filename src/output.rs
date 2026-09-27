@@ -51,6 +51,8 @@ pub enum ErrorKind {
     InvalidWorkflow,
     DaemonNotRunning,
     NotFound,
+    /// Refused because of the state things are in (e.g. a concurrency limit).
+    Conflict,
 }
 
 impl ErrorKind {
@@ -61,6 +63,7 @@ impl ErrorKind {
             ErrorKind::InvalidWorkflow => "invalid_workflow",
             ErrorKind::DaemonNotRunning => "daemon_not_running",
             ErrorKind::NotFound => "not_found",
+            ErrorKind::Conflict => "conflict",
         }
     }
 
@@ -70,13 +73,14 @@ impl ErrorKind {
             "invalid_workflow" => ErrorKind::InvalidWorkflow,
             "daemon_not_running" => ErrorKind::DaemonNotRunning,
             "not_found" => ErrorKind::NotFound,
+            "conflict" => ErrorKind::Conflict,
             _ => ErrorKind::Internal,
         }
     }
 
     pub fn exit_code(self) -> i32 {
         match self {
-            ErrorKind::Internal => exit::FAILURE,
+            ErrorKind::Internal | ErrorKind::Conflict => exit::FAILURE,
             ErrorKind::Invalid | ErrorKind::InvalidWorkflow => exit::INVALID,
             ErrorKind::DaemonNotRunning => exit::DAEMON_UNAVAILABLE,
             ErrorKind::NotFound => exit::NOT_FOUND,
@@ -108,6 +112,10 @@ impl CliError {
 
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::NotFound, message)
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Conflict, message)
     }
 
     pub fn daemon_not_running() -> Self {

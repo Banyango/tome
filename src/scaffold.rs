@@ -72,7 +72,7 @@ params:
 #   orchestrator_harness: claude
 #   timeout: 30m
 # concurrency: 1                # max simultaneous runs of this workflow
-# on_conflict: queue            # or reject, when over the limit
+# on_conflict: queue            # (default) wait for a slot, or reject
 ---
 Write the workflow as plain English. The orchestrator reads it and reports
 each step with `tome step start|done|fail`. Placeholders like

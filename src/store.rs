@@ -467,6 +467,34 @@ impl Store {
         self.finish_run(id, status, Some(reason), summary)
     }
 
+    /// How many runs of a workflow have `status`.
+    pub fn count_runs(&self, workflow: &str, status: RunStatus) -> anyhow::Result<usize> {
+        let n: i64 = self.conn.query_row(
+            "SELECT count(*) FROM runs WHERE workflow_name = ? AND status = ?",
+            params![workflow, status.as_str()],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
+    /// The longest-waiting queued run of a workflow, with its snapshot.
+    pub fn next_queued(&self, workflow: &str) -> anyhow::Result<Option<Run>> {
+        let sql = format!("{} WHERE workflow_name = ? AND status = 'queued' ORDER BY id LIMIT 1", run_select(true));
+        Ok(self.conn.query_row(&sql, params![workflow], |r| run_from_row(r, true)).optional()?)
+    }
+
+    /// Move a queued run to running.
+    pub fn dequeue_run(&mut self, id: i64) -> CliResult<Run> {
+        let n = self
+            .conn
+            .execute("UPDATE runs SET status = 'running' WHERE id = ? AND status = 'queued'", params![id])
+            .map_err(internal)?;
+        if n == 0 {
+            return Err(CliError::invalid(format!("run {id} isn't queued")));
+        }
+        Ok(self.get_run(id, true).map_err(internal_any)?.expect("run exists"))
+    }
+
     // --- steps -------------------------------------------------------------
 
     /// The step a bare `tome step done|fail` refers to: the most recently

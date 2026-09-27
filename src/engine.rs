@@ -15,7 +15,9 @@ use crate::recovery::RecoveryHooks;
 use crate::session::Tmux;
 use crate::store::{self, Run, RunStatus, StepEvent, StepHistory, Store};
 use serde_json::{json, Value};
+use crate::workflow::{self, OnConflict};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -95,16 +97,65 @@ impl Engine {
 
     /// `run.start {workflow_path, source?, project_path?, params?}`: validate
     /// the workflow, record the run with its resolved snapshot, launch its
-    /// orchestrator and return the run.
+    /// orchestrator and return the run. At the workflow's concurrency limit
+    /// the run is queued instead, or refused (`on_conflict: reject`).
     fn start(&self, p: &Value) -> CliResult<Run> {
         let wf = api::load_workflow(p)?;
+        let fm = &wf.frontmatter;
         // An unknown harness is a bad request: refuse before recording a run.
-        orchestrator::harness_for(&wf.frontmatter)?;
+        orchestrator::harness_for(fm)?;
         let run = self.with_store(|store| {
-            let (run, _body) = api::create_run(store, p, &wf, RunStatus::Running)?;
+            let status = match fm.concurrency {
+                None => RunStatus::Running,
+                Some(limit) => {
+                    let running = store.count_runs(&wf.name(), RunStatus::Running).map_err(internal)?;
+                    let queued = store.count_runs(&wf.name(), RunStatus::Queued).map_err(internal)?;
+                    match fm.on_conflict.unwrap_or(OnConflict::Queue) {
+                        OnConflict::Reject if running >= limit as usize => {
+                            return Err(CliError::conflict(format!(
+                                "workflow `{}` is at its concurrency limit ({running} of {limit} running)",
+                                wf.name()
+                            ))
+                            .with_hint("wait for a run to finish, cancel one with `tome run cancel <id>`, or set `on_conflict: queue`"));
+                        }
+                        // Behind any runs already waiting.
+                        OnConflict::Queue if running >= limit as usize || queued > 0 => RunStatus::Queued,
+                        _ => RunStatus::Running,
+                    }
+                }
+            };
+            let (run, _body) = api::create_run(store, p, &wf, status)?;
             Ok(run)
         })?;
-        self.launch(run)
+        if run.status == RunStatus::Queued {
+            eprintln!("tome daemon: run {} ({}) queued", run.id, run.workflow_name);
+            return Ok(run);
+        }
+        let name = run.workflow_name.clone();
+        self.launch(run).inspect_err(|_| self.promote(&name))
+    }
+
+    /// Start queued runs of `workflow`, oldest first, while there are free
+    /// slots. Each queued run is held to the limit in its own snapshot. Call
+    /// whenever a run of the workflow ends.
+    fn promote(&self, workflow: &str) {
+        loop {
+            let next = self.with_store(|store| {
+                let Some(run) = store.next_queued(workflow).map_err(internal)? else { return Ok(None) };
+                if let Some(limit) = snapshot_limit(&run) {
+                    if store.count_runs(workflow, RunStatus::Running).map_err(internal)? >= limit {
+                        return Ok(None);
+                    }
+                }
+                let run = store.dequeue_run(run.id)?;
+                self.sync(store, run.id);
+                Ok(Some(run))
+            });
+            let Ok(Some(run)) = next else { return };
+            eprintln!("tome daemon: run {} ({}) dequeued", run.id, run.workflow_name);
+            // A failed launch frees its slot again; the loop moves on.
+            let _ = self.launch(run);
+        }
     }
 
     /// Start a running run's orchestrator. If that fails the run is marked
@@ -156,15 +207,18 @@ impl Engine {
         if status == RunStatus::Cancelled {
             return self.cancel(id, opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED));
         }
-        self.with_store(|store| {
+        let run = self.with_store(|store| {
             let run = store.finish_run(id, status, opt_str(p, "reason"), opt_str(p, "summary"))?;
             self.sync(store, id);
             Ok(run)
-        })
+        })?;
+        self.promote(&run.workflow_name);
+        Ok(run)
     }
 
     /// Cancel an unfinished run (`run.cancel {id, reason?}`): mark it
-    /// cancelled, then kill its sessions. Its worktrees are kept, and no
+    /// cancelled, then kill its sessions (a queued run has none) and start
+    /// the next queued run of its workflow. Its worktrees are kept, and no
     /// notification is sent.
     pub fn cancel(&self, id: i64, reason: &str) -> CliResult<Run> {
         let run = self.with_store(|store| {
@@ -173,6 +227,7 @@ impl Engine {
             Ok(run)
         })?;
         self.kill_sessions(id);
+        self.promote(&run.workflow_name);
         Ok(run)
     }
 
@@ -210,6 +265,7 @@ impl Engine {
                     // Its workers have no one to report to.
                     self.kill_sessions(run.id);
                     Hooks.notify(&run);
+                    self.promote(&run.workflow_name);
                 }
             }
         }
@@ -351,6 +407,14 @@ impl Engine {
             watchers.remove(&run_id);
         }
     }
+}
+
+/// The concurrency limit in a run's workflow snapshot.
+fn snapshot_limit(run: &Run) -> Option<usize> {
+    let snapshot = run.workflow_snapshot.as_deref()?;
+    let path = PathBuf::from(run.workflow_path.clone().unwrap_or_default());
+    let wf = workflow::parse_snapshot(&path, snapshot).ok()?;
+    wf.frontmatter.concurrency.map(|n| n as usize)
 }
 
 /// Where a watch writes its events.
