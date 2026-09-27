@@ -109,8 +109,9 @@ fn render_human(results: &[Value], listing: bool) -> String {
         if let Some(by) = r["overridden_by"].as_str() {
             out.push_str(&format!("        overridden by {by}\n"));
         }
+        // The path is on the header line; errors only need the line number.
         for e in r["errors"].as_array().into_iter().flatten() {
-            out.push_str(&format!("        {}\n", e["display"].as_str().unwrap_or("")));
+            out.push_str(&format!("        line {}: {}\n", e["line"], e["message"].as_str().unwrap_or("")));
         }
     }
     if listing {

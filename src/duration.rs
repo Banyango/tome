@@ -4,6 +4,10 @@
 use std::time::Duration;
 
 pub fn parse(input: &str) -> Result<Duration, String> {
+    parse_inner(input).map_err(|detail| format!("invalid duration `{}`: {detail} (examples: 30m, 12h, 7d, 1h30m)", input.trim()))
+}
+
+fn parse_inner(input: &str) -> Result<Duration, String> {
     let s = input.trim();
     if s.is_empty() {
         return Err("empty duration".into());
@@ -25,20 +29,20 @@ pub fn parse(input: &str) -> Result<Duration, String> {
             'h' => 60 * 60,
             'd' => 24 * 60 * 60,
             'w' => 7 * 24 * 60 * 60,
-            _ => return Err(format!("invalid duration `{input}`: unknown unit `{ch}` (use s, m, h, d or w)")),
+            _ => return Err(format!("unknown unit `{ch}` (use s, m, h, d or w)")),
         };
         if digits.is_empty() {
-            return Err(format!("invalid duration `{input}`: expected a number before `{ch}`"));
+            return Err("expected a number followed by a unit".into());
         }
-        let n: u64 = digits.parse().map_err(|_| format!("invalid duration `{input}`"))?;
+        let n: u64 = digits.parse().map_err(|_| "number is too large".to_string())?;
         total = n
             .checked_mul(unit)
             .and_then(|v| total.checked_add(v))
-            .ok_or_else(|| format!("duration `{input}` is too large"))?;
+            .ok_or_else(|| "too large".to_string())?;
         digits.clear();
     }
     if !digits.is_empty() {
-        return Err(format!("invalid duration `{input}`: missing unit after `{digits}`"));
+        return Err(format!("missing unit after `{digits}`"));
     }
     Ok(Duration::from_secs(total))
 }
@@ -63,5 +67,7 @@ mod tests {
         for bad in ["", "abc", "10x", "h", "5m3", "-1d"] {
             assert!(parse(bad).is_err(), "{bad} should fail");
         }
+        let msg = parse("soon").unwrap_err();
+        assert!(msg.starts_with("invalid duration `soon`: expected a number") && msg.contains("7d"), "{msg}");
     }
 }

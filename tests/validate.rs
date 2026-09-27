@@ -56,10 +56,12 @@ fn invalid_workflow_exits_2_with_line_numbers() {
     assert!(errors[0]["message"].as_str().unwrap().contains("concurency"));
     assert_eq!(errors[1]["line"], 6);
 
-    // Human output has file:line: message.
+    // Human output: the path on the header, line numbers under it.
     let out = env.run(&["validate", "bad"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("bad.md:3: unknown frontmatter key `concurency`"));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("bad.md\n"), "{text}");
+    assert!(text.contains("        line 3: unknown frontmatter key `concurency`"), "{text}");
 }
 
 #[test]

@@ -4,6 +4,7 @@
 use crate::output::{table, CliResult, Report};
 use crate::paths;
 use crate::rpc;
+use chrono::{Local, NaiveDateTime, TimeZone};
 use serde_json::{json, Value};
 
 fn call(method: &str, params: Value) -> CliResult<Value> {
@@ -18,12 +19,31 @@ fn s(v: &Value) -> String {
     }
 }
 
-/// Timestamps render as `YYYY-MM-DD HH:MM:SS` in tables.
+/// Stored timestamps are UTC (`2026-01-02T03:04:05.000Z`); human output
+/// shows them in local time as `YYYY-MM-DD HH:MM:SS`.
 fn ts(v: &Value) -> String {
     match v.as_str() {
-        Some(t) if t.len() >= 19 => t[..19].replace('T', " "),
-        _ => s(v),
+        Some(t) => local_time(t).unwrap_or_else(|| t.to_string()),
+        None => s(v),
     }
+}
+
+fn local_time(utc: &str) -> Option<String> {
+    let naive = NaiveDateTime::parse_from_str(utc, "%Y-%m-%dT%H:%M:%S%.fZ").ok()?;
+    Some(Local.from_utc_datetime(&naive).format("%Y-%m-%d %H:%M:%S").to_string())
+}
+
+/// `{"ticket": "ABC-1", "n": 2}` as `ticket=ABC-1  n=2`.
+fn params(v: &Value) -> String {
+    v.as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| match v {
+            Value::String(s) => format!("{k}={s}"),
+            other => format!("{k}={other}"),
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 pub fn list(status: Option<String>, workflow: Option<String>, limit: usize) -> CliResult<Report> {
@@ -73,7 +93,7 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
         out.push_str(&format!("  {:<10}{}\n", "finished", ts(&run["finished_at"])));
     }
     if run["params"].as_object().is_some_and(|p| !p.is_empty()) {
-        out.push_str(&format!("  {:<10}{}\n", "params", run["params"]));
+        out.push_str(&format!("  {:<10}{}\n", "params", params(&run["params"])));
     }
 
     let steps = data["steps"].as_array().cloned().unwrap_or_default();
@@ -100,10 +120,13 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
     let history = data["history"].as_array().cloned().unwrap_or_default();
     if !history.is_empty() {
         out.push_str("\nhistory:\n");
-        for h in &history {
-            let msg = h["message"].as_str().map(|m| format!("  {m}")).unwrap_or_default();
-            out.push_str(&format!("  {}  {:<5} {}{}\n", ts(&h["occurred_at"]), s(&h["event"]), s(&h["step"]), msg));
-        }
+        let rows = history
+            .iter()
+            .map(|h| {
+                vec![ts(&h["occurred_at"]), s(&h["event"]), s(&h["step"]), h["message"].as_str().unwrap_or("").to_string()]
+            })
+            .collect();
+        out.push_str(&indent(&table(&["TIME", "EVENT", "STEP", "MESSAGE"], rows)));
     }
 
     let worktrees = data["worktrees"].as_array().cloned().unwrap_or_default();
@@ -118,9 +141,8 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
     let logs = data["logs"].as_array().cloned().unwrap_or_default();
     if !logs.is_empty() {
         out.push_str("\nlogs:\n");
-        for l in &logs {
-            out.push_str(&format!("  {}  {} bytes  {}\n", s(&l["step"]), s(&l["size"]), s(&l["path"])));
-        }
+        let rows = logs.iter().map(|l| vec![s(&l["step"]), size(&l["size"]), s(&l["path"])]).collect();
+        out.push_str(&indent(&table(&["STEP", "SIZE", "PATH"], rows)));
     }
 
     if let Some(snap) = run["workflow_snapshot"].as_str() {
@@ -154,7 +176,7 @@ pub fn query(sql: &str) -> CliResult<Report> {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|r| r.as_array().into_iter().flatten().map(s).collect())
+        .map(|r| r.as_array().into_iter().flatten().map(query_cell).collect())
         .collect();
     let headers: Vec<&str> = columns.iter().map(String::as_str).collect();
     let n = rows.len();
@@ -162,6 +184,48 @@ pub fn query(sql: &str) -> CliResult<Report> {
     Ok(Report::new(data, human))
 }
 
+/// Query results show SQL NULL as `NULL`, so it isn't confused with a `-`
+/// string.
+fn query_cell(v: &Value) -> String {
+    if v.is_null() { "NULL".into() } else { s(v) }
+}
+
+fn size(v: &Value) -> String {
+    let Some(n) = v.as_u64() else { return s(v) };
+    match n {
+        n if n < 1024 => format!("{n} B"),
+        n if n < 1024 * 1024 => format!("{:.1} KB", n as f64 / 1024.0),
+        n => format!("{:.1} MB", n as f64 / (1024.0 * 1024.0)),
+    }
+}
+
 fn indent(text: &str) -> String {
     text.lines().map(|l| format!("  {l}\n")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timestamps_render_in_local_time() {
+        let utc = NaiveDateTime::parse_from_str("2026-01-02T03:04:05", "%Y-%m-%dT%H:%M:%S").unwrap();
+        let expected = Local.from_utc_datetime(&utc).format("%Y-%m-%d %H:%M:%S").to_string();
+        assert_eq!(ts(&json!("2026-01-02T03:04:05.123Z")), expected);
+        assert_eq!(ts(&Value::Null), "-");
+        assert_eq!(ts(&json!("not a time")), "not a time");
+    }
+
+    #[test]
+    fn params_render_as_key_value() {
+        assert_eq!(params(&json!({"ticket": "ABC-1", "n": 2, "dry": true})), "ticket=ABC-1  n=2  dry=true");
+    }
+
+    #[test]
+    fn cells() {
+        assert_eq!(query_cell(&Value::Null), "NULL");
+        assert_eq!(query_cell(&json!("-")), "-");
+        assert_eq!(size(&json!(17)), "17 B");
+        assert_eq!(size(&json!(2048)), "2.0 KB");
+    }
 }
