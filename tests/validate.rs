@@ -97,3 +97,29 @@ fn duplicate_names_in_one_scope_are_invalid() {
     assert_eq!(code, 2);
     assert_eq!(v["error"]["kind"], "invalid_workflow");
 }
+
+#[test]
+fn trigger_validation() {
+    let env = Env::new();
+    let global = env.home().join("workflows");
+    let project = env.project().join(".tome/workflows");
+    let wf = |name: &str, triggers: &str| format!("---\nname: {name}\ntriggers:\n{triggers}---\nfired by {{{{trigger.kind}}}} at {{{{trigger.time}}}}\n");
+    write(&project, "ok.md", &wf("ok", "  - manual\n  - file: \"specs/**/*.md\"\n  - cron: \"0 9 * * 1-5\"\n    to: running-or-new\n"));
+    write(&global, "home.md", &wf("home", "  - file: \"~/inbox/*.md\"\n"));
+    let (code, v) = env.json(&["validate"]);
+    assert_eq!(code, 0, "{v}");
+
+    // A relative glob is fine in a project, but not in a global workflow.
+    write(&global, "rel.md", &wf("rel", "  - file: \"specs/*.md\"\n"));
+    let (code, v) = env.json(&["validate", "rel"]);
+    assert_eq!(code, 2, "{v}");
+    let err = &v["workflows"][0]["errors"][0];
+    assert_eq!(err["line"], 4);
+    assert!(err["message"].as_str().unwrap().contains("absolute or `~/`"), "{err}");
+
+    write(&project, "bad.md", &wf("bad", "  - cron: \"0 25 * * *\"\n  - file: \"*.md\"\n    to: running\n"));
+    let (code, v) = env.json(&["validate", "bad"]);
+    assert_eq!(code, 2);
+    let lines: Vec<i64> = v["workflows"][0]["errors"].as_array().unwrap().iter().map(|e| e["line"].as_i64().unwrap()).collect();
+    assert_eq!(lines, vec![4, 5], "{v}");
+}

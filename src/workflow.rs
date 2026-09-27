@@ -22,6 +22,7 @@ use serde_yaml::Value as Yaml;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub const TOP_LEVEL_KEYS: &[&str] =
     &["name", "description", "triggers", "params", "defaults", "concurrency", "on_conflict", "orchestrator"];
@@ -83,6 +84,11 @@ impl ParamType {
         }
     }
 
+    /// Check (and normalise) a trigger's param value against this type.
+    fn coerce_json(self, value: &Value) -> Option<Value> {
+        self.coerce_yaml(&serde_yaml::to_value(value).ok()?)
+    }
+
     /// Check (and normalise) a yaml default against this type.
     fn coerce_yaml(self, value: &Yaml) -> Option<Value> {
         match (self, value) {
@@ -134,7 +140,7 @@ pub struct Frontmatter {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub triggers: Vec<Value>,
+    pub triggers: Vec<Trigger>,
     pub params: BTreeMap<String, ParamSpec>,
     pub defaults: Defaults,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -288,7 +294,7 @@ fn parse_source(path: &Path, source: &str, placeholders: bool) -> Result<Workflo
                 Yaml::Null => {}
                 _ => errors.push(Diagnostic::new(line, "`description` must be a string")),
             },
-            "triggers" => fm.triggers = parse_triggers(value, line, &mut errors),
+            "triggers" => fm.triggers = parse_triggers(value, &locator, &mut errors),
             "params" => fm.params = parse_params(value, &locator, &mut errors),
             "defaults" => fm.defaults = parse_defaults(value, &locator, &mut errors),
             "concurrency" => match value.as_u64() {
@@ -311,6 +317,7 @@ fn parse_source(path: &Path, source: &str, placeholders: bool) -> Result<Workflo
             )),
         }
     }
+    check_trigger_params(&mut fm, &mut errors);
     if !map.contains_key("name") {
         errors.push(Diagnostic::new(1, "missing required frontmatter key `name`"));
     }
@@ -336,7 +343,116 @@ fn strip_location(e: &serde_yaml::Error) -> String {
     }
 }
 
-fn parse_triggers(value: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Vec<Value> {
+/// A trigger rule from the frontmatter.
+#[derive(Debug, Clone, Serialize)]
+pub struct Trigger {
+    #[serde(flatten)]
+    pub kind: TriggerKind,
+    pub to: Target,
+    pub params: Map<String, Value>,
+    /// File line of the trigger's list item.
+    #[serde(skip)]
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum TriggerKind {
+    Manual,
+    File(FileTrigger),
+    Cron {
+        cron: String,
+        #[serde(skip)]
+        schedule: crate::cron::Cron,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileTrigger {
+    pub file: String,
+    pub on: Vec<FileEvent>,
+    #[serde(serialize_with = "ser_secs")]
+    pub debounce: Duration,
+    pub ignore: Vec<String>,
+    #[serde(skip)]
+    pub glob: crate::glob::Glob,
+    #[serde(skip)]
+    pub ignore_globs: Vec<crate::glob::Glob>,
+}
+
+fn ser_secs<S: serde::Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64(d.as_secs_f64())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileEvent {
+    Created,
+    Modified,
+}
+
+impl FileEvent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FileEvent::Created => "created",
+            FileEvent::Modified => "modified",
+        }
+    }
+}
+
+/// Where a fired trigger goes (`to:`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Target {
+    New,
+    Running,
+    RunningOrNew,
+}
+
+impl Target {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Target::New => "new",
+            Target::Running => "running",
+            Target::RunningOrNew => "running-or-new",
+        }
+    }
+}
+
+impl Trigger {
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            TriggerKind::Manual => "manual",
+            TriggerKind::File(_) => "file",
+            TriggerKind::Cron { .. } => "cron",
+        }
+    }
+
+    /// `file specs/**/*.md`, `cron 0 9 * * 1-5`, `manual`.
+    pub fn describe(&self) -> String {
+        match &self.kind {
+            TriggerKind::Manual => "manual".into(),
+            TriggerKind::File(f) => format!("file {}", f.file),
+            TriggerKind::Cron { cron, .. } => format!("cron {cron}"),
+        }
+    }
+
+    /// Where a fire actually goes: file triggers never signal (their
+    /// workflow is muted while it runs).
+    pub fn effective_target(&self) -> Target {
+        match (&self.kind, self.to) {
+            (TriggerKind::File(_), Target::RunningOrNew) => Target::New,
+            (_, to) => to,
+        }
+    }
+}
+
+pub const TRIGGER_KEYS: &[&str] = &["file", "cron", "on", "debounce", "ignore", "to", "params"];
+pub const TRIGGER_FIELDS: &[&str] = &["kind", "paths", "event", "time", "scheduled"];
+const DEFAULT_DEBOUNCE: Duration = Duration::from_secs(2);
+
+fn parse_triggers(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> Vec<Trigger> {
+    let line = loc.line(&["triggers"]);
     let items: Vec<&Yaml> = match value {
         Yaml::Null => return Vec::new(),
         Yaml::String(_) | Yaml::Mapping(_) => vec![value],
@@ -346,14 +462,237 @@ fn parse_triggers(value: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Ve
             return Vec::new();
         }
     };
+    let item_lines = loc.list_items(&["triggers"]);
     let mut out = Vec::new();
-    for item in items {
-        match item {
-            Yaml::String(_) | Yaml::Mapping(_) => out.push(yaml_to_json(item)),
-            _ => errors.push(Diagnostic::new(line, "each trigger must be a name or a mapping")),
+    for (i, item) in items.into_iter().enumerate() {
+        let line = item_lines.get(i).copied().unwrap_or(line);
+        let before = errors.len();
+        let trigger = parse_trigger(item, line, errors);
+        if errors.len() == before {
+            out.extend(trigger);
         }
     }
     out
+}
+
+fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Option<Trigger> {
+    let n = |errors: &mut Vec<Diagnostic>, msg: String| errors.push(Diagnostic::new(line, msg));
+    let map = match item {
+        Yaml::String(s) if s == "manual" => {
+            return Some(Trigger { kind: TriggerKind::Manual, to: Target::New, params: Map::new(), line })
+        }
+        Yaml::String(s) => {
+            n(errors, format!("unknown trigger `{s}` (expected `manual`, or a mapping with `file:` or `cron:`)"));
+            return None;
+        }
+        Yaml::Mapping(m) => m,
+        _ => {
+            n(errors, "each trigger must be `manual` or a mapping with `file:` or `cron:`".into());
+            return None;
+        }
+    };
+    let get = |k: &str| map.get(k);
+    for key in map.keys() {
+        match key.as_str() {
+            Some(k) if TRIGGER_KEYS.contains(&k) => {}
+            Some(k) => n(errors, format!("unknown trigger key `{k}` (expected one of: {})", TRIGGER_KEYS.join(", "))),
+            None => n(errors, "trigger keys must be strings".into()),
+        }
+    }
+
+    let to = match get("to").map(|v| v.as_str()) {
+        None => Target::New,
+        Some(Some("new")) => Target::New,
+        Some(Some("running")) => Target::Running,
+        Some(Some("running-or-new")) => Target::RunningOrNew,
+        Some(_) => {
+            n(errors, "trigger `to` must be `new`, `running` or `running-or-new`".into());
+            Target::New
+        }
+    };
+    let params = match get("params") {
+        None | Some(Yaml::Null) => Map::new(),
+        Some(Yaml::Mapping(m)) => {
+            let mut out = Map::new();
+            for (k, v) in m {
+                match k.as_str() {
+                    Some(k) => {
+                        out.insert(k.to_string(), yaml_to_json(v));
+                    }
+                    None => n(errors, "trigger `params` keys must be strings".into()),
+                }
+            }
+            out
+        }
+        Some(_) => {
+            n(errors, "trigger `params` must be a mapping of param names to values".into());
+            Map::new()
+        }
+    };
+
+    let kind = match (get("file"), get("cron")) {
+        (Some(_), Some(_)) => {
+            n(errors, "a trigger has either `file:` or `cron:`, not both".into());
+            return None;
+        }
+        (None, None) => {
+            n(errors, "a trigger mapping needs `file:` or `cron:`".into());
+            return None;
+        }
+        (None, Some(cron)) => {
+            for k in ["on", "debounce", "ignore"] {
+                if get(k).is_some() {
+                    n(errors, format!("`{k}` only applies to file triggers"));
+                }
+            }
+            let Some(expr) = cron.as_str() else {
+                n(errors, "`cron` must be a quoted 5-field cron expression".into());
+                return None;
+            };
+            match crate::cron::Cron::parse(expr) {
+                Ok(schedule) => TriggerKind::Cron { cron: expr.to_string(), schedule },
+                Err(e) => {
+                    n(errors, e);
+                    return None;
+                }
+            }
+        }
+        (Some(file), None) => {
+            let Some(pattern) = file.as_str() else {
+                n(errors, "`file` must be a glob string".into());
+                return None;
+            };
+            let glob = match crate::glob::Glob::new(pattern) {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    n(errors, e);
+                    None
+                }
+            };
+            let on = match get("on") {
+                None => vec![FileEvent::Created, FileEvent::Modified],
+                Some(v) => {
+                    let items: Vec<&Yaml> = match v {
+                        Yaml::Sequence(s) => s.iter().collect(),
+                        other => vec![other],
+                    };
+                    let mut on = Vec::new();
+                    for item in items {
+                        match item.as_str() {
+                            Some("created") => on.push(FileEvent::Created),
+                            Some("modified") => on.push(FileEvent::Modified),
+                            _ => n(errors, "`on` must list `created` and/or `modified`".into()),
+                        }
+                    }
+                    if on.is_empty() {
+                        n(errors, "`on` must list `created` and/or `modified`".into());
+                    }
+                    on.dedup();
+                    on
+                }
+            };
+            let debounce = match get("debounce") {
+                None => DEFAULT_DEBOUNCE,
+                Some(v) => {
+                    let raw = match v {
+                        Yaml::String(s) => s.clone(),
+                        Yaml::Number(num) => num.to_string(),
+                        _ => String::new(),
+                    };
+                    match crate::duration::parse(&raw) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            n(errors, format!("`debounce`: {e}"));
+                            DEFAULT_DEBOUNCE
+                        }
+                    }
+                }
+            };
+            let ignore: Vec<String> = match get("ignore") {
+                None | Some(Yaml::Null) => Vec::new(),
+                Some(Yaml::String(s)) => vec![s.clone()],
+                Some(Yaml::Sequence(seq)) if seq.iter().all(|v| v.as_str().is_some()) => {
+                    seq.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+                }
+                Some(_) => {
+                    n(errors, "`ignore` must be a list of globs".into());
+                    Vec::new()
+                }
+            };
+            let mut ignore_globs = Vec::new();
+            for g in &ignore {
+                match crate::glob::Glob::new(g) {
+                    Ok(g) => ignore_globs.push(g),
+                    Err(e) => n(errors, format!("`ignore`: {e}")),
+                }
+            }
+            if to == Target::Running {
+                n(errors, "`to: running` can't be used on a file trigger: file triggers are muted while their workflow runs".into());
+            }
+            TriggerKind::File(FileTrigger { file: pattern.to_string(), on, debounce, ignore, glob: glob?, ignore_globs })
+        }
+    };
+    Some(Trigger { kind, to, params, line })
+}
+
+/// Trigger checks that need the whole frontmatter: each trigger's `params`
+/// must name real params, fit their types, and together with the defaults
+/// fill every required one.
+fn check_trigger_params(fm: &mut Frontmatter, errors: &mut Vec<Diagnostic>) {
+    for t in &mut fm.triggers {
+        if matches!(t.kind, TriggerKind::Manual) {
+            continue;
+        }
+        let mut coerced = Map::new();
+        for (k, v) in &t.params {
+            match fm.params.get(k) {
+                None => errors.push(Diagnostic::new(t.line, format!("trigger `{}`: unknown param `{k}`", t.describe()))),
+                Some(spec) => match spec.ty.coerce_json(v) {
+                    Some(v) => {
+                        coerced.insert(k.clone(), v);
+                    }
+                    None => errors.push(Diagnostic::new(
+                        t.line,
+                        format!("trigger `{}`: param `{k}`: `{}` is not a valid {}", t.describe(), value_text(v), spec.ty.name()),
+                    )),
+                },
+            }
+        }
+        for (name, spec) in &fm.params {
+            if spec.default.is_none() && !t.params.contains_key(name) {
+                errors.push(Diagnostic::new(
+                    t.line,
+                    format!("trigger `{}` leaves required param `{name}` unfilled; set it in the trigger's `params:`", t.describe()),
+                ));
+            }
+        }
+        t.params = coerced;
+    }
+}
+
+/// Checks that depend on where the workflow lives: a global workflow has no
+/// project root, so its file triggers need absolute or `~/` globs.
+pub fn check_scope(wf: Workflow, scope: Scope) -> Result<Workflow, Invalid> {
+    if scope == Scope::Project {
+        return Ok(wf);
+    }
+    let errors: Vec<Diagnostic> = wf
+        .frontmatter
+        .triggers
+        .iter()
+        .filter_map(|t| match &t.kind {
+            TriggerKind::File(f) if !crate::glob::Glob::is_absolute(&f.file) => Some(Diagnostic::new(
+                t.line,
+                format!("file trigger `{}` in a global workflow must use an absolute or `~/` path", f.file),
+            )),
+            _ => None,
+        })
+        .collect();
+    if errors.is_empty() {
+        Ok(wf)
+    } else {
+        Err(Invalid { path: wf.path.clone(), name: Some(wf.name().to_string()), errors })
+    }
 }
 
 fn parse_params(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> BTreeMap<String, ParamSpec> {
@@ -552,6 +891,36 @@ impl Locator<'_> {
     }
 }
 
+impl Locator<'_> {
+    /// File lines of the `- ` items of a block-style list under `path`.
+    fn list_items(&self, path: &[&str]) -> Vec<usize> {
+        let key_line = self.line(path);
+        let Some(key_idx) = key_line.checked_sub(2).filter(|&i| i < self.lines.len()) else { return Vec::new() };
+        let indent_of = |l: &str| l.len() - l.trim_start().len();
+        let key_indent = indent_of(self.lines[key_idx]);
+        let meaningful = |l: &str| !l.trim().is_empty() && !l.trim_start().starts_with('#');
+        let Some(first) = self.lines[key_idx + 1..].iter().find(|l| meaningful(l)) else { return Vec::new() };
+        let item_indent = indent_of(first);
+        if !first.trim_start().starts_with('-') || item_indent < key_indent {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (i, l) in self.lines.iter().enumerate().skip(key_idx + 1) {
+            if !meaningful(l) {
+                continue;
+            }
+            let indent = indent_of(l);
+            if indent < item_indent || (indent == item_indent && !l.trim_start().starts_with('-')) {
+                break;
+            }
+            if indent == item_indent {
+                out.push(i + 2);
+            }
+        }
+        out
+    }
+}
+
 fn key_of(line: &str) -> Option<&str> {
     let line = line.strip_prefix("- ").unwrap_or(line);
     let colon = line.find(':')?;
@@ -588,14 +957,16 @@ fn check_placeholders(body: &str, body_line: usize, params: &BTreeMap<String, Pa
             let ok = match ph.expr.split_once('.') {
                 Some(("params", name)) => params.contains_key(name),
                 Some(("run", "id")) => true,
+                Some(("trigger", field)) => TRIGGER_FIELDS.contains(&field),
                 _ => false,
             };
             if !ok {
                 let msg = match ph.expr.split_once('.') {
                     Some(("params", name)) => format!("undefined placeholder `{{{{{}}}}}`: no param named `{name}`", ph.expr),
                     _ => format!(
-                        "undefined placeholder `{{{{{}}}}}` (available: `params.<name>`, `run.id`)",
-                        ph.expr
+                        "undefined placeholder `{{{{{}}}}}` (available: `params.<name>`, `run.id`, `trigger.{}`)",
+                        ph.expr,
+                        TRIGGER_FIELDS.join("|")
                     ),
                 };
                 errors.push(Diagnostic::new(body_line + i, msg));
@@ -662,9 +1033,10 @@ impl Workflow {
         }
     }
 
-    /// Substitute `{{params.x}}` and `{{run.id}}` into the body. Plain text
-    /// substitution only.
-    pub fn render_body(&self, params: &Map<String, Value>, run_id: &str) -> String {
+    /// Substitute `{{params.x}}`, `{{run.id}}` and `{{trigger.x}}` into the
+    /// body. Plain text substitution only. `trigger` holds the event that
+    /// started the run; its fields are empty for a manual run.
+    pub fn render_body(&self, params: &Map<String, Value>, run_id: &str, trigger: &Map<String, Value>) -> String {
         let mut out = String::with_capacity(self.body.len());
         for (i, line) in self.body.split('\n').enumerate() {
             if i > 0 {
@@ -675,6 +1047,9 @@ impl Workflow {
                 let replacement = match ph.expr.split_once('.') {
                     Some(("params", name)) => params.get(name).map(value_text),
                     Some(("run", "id")) => Some(run_id.to_string()),
+                    Some(("trigger", field)) if TRIGGER_FIELDS.contains(&field) => {
+                        Some(trigger.get(field).map(trigger_text).unwrap_or_default())
+                    }
                     _ => None,
                 };
                 if let Some(text) = replacement {
@@ -690,8 +1065,8 @@ impl Workflow {
 
     /// The resolved workflow as saved with a run: the original frontmatter
     /// followed by the substituted body.
-    pub fn render_snapshot(&self, params: &Map<String, Value>, run_id: &str) -> String {
-        format!("---\n{}\n---\n{}", self.frontmatter_text, self.render_body(params, run_id))
+    pub fn render_snapshot(&self, params: &Map<String, Value>, run_id: &str, trigger: &Map<String, Value>) -> String {
+        format!("---\n{}\n---\n{}", self.frontmatter_text, self.render_body(params, run_id, trigger))
     }
 }
 
@@ -699,6 +1074,23 @@ fn value_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         other => other.to_string(),
+    }
+}
+
+/// A trigger field as text: `paths` (a list of `{path, event}`) reads
+/// `specs/a.md (created), specs/b.md (modified)`.
+fn trigger_text(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::Array(items) => items
+            .iter()
+            .map(|i| match (i["path"].as_str(), i["event"].as_str()) {
+                (Some(p), Some(e)) => format!("{p} ({e})"),
+                _ => value_text(i),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => value_text(other),
     }
 }
 
@@ -753,6 +1145,15 @@ impl Library {
         Library { global_dir, project_dir }
     }
 
+    /// A workflow file outside the global directory is treated as a project
+    /// one.
+    pub fn scope_of(&self, path: &Path) -> Scope {
+        match path.parent() {
+            Some(dir) if same_path(dir, &self.global_dir) => Scope::Global,
+            _ => Scope::Project,
+        }
+    }
+
     /// The project root (directory containing `.tome`), if any.
     pub fn project_root(&self) -> Option<PathBuf> {
         self.project_dir.as_ref().and_then(|d| d.parent()?.parent().map(Path::to_path_buf))
@@ -770,7 +1171,7 @@ impl Library {
                 .collect();
             paths.sort();
             for path in paths {
-                let result = load(&path);
+                let result = load(&path).and_then(|wf| check_scope(wf, scope));
                 out.push(Entry { scope, path, result });
             }
         }
@@ -789,7 +1190,7 @@ impl Library {
         let as_path = Path::new(target);
         if target.contains('/') || target.ends_with(".md") {
             if as_path.is_file() {
-                return Ok(load(as_path));
+                return Ok(load(as_path).and_then(|wf| check_scope(wf, self.scope_of(as_path))));
             }
             if target.contains('/') {
                 return Err(CliError::not_found(format!("no workflow file at `{target}`")));
@@ -887,10 +1288,10 @@ Retry up to {{params.retries}} times on {{params.ticket}}.
             .resolve_params(&[("base".into(), "dev".into()), ("ticket".into(), "T-1".into())], true)
             .unwrap();
         assert_eq!(params["retries"], json!(3));
-        let body = wf.render_body(&params, "42");
+        let body = wf.render_body(&params, "42", &Map::new());
         assert!(body.contains("off dev for run 42."));
         assert!(body.contains("up to 3 times on T-1."));
-        let snap = wf.render_snapshot(&params, "42");
+        let snap = wf.render_snapshot(&params, "42", &Map::new());
         assert!(snap.starts_with("---\nname: review-loop"));
         assert!(snap.contains("off dev for run 42."));
     }
@@ -946,6 +1347,88 @@ Retry up to {{params.retries}} times on {{params.ticket}}.
         let e = errs("---\nname: x\nconcurrency: 0\non_conflict: drop\nparams:\n  n:\n    type: int\n    default: abc\n    colour: red\n---\n");
         let lines: Vec<usize> = e.iter().map(|d| d.line).collect();
         assert_eq!(lines, vec![3, 4, 8, 9], "{e:?}");
+    }
+
+    const TRIGGERS: &str = "---
+name: t
+params:
+  base: {default: main}
+  spec: {}
+triggers:
+  - manual
+  - file: \"specs/**/*.md\"
+    on: [created]
+    debounce: 5s
+    ignore: [\"specs/drafts/**\"]
+    params: {spec: x}
+  - cron: \"0 9 * * 1-5\"
+    to: running-or-new
+    params: {base: dev, spec: y}
+---
+{{trigger.kind}} {{trigger.paths}} {{trigger.event}} {{trigger.time}} {{trigger.scheduled}} {{params.spec}}
+";
+
+    #[test]
+    fn parses_typed_triggers() {
+        let wf = p(TRIGGERS).unwrap();
+        let t = &wf.frontmatter.triggers;
+        assert_eq!(t.len(), 3);
+        assert!(matches!(t[0].kind, TriggerKind::Manual));
+        let TriggerKind::File(f) = &t[1].kind else { panic!("{:?}", t[1]) };
+        assert_eq!((f.file.as_str(), f.on.as_slice(), f.debounce), ("specs/**/*.md", &[FileEvent::Created][..], Duration::from_secs(5)));
+        assert!(f.glob.matches("specs/a/b.md") && f.ignore_globs[0].matches("specs/drafts/x.md"));
+        assert_eq!((t[1].to, t[1].line), (Target::New, 8));
+        assert!(matches!(t[2].kind, TriggerKind::Cron { .. }));
+        assert_eq!((t[2].to, t[2].line, t[2].params["base"].clone()), (Target::RunningOrNew, 13, json!("dev")));
+        let v = serde_json::to_value(&t[2]).unwrap();
+        assert_eq!((v["kind"].as_str(), v["cron"].as_str(), v["to"].as_str()), (Some("cron"), Some("0 9 * * 1-5"), Some("running-or-new")));
+    }
+
+    #[test]
+    fn trigger_placeholders_render_empty_for_manual_runs() {
+        let wf = p(TRIGGERS).unwrap();
+        let params = wf.resolve_params(&[("spec".into(), "s".into())], true).unwrap();
+        assert_eq!(wf.render_body(&params, "1", &Map::new()), "     s");
+        let ev = json!({"kind": "file", "event": "created", "time": "now",
+            "paths": [{"path": "specs/a.md", "event": "created"}, {"path": "specs/b.md", "event": "modified"}]});
+        let body = wf.render_body(&params, "1", ev.as_object().unwrap());
+        assert_eq!(body, "file specs/a.md (created), specs/b.md (modified) created now  s");
+    }
+
+    #[test]
+    fn trigger_errors() {
+        let wf = |t: &str| format!("---\nname: x\nparams:\n  need: {{}}\n  n: {{type: int, default: 1}}\ntriggers:\n{t}---\n");
+        let cases = [
+            ("  - cron: \"61 * * * *\"\n    params: {need: a}\n", "minute `61` is out of range"),
+            ("  - file: \"a[b\"\n    params: {need: a}\n", "unclosed `[`"),
+            ("  - file: \"*.md\"\n    to: running\n    params: {need: a}\n", "`to: running` can't be used on a file trigger"),
+            ("  - cron: \"* * * * *\"\n", "leaves required param `need` unfilled"),
+            ("  - cron: \"* * * * *\"\n    params: {need: a, n: lots}\n", "`lots` is not a valid int"),
+            ("  - cron: \"* * * * *\"\n    params: {need: a, other: 1}\n", "unknown param `other`"),
+            ("  - webhook\n", "unknown trigger `webhook`"),
+            ("  - cron: \"* * * * *\"\n    on: [created]\n    params: {need: a}\n", "only applies to file triggers"),
+            ("  - file: \"*.md\"\n    on: [deleted]\n    params: {need: a}\n", "`on` must list"),
+            ("  - file: \"*.md\"\n    debounce: soon\n    params: {need: a}\n", "`debounce`"),
+            ("  - file: \"*.md\"\n    to: sideways\n    params: {need: a}\n", "trigger `to` must be"),
+        ];
+        for (triggers, expect) in cases {
+            let e = errs(&wf(triggers));
+            assert!(e.iter().any(|d| d.message.contains(expect) && d.line == 7), "{triggers}: {e:?}");
+        }
+        // `manual` needs nothing filled; a valid trigger with its params passes.
+        assert!(p(&wf("  - manual\n  - cron: \"* * * * *\"\n    params: {need: a, n: 2}\n")).is_ok());
+        assert!(errs("---\nname: x\n---\n{{trigger.who}}\n")[0].message.contains("trigger.kind|paths"));
+    }
+
+    #[test]
+    fn global_workflows_need_absolute_file_globs() {
+        let src = |g: &str| format!("---\nname: x\ntriggers:\n  - cron: \"0 * * * *\"\n  - file: \"{g}\"\n---\n");
+        let e = check_scope(p(&src("specs/*.md")).unwrap(), Scope::Global).unwrap_err();
+        assert_eq!(e.errors[0].line, 5);
+        assert!(e.errors[0].message.contains("absolute or `~/`"));
+        assert!(check_scope(p(&src("specs/*.md")).unwrap(), Scope::Project).is_ok());
+        assert!(check_scope(p(&src("~/notes/*.md")).unwrap(), Scope::Global).is_ok());
+        assert!(check_scope(p(&src("/srv/in/**")).unwrap(), Scope::Global).is_ok());
     }
 
     #[test]

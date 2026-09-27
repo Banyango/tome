@@ -75,6 +75,9 @@ pub fn create_run(store: &mut Store, p: &Value, wf: &Workflow, status: RunStatus
     let overrides = workflow::parse_param_args(&args)?;
     let params = wf.resolve_params(&overrides, true).map_err(Invalid::into_cli_error)?;
     let project = opt_str(p, "project_path").map(PathBuf::from);
+    // The `{{trigger.*}}` fields of the event that started this run, if any.
+    let no_trigger = serde_json::Map::new();
+    let trigger = p.get("trigger").and_then(Value::as_object).unwrap_or(&no_trigger);
 
     let mut body = String::new();
     let run = store
@@ -87,8 +90,8 @@ pub fn create_run(store: &mut Store, p: &Value, wf: &Workflow, status: RunStatus
                 status,
             },
             |id| {
-                body = wf.render_body(&params, &id.to_string());
-                wf.render_snapshot(&params, &id.to_string())
+                body = wf.render_body(&params, &id.to_string(), trigger);
+                wf.render_snapshot(&params, &id.to_string(), trigger)
             },
         )
         .map_err(internal)?;
