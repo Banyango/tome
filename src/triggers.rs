@@ -294,6 +294,11 @@ impl Engine {
                 fired.outcome,
                 fired.message.as_deref().map(|m| format!(" ({m})")).unwrap_or_default()
             );
+            // A rejection under `on_conflict: reject` is configured
+            // behaviour: recorded, not notified.
+            if fired.outcome == outcome::ERROR {
+                self.trigger_failed(&name, fired.message.as_deref().unwrap_or("unknown error"));
+            }
         }
         fired
     }

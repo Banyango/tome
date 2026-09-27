@@ -10,6 +10,10 @@ fn write_wf(env: &Env, name: &str, frontmatter: &str, body: &str) {
     fs::write(dir.join(format!("{name}.md")), format!("---\nname: {name}\n{frontmatter}---\n{body}")).unwrap();
 }
 
+fn daemon_log(env: &Env) -> String {
+    fs::read_to_string(env.home().join("daemon.log")).unwrap_or_default()
+}
+
 fn outcomes(env: &Env) -> Vec<String> {
     fires(env).iter().map(|r| r[0].as_str().unwrap_or("").to_string()).collect()
 }
@@ -97,6 +101,7 @@ fn rejected_and_invalid_fires_are_recorded() {
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["outcome"], "rejected");
     assert!(v["message"].as_str().unwrap().contains("concurrency limit"), "{v}");
+    assert!(!daemon_log(&env).contains("notify: trigger"), "rejections aren't notified");
 
     // No such trigger.
     let (code, v) = env.json(&["triggers", "fire", "build", "--index", "5"]);
@@ -109,6 +114,9 @@ fn rejected_and_invalid_fires_are_recorded() {
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["outcome"], "error");
     assert!(v["message"].as_str().unwrap().contains("invalid cron expression"), "{v}");
+    common::eventually("failure notified", || {
+        daemon_log(&env).contains("notify: trigger for build failed")
+    });
 
     assert_eq!(outcomes(&env), ["started", "rejected", "error", "error"]);
 }
@@ -273,6 +281,7 @@ fn missing_projects_are_dropped() {
     assert!(listed(&env).contains(&canonical(other.clone())));
     fs::remove_dir_all(&other).unwrap();
     assert!(!listed(&env).iter().any(|p| p.ends_with("/other")));
+    assert!(daemon_log(&env).contains("notify: trigger for project failed: project directory"), "{}", daemon_log(&env));
 
     // Worktrees inside `.tome/` never register as projects.
     let wt = env.project().join(".tome/worktrees/1-a");

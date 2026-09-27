@@ -174,6 +174,17 @@ pub fn notify(run: &Run, sessions: &[Session], cut: &[Worker]) {
     }
 }
 
+/// A trigger failed to act (`what` names the workflow or project). It's
+/// always logged; it also goes out as a cmux notification unless
+/// `TOME_NOTIFY=off` (there's no run pane to tie it to, so this is best
+/// effort when cmux isn't around).
+pub fn notify_trigger(what: &str, message: &str) {
+    eprintln!("tome daemon: notify: trigger for {what} failed: {message}");
+    if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
+        Cmux.notify(&format!("tome: trigger for {what} failed"), message);
+    }
+}
+
 /// The daemon's hooks for runs that end without finishing themselves.
 pub struct Hooks;
 

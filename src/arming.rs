@@ -299,8 +299,10 @@ impl Engine {
         self.trigger_failed(&b.name, &b.message);
     }
 
-    /// A trigger couldn't act (notified in 004-7).
-    pub(crate) fn trigger_failed(&self, _what: &str, _message: &str) {}
+    /// A trigger couldn't act: notify.
+    pub(crate) fn trigger_failed(&self, what: &str, message: &str) {
+        crate::orchestrator::notify_trigger(what, message);
+    }
 }
 
 #[cfg(test)]
