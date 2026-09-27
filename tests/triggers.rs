@@ -20,8 +20,7 @@ fn fires(env: &Env) -> Vec<Value> {
     v["rows"].as_array().cloned().unwrap_or_default()
 }
 
-const REVIEW: &str = "params:\n  target: {type: string}\n  depth: {type: int, default: 1}\n\
-triggers:\n  - manual\n  - cron: \"0 9 * * 1-5\"\n    params: {target: nightly, depth: 3}\n  - file: \"specs/**/*.md\"\n    params: {target: specs}\n";
+const REVIEW: &str = "params:\n  target: {type: string}\n  depth: {type: int, default: 1}\ntriggers:\n  - manual\n  - cron: \"0 9 * * 1-5\"\n    params: {target: nightly, depth: 3}\n  - file: \"specs/**/*.md\"\n    params: {target: specs}\n";
 
 #[test]
 fn a_fired_trigger_starts_a_run_that_records_its_cause() {
@@ -112,4 +111,77 @@ fn rejected_and_invalid_fires_are_recorded() {
     assert!(v["message"].as_str().unwrap().contains("invalid cron expression"), "{v}");
 
     assert_eq!(outcomes(&env), ["started", "rejected", "error", "error"]);
+}
+
+const LISTENER: &str = r#"
+while read line; do echo "$line" >> "$TOME_HOME/typed.txt"; done
+"#;
+
+#[test]
+fn running_targets_are_signalled_through_the_events_queue() {
+    let env = Env::new();
+    let script = env.home().join("listener.sh");
+    fs::write(&script, LISTENER).unwrap();
+    env.set_config(&format!(
+        "{}  listener: [sh, \"{}\", \"{{{{prompt_file}}}}\"]\n",
+        common::IDLE_CONFIG,
+        script.display()
+    ));
+    write_wf(
+        &env,
+        "watch",
+        concat!(
+            "defaults:\n  orchestrator_harness: listener\ntriggers:\n",
+            "  - cron: \"*/5 * * * *\"\n    to: running\n",
+            "  - cron: \"0 * * * *\"\n    to: running-or-new\n",
+            "  - file: \"docs/*.md\"\n    to: running-or-new\n",
+        ),
+        "## Watch\nWatch.\n",
+    );
+    env.start_daemon();
+
+    // Nothing to signal yet.
+    let (code, v) = env.json(&["triggers", "fire", "watch", "--index", "0"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["outcome"], "no_target");
+
+    // running-or-new with nothing running starts one.
+    let (_, v) = env.json(&["triggers", "fire", "watch", "--index", "1"]);
+    assert_eq!(v["outcome"], "started", "{v}");
+    let run = v["run_ids"][0].as_i64().unwrap();
+    common::eventually("orchestrator up", || env.has_session(&format!("tome-{run}-watch")));
+
+    let (_, v) = env.json(&["triggers", "fire", "watch", "--index", "0", "--dry-run"]);
+    assert_eq!((v["outcome"].as_str(), &v["runs"]), (Some("signalled"), &serde_json::json!([run])), "{v}");
+
+    // Now both signal the run instead.
+    for index in ["0", "1"] {
+        let (code, v) = env.json(&["triggers", "fire", "watch", "--index", index]);
+        assert_eq!(code, 0, "{v}");
+        assert_eq!(v["outcome"], "signalled", "{v}");
+        assert_eq!(v["run_ids"], serde_json::json!([run]));
+    }
+    // A file trigger's running-or-new is `new`, so it's muted.
+    assert_eq!(env.json(&["triggers", "fire", "watch", "--index", "2"]).1["outcome"], "muted");
+
+    let typed = env.home().join("typed.txt");
+    common::eventually("nudge typed", || {
+        fs::read_to_string(&typed).is_ok_and(|t| t.contains("[tome] trigger cron fired. Details: tome queue pull events"))
+    });
+
+    let pull = |env: &Env| {
+        let out = env.cmd(&["--json", "queue", "pull", "events"]).env("TOME_RUN_ID", run.to_string()).output().unwrap();
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["message"].clone()
+    };
+    let msg = pull(&env);
+    let body: Value = serde_json::from_str(msg["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["type"], "trigger");
+    assert_eq!(body["kind"], "cron");
+    assert_eq!(body["trigger"], "cron */5 * * * *");
+    assert_eq!(body["event"], "scheduled");
+    assert_eq!(msg["sender"], "trigger");
+
+    let (_, v) = env.json(&["query", "SELECT count(*) FROM worker_events WHERE event = 'trigger'"]);
+    assert_eq!(v["rows"][0][0], 2, "{v}");
+    assert_eq!(outcomes(&env), ["no_target", "started", "signalled", "signalled", "muted"]);
 }

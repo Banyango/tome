@@ -482,10 +482,18 @@ pub fn step_event(run_id: i64, h: &StepHistory) -> Value {
 }
 
 /// `{"type": "worker", "run_id", "worker", "group", "event", "message", "time"}`
-/// (events: spawned, started, done, failed, cancelled), or for a group
-/// `{"type": "group", "run_id", "group", "event": "finished", "message", "time"}`.
+/// (events: spawned, started, done, failed, cancelled), for a group
+/// `{"type": "group", "run_id", "group", "event": "finished", "message", "time"}`,
+/// or for a trigger signal `{"type": "trigger", "run_id", "event": "trigger", "message", "time"}`.
 pub fn worker_event(run_id: i64, h: &WorkerHistory) -> Value {
     match &h.worker {
+        None if h.group.is_none() => json!({
+            "type": "trigger",
+            "run_id": run_id,
+            "event": h.event,
+            "message": h.message,
+            "time": h.occurred_at,
+        }),
         Some(worker) => json!({
             "type": "worker",
             "run_id": run_id,

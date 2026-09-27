@@ -1079,7 +1079,7 @@ fn value_text(v: &Value) -> String {
 
 /// A trigger field as text: `paths` (a list of `{path, event}`) reads
 /// `specs/a.md (created), specs/b.md (modified)`.
-fn trigger_text(v: &Value) -> String {
+pub fn trigger_text(v: &Value) -> String {
     match v {
         Value::Null => String::new(),
         Value::Array(items) => items

@@ -9,13 +9,18 @@
 use crate::api::{opt_str, req_str};
 use crate::engine::Engine;
 use crate::output::{CliError, CliResult, ErrorKind};
-use crate::store::{NewFire, Run};
+use crate::store::{NewFire, Run, RunStatus};
+use crate::{orchestrator, session};
 use crate::workflow::{self, FileEvent, Scope, Target, TriggerKind, Workflow};
 use chrono::{DateTime, Local, SecondsFormat};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub const METHODS: &[&str] = &["triggers.fire"];
+
+/// The queue signals are delivered on, and who they're from.
+pub const QUEUE: &str = "events";
+const SENDER: &str = "trigger";
 
 /// Fire outcomes, as recorded.
 pub mod outcome {
@@ -245,8 +250,63 @@ impl Engine {
             Target::Running if active.is_empty() => {
                 Fired { outcome: outcome::NO_TARGET, message: Some("no active run to signal".into()), runs: Vec::new(), data: json!({}) }
             }
+            Target::Running | Target::RunningOrNew if !active.is_empty() => self.signal(trigger, req, &active),
             _ => self.fire_new(wf, trigger, req),
         }
+    }
+
+    /// Deliver a fire to active runs: JSON onto each run's `events` queue, a
+    /// line in its event stream, and a nudge typed into its orchestrator's
+    /// pane (dropped if the pane is gone).
+    fn signal(&self, trigger: &workflow::Trigger, req: &FireRequest, active: &[Run]) -> Fired {
+        let fields = fields(&trigger.kind, &req.event, Local::now());
+        let ids: Vec<i64> = active.iter().map(|r| r.id).collect();
+        if req.dry_run {
+            return Fired {
+                outcome: outcome::SIGNALLED,
+                message: Some(format!("would signal run {}", join_ids(&ids))),
+                runs: Vec::new(),
+                data: json!({ "action": "signal", "runs": ids, "trigger": fields }),
+            };
+        }
+        let mut body = json!({
+            "type": "trigger",
+            "trigger": trigger.describe(),
+            "index": req.index,
+            "synthetic": req.event.synthetic,
+            "params": trigger.params,
+        });
+        if let Value::Object(b) = &mut body {
+            b.extend(fields.clone());
+        }
+        let body = body.to_string();
+        let what = describe_event(trigger, &fields);
+        let mut signalled = Vec::new();
+        let mut errors = Vec::new();
+        for run in active {
+            let pushed = self.with_store(|store| {
+                store.push_message(run.id, QUEUE, &body, SENDER)?;
+                store.worker_event(run.id, None, None, "trigger", Some(&what))
+            });
+            match pushed {
+                Ok(()) => signalled.push(run.id),
+                Err(e) => errors.push(format!("run {}: {}", run.id, e.message)),
+            }
+            if run.status == RunStatus::Running {
+                let nudge = format!("[tome] trigger {} fired. Details: tome queue pull {QUEUE}", trigger.kind_name());
+                for s in self.recorded_sessions(run.id).iter().filter(|s| s.role == orchestrator::ROLE) {
+                    session::send_line(s, &nudge);
+                }
+            }
+        }
+        if signalled.is_empty() {
+            return Fired { outcome: outcome::ERROR, message: Some(errors.join("; ")), runs: Vec::new(), data: json!({}) };
+        }
+        let mut message = format!("signalled run {}", join_ids(&signalled));
+        if !errors.is_empty() {
+            message.push_str(&format!(" (failed: {})", errors.join("; ")));
+        }
+        Fired { outcome: outcome::SIGNALLED, message: Some(message), runs: signalled, data: json!({ "action": "signal" }) }
     }
 
     /// Start a detached run for a fired trigger.
@@ -294,6 +354,16 @@ impl Engine {
             }
             Err(e) => Fired { outcome: outcome::ERROR, message: Some(e.message), runs: Vec::new(), data: json!({}) },
         }
+    }
+}
+
+/// `file specs/**/*.md fired (specs/a.md (modified))`, for event streams.
+fn describe_event(trigger: &workflow::Trigger, fields: &Map<String, Value>) -> String {
+    let paths = workflow::trigger_text(fields.get("paths").unwrap_or(&Value::Null));
+    if paths.is_empty() {
+        format!("{} fired", trigger.describe())
+    } else {
+        format!("{} fired ({paths})", trigger.describe())
     }
 }
 
