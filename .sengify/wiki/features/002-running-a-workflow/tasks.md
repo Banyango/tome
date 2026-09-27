@@ -35,3 +35,9 @@ When a run starts, the daemon launches its orchestrator through the harness adap
 **Blocked by:** 002-1
 
 The workflow frontmatter can set `concurrency: N` with `on_conflict: queue | reject` to limit how many runs of that workflow are active at once. It's unlimited by default. A queued run waits and starts when a slot frees up. A rejected run fails fast with a clear error and a non-zero exit. This applies the same way to attached, detached and trigger-started runs. An agent can test it with detached runs held open by a stub or by leaving them unfinished. Covers use case 9.
+
+### 002-6. `tome workflow new`
+
+**Blocked by:** none
+
+`tome workflow new <name> [-d <description>] [--global] [--force]` writes a starter workflow that passes validation: frontmatter with `name`, `description`, an example param and the optional keys commented out, and a body with example steps. It goes where `tome run <name>` will find it: the nearest project `.tome/workflows` (created in the working directory if there is none), or `~/.tome/workflows` with `--global`. It refuses (exit `2`) an invalid name, an existing file unless `--force`, and a second workflow with the same name in the same directory. Creating a project workflow that overrides a global one is allowed and reported. Works without the daemon. An agent can test it by creating a workflow, validating it, and starting a detached run of it by name.

@@ -484,7 +484,7 @@ fn parse_defaults(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> 
     d
 }
 
-fn is_identifier(s: &str) -> bool {
+pub fn is_identifier(s: &str) -> bool {
     let mut chars = s.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')

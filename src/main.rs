@@ -11,6 +11,7 @@ mod query;
 mod recovery;
 mod rpc;
 mod runcmd;
+mod scaffold;
 mod service;
 mod store;
 mod validate;
@@ -37,6 +38,11 @@ enum Command {
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
+    },
+    /// Create workflows.
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
     },
     /// Validate workflows (all visible ones, or one by name or path).
     Validate {
@@ -106,6 +112,24 @@ enum RunCommand {
         /// Run id (defaults to TOME_RUN_ID).
         #[arg(env = "TOME_RUN_ID")]
         id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkflowCommand {
+    /// Write a starter workflow file where `tome run <name>` will find it.
+    New {
+        /// Workflow name (letters, digits, `_` and `-`).
+        name: String,
+        /// One-line description to put in the frontmatter.
+        #[arg(long, short)]
+        description: Option<String>,
+        /// Create it in ~/.tome/workflows instead of the project.
+        #[arg(long)]
+        global: bool,
+        /// Overwrite the file if it already exists.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -235,6 +259,11 @@ fn dispatch(command: Command) -> CliResult<Report> {
             DaemonCommand::Install { print, no_start } => service::install(print, no_start),
             DaemonCommand::Uninstall => service::uninstall(),
             DaemonCommand::Run => unreachable!("handled in main"),
+        },
+        Command::Workflow { command } => match command {
+            WorkflowCommand::New { name, description, global, force } => {
+                scaffold::new(&current_dir()?, &name, description.as_deref(), global, force)
+            }
         },
         Command::Validate { workflow, params } => validate::run(&current_dir()?, workflow.as_deref(), &params),
         Command::Run { command: Some(command), .. } => match command {
