@@ -308,6 +308,9 @@ fn file_changes_start_runs_in_the_project() {
         "triggers:\n  - file: \"specs/**/*.md\"\n    debounce: 1\n    ignore: [\"specs/drafts/**\"]\n",
         "## Go\nChanged: {{trigger.paths}}\n",
     );
+    // The glob's base exists: files already in a base that appears later
+    // are indexed without firing.
+    fs::create_dir_all(env.project().join("specs")).unwrap();
     start_fast_daemon(&env);
     // Registers the project; the glob matches nothing yet.
     assert_eq!(ls(&env)["projects"][0]["triggers"][0]["trigger"], "file specs/**/*.md");

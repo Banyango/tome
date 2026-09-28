@@ -16,6 +16,10 @@
 //! watcher instead walks the whole tree every tick and diffs it the same
 //! way. Changes are batched until the
 //! debounce window passes with no new ones, then fire as one event.
+//!
+//! While the glob's base doesn't exist (yet, or any more), its nearest
+//! existing ancestor is watched instead. When the base appears its files are
+//! indexed without firing; files created after that fire as usual.
 
 use crate::arming::{Armed, Scan};
 use crate::glob::Glob;
@@ -149,22 +153,51 @@ struct Os {
     per_dir: bool,
     /// The directories walked so far (each watched, when `per_dir`).
     dirs: BTreeSet<PathBuf>,
+    /// The base is missing, so `root` is its nearest existing ancestor,
+    /// watched on its own until the base appears.
+    waiting: bool,
 }
 
 impl Os {
-    fn start(root: &Path, per_dir: bool) -> notify::Result<Os> {
+    fn start(base: &Path, per_dir: bool) -> notify::Result<Os> {
         let (tx, events) = mpsc::channel();
-        let mut watcher = notify::recommended_watcher(tx)?;
-        let mode = if per_dir { RecursiveMode::NonRecursive } else { RecursiveMode::Recursive };
-        watcher.watch(root, mode)?;
-        Ok(Os {
+        let watcher = notify::recommended_watcher(tx)?;
+        let mut os = Os {
             watcher,
             events,
-            root: root.to_path_buf(),
-            real: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+            root: base.to_path_buf(),
+            real: base.to_path_buf(),
             per_dir,
-            dirs: BTreeSet::from([root.to_path_buf()]),
-        })
+            dirs: BTreeSet::new(),
+            waiting: false,
+        };
+        os.aim(base)?;
+        Ok(os)
+    }
+
+    /// Watch `base`, or while it's missing, its nearest existing ancestor.
+    /// Drops every earlier watch.
+    fn aim(&mut self, base: &Path) -> notify::Result<()> {
+        for d in std::mem::take(&mut self.dirs) {
+            let _ = self.watcher.unwatch(&d);
+        }
+        let nearest = || base.ancestors().find(|p| p.is_dir()).unwrap_or(base).to_path_buf();
+        loop {
+            let target = nearest();
+            let waiting = target != base;
+            let mode = if self.per_dir || waiting { RecursiveMode::NonRecursive } else { RecursiveMode::Recursive };
+            self.watcher.watch(&target, mode)?;
+            // A directory on the way to the base may have appeared before
+            // the watch did; aim again if so.
+            if nearest() == target {
+                self.real = target.canonicalize().unwrap_or_else(|_| target.clone());
+                self.dirs = BTreeSet::from([target.clone()]);
+                self.root = target;
+                self.waiting = waiting;
+                return Ok(());
+            }
+            let _ = self.watcher.unwatch(&target);
+        }
     }
 
     /// Note a directory the walk is about to read, watching it first when
@@ -284,7 +317,7 @@ impl State {
         };
         let mut failed = None;
         st.index = walk(spec, &spec.base, &mut st.ignored_dirs, |dir| match &mut os {
-            Some(os) if failed.is_none() => failed = os.add_dir(dir).err(),
+            Some(os) if failed.is_none() && !os.waiting => failed = os.add_dir(dir).err(),
             _ => {}
         });
         if let (Some(os), None) = (os, failed) {
@@ -333,32 +366,66 @@ impl State {
             }
             Source::Os(os) => os,
         };
+        // `None`: the OS dropped events.
         let touched = match os.drain() {
-            Ok(Some(t)) => t,
-            Ok(None) => {
-                // The OS dropped events: walk the watched tree once.
-                let mut failed = None;
-                let mut seen = BTreeSet::new();
-                let files = walk(spec, &spec.base, &mut self.ignored_dirs, |dir| {
-                    seen.insert(dir.to_path_buf());
-                    if failed.is_none() {
-                        failed = os.add_dir(dir).err();
-                    }
-                });
-                for gone in os.dirs.difference(&seen).cloned().collect::<Vec<_>>() {
-                    os.remove_dirs(&gone);
-                }
-                if failed.is_some() {
-                    self.source = Source::Poll;
-                }
-                return diff(&mut self.index, &spec.base, files);
-            }
+            Ok(t) => t,
             Err(_) => {
                 // Changes the OS watch missed are caught by the next walk,
                 // which diffs against the index.
                 self.source = Source::Poll;
                 return self.changes();
             }
+        };
+        if os.waiting {
+            // Only the base appearing matters, and only an event in the
+            // ancestor can say it has.
+            if touched.is_some_and(|t| t.is_empty()) {
+                return Vec::new();
+            }
+            if os.aim(&spec.base).is_err() {
+                self.source = Source::Poll;
+                return self.changes();
+            }
+            if !os.waiting {
+                // The base is here: index what's in it, firing nothing.
+                let mut failed = None;
+                self.index = walk(spec, &spec.base, &mut self.ignored_dirs, |dir| {
+                    if failed.is_none() {
+                        failed = os.add_dir(dir).err();
+                    }
+                });
+                if failed.is_some() {
+                    self.source = Source::Poll;
+                }
+            }
+            return Vec::new();
+        }
+        if !spec.base.is_dir() {
+            // The base is gone. Its files leave the index (deletes never
+            // fire), and its nearest ancestor is watched until it's back.
+            self.index.clear();
+            if os.aim(&spec.base).is_err() {
+                self.source = Source::Poll;
+            }
+            return Vec::new();
+        }
+        let Some(touched) = touched else {
+            // Walk the watched tree once, so no change is lost.
+            let mut failed = None;
+            let mut seen = BTreeSet::new();
+            let files = walk(spec, &spec.base, &mut self.ignored_dirs, |dir| {
+                seen.insert(dir.to_path_buf());
+                if failed.is_none() {
+                    failed = os.add_dir(dir).err();
+                }
+            });
+            for gone in os.dirs.difference(&seen).cloned().collect::<Vec<_>>() {
+                os.remove_dirs(&gone);
+            }
+            if failed.is_some() {
+                self.source = Source::Poll;
+            }
+            return diff(&mut self.index, &spec.base, files);
         };
         let mut changes = Vec::new();
         let mut failed = None;
@@ -640,6 +707,50 @@ mod tests {
             let Some(Source::Os(os)) = w.states.values().next().map(|s| &s.source) else { panic!("{name}: not watching") };
             assert!(os.dirs.contains(&root.join("docs/new")), "{name}: new dirs are watched");
             assert!(!os.dirs.contains(&root.join("docs/gone")), "{name}: gone dirs are forgotten");
+        }
+    }
+
+    #[test]
+    fn a_missing_base_is_waited_for() {
+        for (name, mut w) in watchers() {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let s = scan(armed(&root, "file: \"docs/specs/*.md\"\n    debounce: 0"));
+            let now = Instant::now();
+            assert!(w.poll(&s, now, |_| false).is_empty(), "{name}");
+            if let Some(Source::Os(os)) = w.states.values().next().map(|s| &s.source) {
+                assert!(os.waiting && os.root == root, "{name}: the nearest ancestor is watched");
+            }
+            fs::create_dir_all(root.join("docs")).unwrap();
+            settle();
+            assert!(w.poll(&s, now, |_| false).is_empty(), "{name}");
+            // The base appears with a file already in it.
+            write(&root.join("staging/old.md"), "old");
+            fs::rename(root.join("staging"), root.join("docs/specs")).unwrap();
+            settle();
+            let fired = paths(&w.poll(&s, now, |_| false));
+            if w.mode == Mode::Os {
+                assert!(fired.is_empty(), "{name}: the base's files are indexed without firing");
+            }
+            write(&root.join("docs/specs/a.md"), "a");
+            settle();
+            assert_eq!(paths(&w.poll(&s, now, |_| false)), ["docs/specs/a.md created"], "{name}");
+            assert!(watching(&w), "{name}");
+
+            // Deleted, then back again.
+            fs::remove_dir_all(root.join("docs")).unwrap();
+            settle();
+            assert!(w.poll(&s, now, |_| false).is_empty(), "{name}: deletes never fire");
+            if let Some(Source::Os(os)) = w.states.values().next().map(|s| &s.source) {
+                assert!(os.waiting && os.root == root, "{name}: the nearest ancestor is watched");
+            }
+            fs::create_dir_all(root.join("docs/specs")).unwrap();
+            settle();
+            w.poll(&s, now, |_| false);
+            write(&root.join("docs/specs/b.md"), "b");
+            settle();
+            assert_eq!(paths(&w.poll(&s, now, |_| false)), ["docs/specs/b.md created"], "{name}");
+            assert!(watching(&w), "{name}");
         }
     }
 
