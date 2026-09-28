@@ -532,4 +532,9 @@ fn focused_is_the_attached_session_when_the_run_starts_or_else_the_project() {
     let (_, shown) = env.json(&["runs", "show", "2"]);
     let notes = shown["run"]["placement"]["notes"].to_string();
     assert!(notes.contains("workspace: focused: no tmux client is attached; used the project workspace"), "{shown}");
+    let human = String::from_utf8_lossy(&env.run(&["runs", "show", "2"]).stdout).into_owned();
+    assert!(human.contains("\nplacement:\n  tome-2-build\n"), "{human}");
+    assert!(human.contains("  note: workspace: focused: no tmux client is attached"), "{human}");
+    let row = human.lines().find(|l| l.trim_start().starts_with("workspace ")).unwrap_or_else(|| panic!("{human}"));
+    assert_eq!(row.split_whitespace().collect::<Vec<_>>(), ["workspace", "focused", "`tome", "run`", "flags"], "{human}");
 }

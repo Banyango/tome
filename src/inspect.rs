@@ -205,6 +205,7 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
             .collect();
         out.push_str(&indent(&table(&["SESSION", "ROLE", "HARNESS", "ATTACH"], rows)));
     }
+    out.push_str(&placement(&run["placement"], &sessions));
 
     let logs = data["logs"].as_array().cloned().unwrap_or_default();
     if !logs.is_empty() {
@@ -267,6 +268,38 @@ fn size(v: &Value) -> String {
     }
 }
 
+/// Each session's resolved placement, where each setting came from and any
+/// warnings, then the run's placement notes. Empty if there's none of that
+/// (sessions from before placements).
+fn placement(run: &Value, sessions: &[Value]) -> String {
+    let mut out = String::new();
+    for x in sessions {
+        let p = &x["placement"];
+        if !p.is_object() {
+            continue;
+        }
+        out.push_str(&format!("  {}\n", s(&x["name"])));
+        let rows = [("layout", &p["layout"]), ("workspace", &p["workspace"]), ("split.direction", &p["direction"]), ("split.size", &p["size"]), ("from", &p["from"])]
+            .into_iter()
+            .filter(|(_, v)| !v.is_null())
+            .map(|(key, v)| vec![key.to_string(), s(v), p["sources"][key].as_str().unwrap_or("").to_string()])
+            .collect();
+        out.push_str(&indent(&indent(&table(&["SETTING", "VALUE", "FROM"], rows))));
+        for w in p["warnings"].as_array().into_iter().flatten() {
+            out.push_str(&format!("    warning: {}\n", s(w)));
+        }
+    }
+    let notes: Vec<String> = run["notes"].as_array().into_iter().flatten().map(|n| format!("  note: {}\n", s(n))).collect();
+    if let Some(id) = run["focused"]["id"].as_str() {
+        out.push_str(&format!("  focused workspace at start: {id}\n"));
+    }
+    out.push_str(&notes.concat());
+    if out.is_empty() {
+        return out;
+    }
+    format!("\nplacement:\n{out}")
+}
+
 fn indent(text: &str) -> String {
     text.lines().map(|l| format!("  {l}\n")).collect()
 }
@@ -287,6 +320,25 @@ mod tests {
     #[test]
     fn params_render_as_key_value() {
         assert_eq!(params(&json!({"ticket": "ABC-1", "n": 2, "dry": true})), "ticket=ABC-1  n=2  dry=true");
+    }
+
+    #[test]
+    fn placement_shows_settings_sources_warnings_and_notes() {
+        let sessions = [
+            json!({"name": "tome-1-b", "placement": {
+                "layout": "split", "workspace": "project", "direction": "down", "size": "95%",
+                "sources": {"layout": "`tome run` flags", "workspace": "the default", "split.direction": "preset `x` (from `tome run` flags)", "split.size": "`tome run` flags"},
+                "warnings": ["split.size 95% is outside 10%..90%; clamped to 90%"]}}),
+            json!({"name": "old"}),
+        ];
+        let run = json!({"notes": ["workspace: focused: no tmux client is attached; used the project workspace"]});
+        let out = placement(&run, &sessions);
+        assert!(out.starts_with("\nplacement:\n  tome-1-b\n"), "{out}");
+        assert!(out.lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["split.direction", "down", "preset", "`x`", "(from", "`tome", "run`", "flags)"]), "{out}");
+        assert!(out.contains("    warning: split.size 95% is outside"), "{out}");
+        assert!(out.contains("  note: workspace: focused: no tmux client"), "{out}");
+        assert!(!out.contains("old"), "{out}");
+        assert_eq!(placement(&json!(null), &[json!({"name": "old"})]), "");
     }
 
     #[test]
