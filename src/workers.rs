@@ -243,7 +243,7 @@ impl Engine {
         // by exit code.
         let agent: Agent = (run_id, Some(name.clone()));
         if matches!(task, Task::Agent { .. }) {
-            self.expect_start(agent.clone(), handshake::timeout(), prompt_file(run_id, &name));
+            self.expect_start(agent.clone(), handshake::timeout(&wf.frontmatter), prompt_file(run_id, &name));
         }
         match self.launch_worker(&run, &name, &task, &cwd, created.as_ref().map(|c| c.path.as_path()), worker.keep_open) {
             Ok(s) => {

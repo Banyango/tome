@@ -26,7 +26,7 @@ use std::time::Duration;
 
 pub const TOP_LEVEL_KEYS: &[&str] =
     &["name", "description", "triggers", "params", "defaults", "concurrency", "on_conflict", "orchestrator"];
-pub const DEFAULTS_KEYS: &[&str] = &["backend", "harness", "orchestrator_harness", "timeout", "on_failure"];
+pub const DEFAULTS_KEYS: &[&str] = &["backend", "harness", "orchestrator_harness", "timeout", "on_failure", "start_timeout"];
 pub const PARAM_KEYS: &[&str] = &["type", "default", "description"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -126,6 +126,37 @@ pub struct Defaults {
     pub timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_failure: Option<String>,
+    /// How long the orchestrator and agent workers have to make their
+    /// first tome call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_timeout: Option<StartTimeout>,
+}
+
+/// `defaults.start_timeout`: a duration, or `off` for no start check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartTimeout {
+    Off,
+    After(Duration),
+}
+
+impl StartTimeout {
+    /// The timeout, or `None` when the check is off.
+    pub fn duration(self) -> Option<Duration> {
+        match self {
+            StartTimeout::Off => None,
+            StartTimeout::After(d) => Some(d),
+        }
+    }
+}
+
+/// `"off"`, or the number of seconds.
+impl Serialize for StartTimeout {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            StartTimeout::Off => s.serialize_str("off"),
+            StartTimeout::After(d) => s.serialize_u64(d.as_secs()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -872,6 +903,22 @@ fn parse_defaults(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> 
                     Err(e) => errors.push(Diagnostic::new(line, format!("`defaults.timeout` {e}"))),
                 }
             }
+            "start_timeout" => {
+                let parsed = match v {
+                    Yaml::String(s) if s.trim() == "off" => Ok(StartTimeout::Off),
+                    Yaml::Bool(false) => Ok(StartTimeout::Off),
+                    Yaml::Number(n) => n.as_u64().ok_or_else(|| "must be a positive number of seconds".to_string()).map(Duration::from_secs).map(StartTimeout::After),
+                    Yaml::String(s) => duration::parse(s).map(StartTimeout::After),
+                    _ => Err("must be a duration like `2m`, or `off`".to_string()),
+                };
+                match parsed {
+                    Ok(StartTimeout::After(d)) if d.is_zero() => {
+                        errors.push(Diagnostic::new(line, "`defaults.start_timeout` must be longer than 0s (use `off` to turn the check off)"))
+                    }
+                    Ok(t) => d.start_timeout = Some(t),
+                    Err(e) => errors.push(Diagnostic::new(line, format!("`defaults.start_timeout` {e}"))),
+                }
+            }
             other => errors.push(Diagnostic::new(
                 line,
                 format!("unknown key `defaults.{other}` (expected one of: {})", DEFAULTS_KEYS.join(", ")),
@@ -1323,6 +1370,20 @@ Retry up to {{params.retries}} times on {{params.ticket}}.
         assert_eq!(wf.frontmatter.on_conflict, Some(OnConflict::Queue));
         assert_eq!(wf.body_line, 18);
         assert!(wf.body.starts_with("## Implement"));
+    }
+
+    #[test]
+    fn start_timeout_is_a_duration_or_off() {
+        let with = |v: &str| p(&format!("---\nname: x\ndefaults:\n  start_timeout: {v}\n---\n## A\n"));
+        let timeout = |v: &str| with(v).unwrap().frontmatter.defaults.start_timeout;
+        assert_eq!(timeout("2m"), Some(StartTimeout::After(Duration::from_secs(120))));
+        assert_eq!(timeout("90"), Some(StartTimeout::After(Duration::from_secs(90))));
+        assert_eq!(timeout("off"), Some(StartTimeout::Off));
+        assert_eq!(timeout("\"off\""), Some(StartTimeout::Off));
+        for bad in ["soon", "0s", "[1]", "-5"] {
+            let err = with(bad).unwrap_err();
+            assert!(err.errors[0].message.contains("defaults.start_timeout"), "{bad}: {:?}", err.errors);
+        }
     }
 
     #[test]

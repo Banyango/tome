@@ -70,7 +70,7 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
         title: format!("tome: {} #{}", run.workflow_name, run.id),
         cwd,
         prompt: bootstrap(run, &wf.frontmatter, &wf.body),
-        start_timeout: crate::handshake::timeout(),
+        start_timeout: crate::handshake::timeout(&wf.frontmatter),
     })
 }
 

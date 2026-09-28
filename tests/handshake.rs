@@ -164,6 +164,54 @@ fn the_check_can_be_off() {
     assert!(states(&env, "1").is_empty());
 }
 
+/// An env with no `TOME_START_TIMEOUT`, so the workflow's own setting applies.
+fn env_without_override() -> Env {
+    let mut env = Env::new();
+    env.vars.retain(|(k, _)| k != "TOME_START_TIMEOUT");
+    env
+}
+
+#[test]
+fn a_workflow_can_turn_the_check_off() {
+    let env = env_without_override();
+    write_wf(&env, "build", "---\nname: build\ndefaults:\n  start_timeout: off\n---\n## Build\nGo.\n");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    assert_eq!(status(&env, "1"), "running");
+    assert!(states(&env, "1").is_empty());
+}
+
+#[test]
+fn a_workflow_sets_its_own_timeout() {
+    let env = env_without_override();
+    write_wf(&env, "build", "---\nname: build\ndefaults:\n  start_timeout: 1s\n---\n## Build\nGo.\n");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    eventually("the nudge", || states(&env, "1") == ["orchestrator waiting", "orchestrator nudged"]);
+    let waiting = show(&env, "1")["handshake"][0]["message"].clone();
+    assert_eq!(waiting, "waiting 1s for a first tome call");
+}
+
+#[test]
+fn the_env_var_wins_over_the_workflow() {
+    let env = env_with_timeout("off");
+    write_wf(&env, "build", "---\nname: build\ndefaults:\n  start_timeout: 1s\n---\n## Build\nGo.\n");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(states(&env, "1").is_empty());
+}
+
+#[test]
+fn a_bad_start_timeout_is_invalid() {
+    let env = Env::new();
+    write_wf(&env, "build", "---\nname: build\ndefaults:\n  start_timeout: soon\n---\n## Build\nGo.\n");
+    let (code, v) = env.json(&["validate"]);
+    assert_eq!(code, 2, "{v}");
+    assert!(v.to_string().contains("defaults.start_timeout"), "{v}");
+}
+
 #[test]
 fn ready_needs_an_agent() {
     let env = Env::new();

@@ -18,6 +18,7 @@ use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::session;
 use crate::store::{RunStatus, Store, WorkerStatus};
+use crate::workflow::{Frontmatter, StartTimeout};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -63,9 +64,11 @@ fn env_timeout() -> Option<Option<Duration>> {
     crate::duration::parse(v).ok().map(Some)
 }
 
-/// How long an agent has to start; `None` when the check is off.
-pub fn timeout() -> Option<Duration> {
-    env_timeout().unwrap_or(Some(DEFAULT_TIMEOUT))
+/// How long an agent of a workflow has to start; `None` when the check is
+/// off. `TOME_START_TIMEOUT` wins over `defaults.start_timeout`, which wins
+/// over the default.
+pub fn timeout(fm: &Frontmatter) -> Option<Duration> {
+    env_timeout().unwrap_or_else(|| fm.defaults.start_timeout.map_or(Some(DEFAULT_TIMEOUT), StartTimeout::duration))
 }
 
 /// An agent the daemon launched that hasn't made a tome call yet.
