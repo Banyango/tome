@@ -329,6 +329,15 @@ fn events_are_listed_shown_retried_and_removed() {
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["delivery"]["state"], "dropped");
 
+    // Nothing subscribes: nothing to drop, so the event itself goes.
+    assert_eq!(env.json(&["publish", "nobody.listens", "c"]).0, 0);
+    assert_eq!(env.json(&["events", "remove", "3", "--workflow", "review"]).0, 4, "{v}");
+    let (code, v) = env.json(&["events", "remove", "3"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["deleted"], true, "{v}");
+    assert_eq!(env.json(&["events", "show", "nobody.listens", "--all"]).1["events"], serde_json::json!([]));
+    assert_eq!(env.json(&["events", "remove", "3"]).0, 4, "already gone");
+
     assert_eq!(env.json(&["triggers", "enable"]).0, 0);
     common::eventually("runs for both events", || runs(&env).len() == 2);
     let (first, second) = (run_for_event(&env, 1), run_for_event(&env, 2));

@@ -149,6 +149,12 @@ impl Store {
         self.conn.query_row(&sql, params![id], event_from_row).optional().map_err(internal)
     }
 
+    /// Delete an event outright. Only for one with no deliveries.
+    pub fn delete_bus_event(&mut self, id: i64) -> CliResult<()> {
+        self.conn.execute("DELETE FROM bus_events WHERE id = ?", params![id]).map_err(internal)?;
+        Ok(())
+    }
+
     /// A project's events on `topic`, oldest first.
     pub fn bus_events(&self, project: &str, topic: &str) -> CliResult<Vec<BusEvent>> {
         let sql = format!("SELECT {EVENT_COLUMNS} FROM bus_events WHERE project_path = ? AND topic = ? ORDER BY id");

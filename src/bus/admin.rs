@@ -106,6 +106,8 @@ impl Engine {
     /// `events.retry` / `events.remove {event, workflow?, project_path?}`:
     /// move an event's delivery from one of `from` to `to`. Refused if it's
     /// in another state, or several would move and no workflow was named.
+    /// Removing an event with no deliveries (no subscribers, or refused)
+    /// deletes the event itself, since there's nothing to drop.
     pub(crate) fn events_move(&self, p: &Value, from: &[&str], to: &str) -> CliResult<Value> {
         let id = req_id_at(p, "event")?;
         let workflow = opt_str(p, "workflow");
@@ -117,6 +119,10 @@ impl Engine {
                 .filter(|e| project.is_none_or(|p| p == e.project_path))
                 .ok_or_else(|| CliError::not_found(format!("no event {id} in this project")))?;
             let mut deliveries = store.deliveries_of(id)?;
+            if deliveries.is_empty() && workflow.is_none() && to == state::DROPPED {
+                store.delete_bus_event(id)?;
+                return Ok((event, None));
+            }
             if let Some(wf) = workflow {
                 deliveries.retain(|d| d.workflow == wf);
                 if deliveries.is_empty() {
@@ -140,9 +146,15 @@ impl Engine {
             if !store.move_delivery(d.id, &d.state, to, runs)? {
                 return Err(CliError::conflict(format!("event {id}'s delivery to `{}` changed meanwhile; try again", d.workflow)));
             }
-            Ok((event, store.delivery(d.id)?.unwrap_or(d)))
+            Ok((event, Some(store.delivery(d.id)?.unwrap_or(d))))
         })?;
-        let (event, delivery) = moved;
+        let (event, delivery) = match moved {
+            (event, None) => {
+                eprintln!("tome daemon: event {} removed by hand (no deliveries)", event.id);
+                return Ok(json!({ "event": event, "delivery": null, "deleted": true }));
+            }
+            (event, Some(delivery)) => (event, delivery),
+        };
         eprintln!("tome daemon: delivery {} of event {} to {} {verb} by hand", delivery.id, event.id, delivery.workflow);
         Ok(json!({ "event": event, "delivery": delivery }))
     }

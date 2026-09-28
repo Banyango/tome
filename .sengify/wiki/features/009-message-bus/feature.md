@@ -90,7 +90,7 @@ Tome publishes these on its own, with sender `tome` and a JSON payload:
 - `tome events ls` lists the project's topics with how many events each has had, when the last one was published, and its subscribers with their pending, claimed and failed counts.
 - `tome events show <topic> [--all]` lists the topic's events with id, sender, age, a first-line payload preview and each subscriber's delivery state and run. Events whose deliveries are all `done` (or that had none) are left out unless `--all` is given.
 - `tome events retry <event> [--workflow <wf>]` puts a `failed` delivery back to `pending`. It refuses any other state. `--workflow` is needed when the event has more than one failed delivery.
-- `tome events remove <event> [--workflow <wf>]` drops a `pending` or `failed` delivery, for example for an event published by mistake. Without `--workflow` it drops all of the event's pending and failed deliveries. It refuses a `claimed` one.
+- `tome events remove <event> [--workflow <wf>]` drops a `pending` or `failed` delivery, for example for an event published by mistake. Without `--workflow` it drops all of the event's pending and failed deliveries. It refuses a `claimed` one. An event with no deliveries at all (nothing subscribed, or its publish was refused) is deleted outright, since there's nothing to drop.
 - Refusals exit `2`.
 - `tome gc` removes `done` deliveries, and events with no deliveries left.
 

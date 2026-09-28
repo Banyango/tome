@@ -159,7 +159,11 @@ pub fn show(cwd: &Path, topic: &str, all: bool) -> CliResult<Report> {
 fn move_delivery(cwd: &Path, method: &str, event: i64, workflow: Option<&str>, verb: &str) -> CliResult<Report> {
     let project = project(cwd)?;
     let out = call(method, json!({ "project_path": project, "event": event, "workflow": workflow }))?;
-    let human = format!("{verb} event {} for {}", event, text(&out["delivery"]["workflow"]));
+    let human = if out["deleted"] == true {
+        format!("removed event {event}: it had no deliveries")
+    } else {
+        format!("{verb} event {} for {}", event, text(&out["delivery"]["workflow"]))
+    };
     Ok(Report::new(out, human))
 }
 
