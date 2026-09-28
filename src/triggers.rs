@@ -149,6 +149,7 @@ impl Engine {
         let roots: Vec<PathBuf> = projects.iter().map(|p| PathBuf::from(&p.path)).collect();
         let scan = arming::scan(&roots);
         let fires = self.with_store(|store| store.last_fires())?;
+        let polling = self.file_polling.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let last = |path: &Path, project: Option<&Path>, index: i64| {
             let (path, project) = (path.display().to_string(), project.map(|p| p.display().to_string()));
             fires.iter().find(|f| f.workflow_path == path && f.project_path == project && f.trigger_index == index).cloned()
@@ -166,6 +167,7 @@ impl Engine {
                         "kind": a.trigger.kind_name(),
                         "trigger": a.trigger.describe(),
                         "to": a.trigger.effective_target().as_str(),
+                        "polling": polling.get(&a.key()),
                         "last": last(&a.workflow_path, project, a.index as i64),
                     })
                 })

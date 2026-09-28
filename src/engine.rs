@@ -57,6 +57,9 @@ pub struct Engine {
     watchers: Mutex<HashMap<i64, Watchers>>,
     /// Runs whose orchestrator is being started; the monitor leaves them be.
     launching: Mutex<HashSet<i64>>,
+    /// File triggers polling rather than on OS events, by armed key, with
+    /// why. Kept by the trigger loop.
+    pub(crate) file_polling: Mutex<HashMap<String, String>>,
 }
 
 impl Engine {
@@ -65,6 +68,7 @@ impl Engine {
             store: Mutex::new(Some(store)),
             watchers: Mutex::new(HashMap::new()),
             launching: Mutex::new(HashSet::new()),
+            file_polling: Mutex::new(HashMap::new()),
         }
     }
 

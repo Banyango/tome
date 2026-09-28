@@ -260,6 +260,7 @@ impl Engine {
             for (armed, event) in files.poll(&current, std::time::Instant::now(), active) {
                 self.fire_armed(&armed, event);
             }
+            *self.file_polling.lock().unwrap_or_else(|p| p.into_inner()) = files.polling();
             std::thread::sleep(tick());
         }
     }
