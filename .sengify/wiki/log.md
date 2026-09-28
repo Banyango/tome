@@ -10,4 +10,5 @@
 - 2026-09-26 16:19 — update — aligned entities with 002; added orchestrator — pages touched: features/001-foundation/feature.md, entities/step.md, entities/workflow.md, entities/action.md, entities/daemon.md, entities/orchestrator.md, index.md
 - 2026-09-26 23:10 — feature — 003-primitives — pages touched: features/003-primitives/feature.md, entities/worker.md, index.md
 - 2026-09-26 23:38 — feature — 004-triggers — pages touched: features/004-triggers/feature.md, entities/trigger.md, index.md
+- 2026-09-27 19:00 — feature — 009-project-queues — pages touched: features/009-project-queues/feature.md, entities/queue.md, entities/trigger.md, index.md
 - 2026-09-27 19:30 — update — 008 tome workspace renamed to `<project>-orchestrator` — pages touched: features/008-session-layout/feature.md, features/008-session-layout/tasks.md

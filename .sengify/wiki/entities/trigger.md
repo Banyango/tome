@@ -15,11 +15,12 @@ A rule in [[workflow]] frontmatter that makes the [[daemon]] react to an event, 
       - `mute`: the changes are dropped (the default before 006; workflows that relied on it must now say `while_running: mute`)
     - tome has no loop guard: a run that edits files its own trigger watches queues or starts another run. Avoid it with `ignore:`, `on: [created]`, or `while_running: mute`
   - `cron`: a 5-field expression in local time; missed times are skipped
+  - `queue`: a project [[queue]]; one run per pending message, limited by `concurrency`; project workflows only (feature 009)
 - `to:` `new` (default), `running`, or `running-or-new`, for cron and file triggers alike; a file trigger signalling runs passes its changed paths as event data
 - `params:` fills in workflow params
 - event data: `{{trigger.*}}` placeholders in the body
 - fire outcomes: `started`, `queued`, `merged` (names the run the paths went into), `signalled`, `no_target`, `muted`, `rejected`, `error`; shown in `tome triggers ls` and `tome triggers fire --dry-run`
-- deferred: webhooks, matching agent output, queue-message triggers
+- deferred: webhooks, matching agent output
 
 ## Relationships
 
@@ -38,3 +39,4 @@ A rule in [[workflow]] frontmatter that makes the [[daemon]] react to an event, 
 - .sengify/sources/interview-2026-09-26.md
 - .sengify/sources/feature-set-2026-09-26.md
 - features/004-triggers/feature.md
+- features/009-project-queues/feature.md
