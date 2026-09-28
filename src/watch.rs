@@ -10,8 +10,11 @@
 //! Each trigger keeps an index of file stats, built when it arms (which
 //! fires nothing). An event is turned into changes by re-reading the paths
 //! it names and diffing them against the index, so the index decides
-//! created vs modified. The polling watcher instead walks the whole tree
-//! every tick and diffs it the same way. Changes are batched until the
+//! created vs modified. When the OS says it dropped events (an inotify
+//! queue overflow, FSEvents MustScanSubDirs), the watched tree is walked
+//! once and diffed against the index, so no change is lost. The polling
+//! watcher instead walks the whole tree every tick and diffs it the same
+//! way. Changes are batched until the
 //! debounce window passes with no new ones, then fire as one event.
 
 use crate::arming::{Armed, Scan};
@@ -194,10 +197,13 @@ impl Os {
 
     /// The paths events named since the last drain, each with whether an
     /// event could have put something new there (a create or a rename).
-    fn drain(&mut self) -> Result<BTreeMap<PathBuf, bool>, String> {
+    /// `None` when the OS dropped events, so the whole tree needs a rescan.
+    fn drain(&mut self) -> Result<Option<BTreeMap<PathBuf, bool>>, String> {
         let mut touched: BTreeMap<PathBuf, bool> = BTreeMap::new();
+        let mut rescan = false;
         loop {
             match self.events.try_recv() {
+                Ok(Ok(ev)) if ev.need_rescan() => rescan = true,
                 Ok(Ok(ev)) => {
                     let arrived =
                         matches!(ev.kind, EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_)) | EventKind::Any | EventKind::Other);
@@ -206,7 +212,7 @@ impl Os {
                     }
                 }
                 Ok(Err(e)) => return Err(e.to_string()),
-                Err(TryRecvError::Empty) => return Ok(touched),
+                Err(TryRecvError::Empty) => return Ok((!rescan).then_some(touched)),
                 Err(TryRecvError::Disconnected) => return Err("the OS watcher stopped".into()),
             }
         }
@@ -328,7 +334,25 @@ impl State {
             Source::Os(os) => os,
         };
         let touched = match os.drain() {
-            Ok(t) => t,
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                // The OS dropped events: walk the watched tree once.
+                let mut failed = None;
+                let mut seen = BTreeSet::new();
+                let files = walk(spec, &spec.base, &mut self.ignored_dirs, |dir| {
+                    seen.insert(dir.to_path_buf());
+                    if failed.is_none() {
+                        failed = os.add_dir(dir).err();
+                    }
+                });
+                for gone in os.dirs.difference(&seen).cloned().collect::<Vec<_>>() {
+                    os.remove_dirs(&gone);
+                }
+                if failed.is_some() {
+                    self.source = Source::Poll;
+                }
+                return diff(&mut self.index, &spec.base, files);
+            }
             Err(_) => {
                 // Changes the OS watch missed are caught by the next walk,
                 // which diffs against the index.
@@ -589,6 +613,33 @@ mod tests {
             settle();
             assert_eq!(paths(&w.poll(&s, now, |_| false)), ["docs/new/sub/deeper/c.md created"], "{name}");
             assert!(watching(&w), "{name}");
+        }
+    }
+
+    #[test]
+    fn dropped_os_events_are_caught_by_a_rescan() {
+        for (name, mut w) in watchers().into_iter().filter(|(_, w)| w.mode == Mode::Os) {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            write(&root.join("docs/old.md"), "x");
+            write(&root.join("docs/gone/g.md"), "g");
+            let s = scan(armed(&root, "file: \"docs/**/*.md\"\n    debounce: 0"));
+            let now = Instant::now();
+            w.poll(&s, now, |_| false);
+            // Swap in a channel the OS never writes to, so every real event
+            // is lost, then report the loss.
+            let (tx, rx) = mpsc::channel();
+            let Some(Source::Os(os)) = w.states.values_mut().next().map(|s| &mut s.source) else { panic!("{name}: not watching") };
+            os.events = rx;
+            std::thread::sleep(Duration::from_millis(20));
+            write(&root.join("docs/old.md"), "changed");
+            write(&root.join("docs/new/a.md"), "a");
+            fs::remove_dir_all(root.join("docs/gone")).unwrap();
+            tx.send(Ok(notify::Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan))).unwrap();
+            assert_eq!(paths(&w.poll(&s, now, |_| false)), ["docs/new/a.md created", "docs/old.md modified"], "{name}");
+            let Some(Source::Os(os)) = w.states.values().next().map(|s| &s.source) else { panic!("{name}: not watching") };
+            assert!(os.dirs.contains(&root.join("docs/new")), "{name}: new dirs are watched");
+            assert!(!os.dirs.contains(&root.join("docs/gone")), "{name}: gone dirs are forgotten");
         }
     }
 
