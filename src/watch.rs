@@ -17,6 +17,8 @@
 //! way. Changes are batched until the
 //! debounce window passes with no new ones, then fire as one event.
 //!
+//! `TOME_FILE_WATCH=poll` puts every trigger on the polling watcher.
+//!
 //! While the glob's base doesn't exist (yet, or any more), its nearest
 //! existing ancestor is watched instead. When the base appears its files are
 //! indexed without firing; files created after that fire as usual.
@@ -133,6 +135,23 @@ enum Mode {
     Os,
     Poll,
 }
+
+impl Mode {
+    /// From `TOME_FILE_WATCH`: `poll` forces polling; anything else but
+    /// `os` is warned about. OS events are the default.
+    fn parse(value: Option<&str>) -> Mode {
+        match value {
+            Some("poll") => Mode::Poll,
+            None | Some("" | "os") => Mode::Os,
+            Some(other) => {
+                eprintln!("tome daemon: unknown TOME_FILE_WATCH={other:?} (expected `poll`); using OS file events");
+                Mode::Os
+            }
+        }
+    }
+}
+
+const FORCED: &str = "forced by TOME_FILE_WATCH=poll";
 
 /// Where one trigger's changes come from.
 enum Source {
@@ -272,7 +291,8 @@ pub struct Watcher {
 
 impl Default for Watcher {
     fn default() -> Watcher {
-        Watcher { states: HashMap::new(), mode: Mode::Os, per_dir: cfg!(target_os = "linux") }
+        let mode = Mode::parse(std::env::var("TOME_FILE_WATCH").ok().as_deref());
+        Watcher { states: HashMap::new(), mode, per_dir: cfg!(target_os = "linux") }
     }
 }
 
@@ -339,7 +359,7 @@ impl State {
                 Ok(os) => (Some(os), None),
                 Err(e) => (None, Some(watch_failed(&spec.base, e))),
             },
-            Mode::Poll => (None, None),
+            Mode::Poll => (None, Some(FORCED.to_string())),
         };
         st.index = walk(spec, &spec.base, &mut st.ignored_dirs, |dir| match &mut os {
             Some(os) if failed.is_none() && !os.waiting => failed = os.add_dir(dir).err(),
@@ -738,6 +758,19 @@ mod tests {
             assert!(os.dirs.contains(&root.join("docs/new")), "{name}: new dirs are watched");
             assert!(!os.dirs.contains(&root.join("docs/gone")), "{name}: gone dirs are forgotten");
         }
+    }
+
+    #[test]
+    fn tome_file_watch_picks_the_mode() {
+        assert_eq!(Mode::parse(None), Mode::Os);
+        assert_eq!(Mode::parse(Some("os")), Mode::Os);
+        assert_eq!(Mode::parse(Some("poll")), Mode::Poll);
+        assert_eq!(Mode::parse(Some("inotify")), Mode::Os, "unknown values use OS events");
+        let dir = tempfile::tempdir().unwrap();
+        let s = scan(armed(dir.path(), "file: \"*.md\""));
+        let mut w = Watcher { states: HashMap::new(), mode: Mode::Poll, per_dir: false };
+        w.poll(&s, Instant::now(), |_| false);
+        assert_eq!(w.polling().into_values().collect::<Vec<_>>(), [FORCED]);
     }
 
     #[test]

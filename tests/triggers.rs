@@ -343,3 +343,26 @@ fn file_changes_start_runs_in_the_project() {
     let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
     assert!(snap.contains("Changed: specs/b.md (modified)"), "{snap}");
 }
+
+#[test]
+fn tome_file_watch_poll_forces_polling() {
+    let env = Env::new();
+    write_wf(&env, "specs", "triggers:\n  - file: \"specs/*.md\"\n    debounce: 0\n", "## Go\nChanged: {{trigger.paths}}\n");
+    fs::create_dir_all(env.project().join("specs")).unwrap();
+    let out = env
+        .cmd(&["daemon", "start"])
+        .env("TOME_TRIGGER_TICK_MS", "100")
+        .env("TOME_FILE_WATCH", "poll")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    common::eventually("the trigger to be polling", || {
+        ls(&env)["projects"][0]["triggers"][0]["polling"] == "forced by TOME_FILE_WATCH=poll"
+    });
+    let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
+    assert!(human.contains("specs: file specs/*.md is polling: forced by TOME_FILE_WATCH=poll"), "{human}");
+    assert!(daemon_log(&env).contains("is polling: forced by TOME_FILE_WATCH=poll"), "{}", daemon_log(&env));
+
+    fs::write(env.project().join("specs/a.md"), "a").unwrap();
+    common::eventually("a triggered run", || !runs(&env).is_empty());
+}
