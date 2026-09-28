@@ -276,3 +276,118 @@ fn runs_lost_to_a_daemon_restart_fail_their_deliveries() {
     common::eventually("the delivery failed", || deliveries(&env) == [("review".to_string(), "failed".to_string())]);
     assert!(daemon_log(&env).contains("(daemon_restart); event 1 \"x\" is parked"), "{}", daemon_log(&env));
 }
+
+fn run_for_event(env: &Env, event: i64) -> Value {
+    runs(env)
+        .into_iter()
+        .find(|r| env.json(&["runs", "show", &r["id"].to_string()]).1["run"]["trigger"]["event_id"] == event)
+        .map(|r| r["id"].clone())
+        .unwrap_or(Value::Null)
+}
+
+#[test]
+fn events_are_listed_shown_retried_and_removed() {
+    let env = Env::new();
+    write_wf(&env, "review", "triggers:\n  - on: review.*\n", "## Review\nGo.\n");
+    write_wf(&env, "audit", "triggers:\n  - on: review.requested\n", "## Audit\nGo.\n");
+    start_fast_daemon(&env);
+    assert_eq!(env.json(&["triggers", "disable"]).0, 0);
+    assert_eq!(env.json(&["publish", "review.requested", "first line\nmore"]).0, 0);
+    assert_eq!(env.json(&["publish", "review.done", "b"]).0, 0);
+
+    let (code, v) = env.json(&["events", "ls"]);
+    assert_eq!(code, 0, "{v}");
+    let topics: Vec<&str> = v["topics"].as_array().unwrap().iter().map(|t| t["topic"].as_str().unwrap()).collect();
+    assert_eq!(topics, ["review.done", "review.requested"]);
+    assert_eq!(
+        v["topics"][1]["subscribers"],
+        serde_json::json!([
+            { "workflow": "audit", "pending": 1, "claimed": 0, "failed": 0 },
+            { "workflow": "review", "pending": 1, "claimed": 0, "failed": 0 },
+        ])
+    );
+    let human = String::from_utf8_lossy(&env.run(&["events", "ls"]).stdout).to_string();
+    assert!(human.contains("audit (1 pending); review (1 pending)"), "{human}");
+
+    let (_, v) = env.json(&["events", "show", "review.requested"]);
+    assert_eq!(v["events"][0]["preview"], "first line");
+    assert_eq!(v["events"][0]["sender"], "user");
+    assert_eq!(v["events"][0]["deliveries"].as_array().unwrap().len(), 2);
+
+    // Ambiguous, or in the wrong state: refused.
+    let (code, v) = env.json(&["events", "remove", "1"]);
+    assert_eq!(code, 2, "{v}");
+    assert!(v["error"]["hint"].as_str().unwrap().contains("--workflow"), "{v}");
+    let (code, v) = env.json(&["events", "retry", "1", "--workflow", "review"]);
+    assert_eq!(code, 2, "only failed deliveries are retried: {v}");
+    assert_eq!(env.json(&["events", "retry", "9"]).0, 4, "no such event");
+    let (code, v) = env.json(&["events", "remove", "1", "--workflow", "audit"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["delivery"]["state"], "dropped");
+
+    assert_eq!(env.json(&["triggers", "enable"]).0, 0);
+    common::eventually("runs for both events", || runs(&env).len() == 2);
+    let (first, second) = (run_for_event(&env, 1), run_for_event(&env, 2));
+    assert_eq!(env.json(&["run", "finish", "--status", "failed", "--run", &first.to_string()]).0, 0);
+    finish(&env, &second);
+    common::eventually("event 1 failed", || {
+        env.json(&["events", "show", "review.requested"]).1["events"][0]["deliveries"][1]["state"] == "failed"
+    });
+
+    // Retried, it's handed out again: only the one failed delivery moves.
+    let (code, v) = env.json(&["events", "retry", "1"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["delivery"]["workflow"], "review");
+    common::eventually("a run for the retry", || runs(&env).len() == 3);
+
+    // Settled events are hidden unless asked for.
+    let (_, v) = env.json(&["events", "show", "review.done"]);
+    assert_eq!((v["events"].as_array().unwrap().len(), v["hidden"].as_u64()), (0, Some(1)), "{v}");
+    let (_, v) = env.json(&["events", "show", "review.done", "--all"]);
+    assert_eq!(v["events"][0]["deliveries"][0]["state"], "done");
+}
+
+#[test]
+fn firing_a_topic_trigger_takes_its_next_event_or_a_test_one() {
+    let env = Env::new();
+    write_wf(&env, "review", "triggers:\n  - on: review.*\n", "## Review\nGot {{trigger.payload}} from {{trigger.sender}}\n");
+    start_fast_daemon(&env);
+    assert_eq!(env.json(&["triggers", "disable"]).0, 0);
+    assert_eq!(env.json(&["publish", "review.x", "one"]).0, 0);
+    let ls = || env.json(&["triggers", "ls"]).1["projects"][0]["triggers"][0]["topic"].clone();
+    assert_eq!(ls()["pending"], 1);
+
+    let (code, v) = env.json(&["triggers", "fire", "review", "--dry-run"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["message"], "event 1: would start a new run of review", "{v}");
+    assert!(runs(&env).is_empty());
+
+    let (code, v) = env.json(&["triggers", "fire", "review"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!((v["outcome"].as_str(), v["event_id"].as_i64()), (Some("started"), Some(1)), "{v}");
+    let id = v["run_ids"][0].to_string();
+    let (_, show) = env.json(&["runs", "show", &id, "--snapshot"]);
+    assert!(show["run"]["workflow_snapshot"].as_str().unwrap().contains("Got one from user"));
+    assert_eq!(show["run"]["trigger"]["synthetic"], true);
+    assert_eq!(deliveries(&env), [("review".to_string(), "claimed".to_string())]);
+
+    let (_, v) = env.json(&["triggers", "fire", "review"]);
+    assert_eq!(v["outcome"], "no_target", "{v}");
+    let human = String::from_utf8_lossy(&env.run(&["triggers", "fire", "review"]).stdout).to_string();
+    assert!(human.contains("--payload"), "{human}");
+
+    let (_, v) = env.json(&["triggers", "fire", "review", "--payload", "hello", "--dry-run"]);
+    assert_eq!(v["message"], "would start a new run of review", "{v}");
+    assert_eq!(query(&env, "SELECT count(*) FROM bus_events")[0][0], 1, "a dry run publishes nothing");
+
+    let (code, v) = env.json(&["triggers", "fire", "review", "--payload", "hello"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["event_id"], 2);
+    let (_, show) = env.json(&["runs", "show", &v["run_ids"][0].to_string(), "--snapshot"]);
+    assert!(show["run"]["workflow_snapshot"].as_str().unwrap().contains("Got hello from test"));
+    assert_eq!(query(&env, "SELECT topic, sender FROM bus_events WHERE id = 2")[0], serde_json::json!(["review.test", "test"]));
+
+    assert_eq!(ls(), serde_json::json!({ "pending": 0, "last_event": { "event_id": 2, "run_ids": [2] } }));
+    let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
+    assert!(human.contains("review: on review.* has 0 pending; last took event 2 (run 2)"), "{human}");
+}

@@ -12,13 +12,18 @@ use crate::engine::Engine;
 use crate::output::{CliError, CliResult};
 use crate::store::{delivery_state as state, BusEvent, Delivery, NewEvent, Run, RunStatus, Subscriber};
 use crate::topic;
-use crate::triggers::{self, outcome, Event, FireRequest};
+use crate::triggers::{self, outcome, Event, FireRequest, Fired};
 use crate::workflow::{Target, TriggerKind};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub const METHODS: &[&str] = &["events.publish"];
+mod admin;
+
+pub const METHODS: &[&str] = &["events.publish", "events.ls", "events.show", "events.retry", "events.remove"];
+
+/// Who sends the events of `tome triggers fire --payload`.
+pub const TEST: &str = "test";
 
 /// Who publishes tome's own events.
 pub const TOME: &str = "tome";
@@ -94,6 +99,10 @@ impl Engine {
     pub(crate) fn dispatch_bus(&self, method: &str, p: &Value) -> CliResult<Value> {
         match method {
             "events.publish" => self.publish_rpc(p),
+            "events.ls" => self.events_ls(p),
+            "events.show" => self.events_show(p),
+            "events.retry" => self.events_move(p, &[state::FAILED], state::PENDING),
+            "events.remove" => self.events_move(p, &[state::PENDING, state::FAILED], state::DROPPED),
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
     }
@@ -241,7 +250,7 @@ impl Engine {
 
 impl Engine {
     /// What a delivery to `a` would lead to, for dry runs.
-    fn would(&self, a: &Armed, enabled: bool) -> String {
+    pub(crate) fn would(&self, a: &Armed, enabled: bool) -> String {
         if !enabled {
             return "would wait: the project's triggers are disabled".into();
         }
@@ -301,7 +310,7 @@ impl Engine {
     }
 
     /// A subscription's pending deliveries, oldest first.
-    fn pending_of(&self, a: &Armed) -> Vec<Delivery> {
+    pub(crate) fn pending_of(&self, a: &Armed) -> Vec<Delivery> {
         let (Some(project), Some(pattern)) = (&a.project, pattern_of(a)) else { return Vec::new() };
         self.with_store(|store| {
             store.subscription_deliveries(&project.display().to_string(), &a.name, &pattern.to_string(), state::PENDING)
@@ -347,30 +356,39 @@ impl Engine {
                     return;
                 }
             }
-            let Ok(Some(event)) = self.with_store(|store| store.bus_event(d.event_id)) else { continue };
-            if !self.with_store(|store| store.move_delivery(d.id, state::PENDING, state::CLAIMED, Some(&[]))).unwrap_or(false) {
-                continue;
-            }
-            let fired = self.fire(&FireRequest {
-                workflow_path: a.workflow_path.clone(),
-                project: a.project.clone(),
-                index: a.index,
-                event: Event { bus: Some((event, d.id)), ..Default::default() },
-                dry_run: false,
-            });
-            // A run that was recorded holds the delivery, even if it failed
-            // to launch.
-            let held = self.with_store(|store| store.delivery(d.id)).ok().flatten().is_some_and(|d| !d.run_ids.is_empty());
+            let Some((fired, held)) = self.take(a, &d, false) else { continue };
             if held {
                 continue;
             }
-            let _ = self.with_store(|store| store.move_delivery(d.id, state::CLAIMED, state::PENDING, Some(&[])));
             if fired.outcome == outcome::ERROR {
                 let why = fired.message.unwrap_or_else(|| "the run couldn't be started".into());
                 self.stalled.lock().unwrap_or_else(|p| p.into_inner()).insert(a.key(), why);
             }
             return;
         }
+    }
+
+    /// Claim a pending delivery for `a` and fire the trigger with it. Returns
+    /// the fire and whether a run holds the delivery now (a run that was
+    /// recorded does, even if it failed to launch); if none does it's
+    /// pending again. `None` if it was taken meanwhile.
+    pub(crate) fn take(&self, a: &Armed, d: &Delivery, synthetic: bool) -> Option<(Fired, bool)> {
+        let event = self.with_store(|store| store.bus_event(d.event_id)).ok().flatten()?;
+        if !self.with_store(|store| store.move_delivery(d.id, state::PENDING, state::CLAIMED, Some(&[]))).unwrap_or(false) {
+            return None;
+        }
+        let fired = self.fire(&FireRequest {
+            workflow_path: a.workflow_path.clone(),
+            project: a.project.clone(),
+            index: a.index,
+            event: Event { bus: Some((event, d.id)), synthetic, ..Default::default() },
+            dry_run: false,
+        });
+        let held = self.with_store(|store| store.delivery(d.id)).ok().flatten().is_some_and(|d| !d.run_ids.is_empty());
+        if !held {
+            let _ = self.with_store(|store| store.move_delivery(d.id, state::CLAIMED, state::PENDING, Some(&[])));
+        }
+        Some((fired, held))
     }
 }
 

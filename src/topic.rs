@@ -83,6 +83,20 @@ impl Pattern {
         Ok(Pattern { segments })
     }
 
+    /// A topic the pattern matches, with `test` for each wildcard: where a
+    /// test event goes.
+    pub fn example(&self) -> String {
+        let parts: Vec<&str> = self
+            .segments
+            .iter()
+            .map(|s| match s {
+                Segment::Lit(l) => l.as_str(),
+                Segment::One | Segment::Rest => "test",
+            })
+            .collect();
+        parts.join(".")
+    }
+
     pub fn matches(&self, topic: &str) -> bool {
         let parts: Vec<&str> = topic.split('.').collect();
         fn go(p: &[Segment], t: &[&str]) -> bool {

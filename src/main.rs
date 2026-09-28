@@ -130,6 +130,11 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Inspect and repair the project's message bus.
+    Events {
+        #[command(subcommand)]
+        command: EventsCommand,
+    },
     /// Run a read-only SQL query against the run store.
     Query {
         /// A single read-only statement (SELECT, WITH, DESCRIBE, ...).
@@ -446,9 +451,42 @@ enum TriggersCommand {
         /// A changed path to report (file triggers); repeatable.
         #[arg(long = "path", value_name = "PATH")]
         paths: Vec<String>,
+        /// Fire a topic trigger with a test event carrying this payload,
+        /// delivered to this workflow only.
+        #[arg(long)]
+        payload: Option<String>,
         /// Show what would happen, with the resolved params, without doing it.
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum EventsCommand {
+    /// List the project's topics, with each subscriber's backlog.
+    Ls,
+    /// List a topic's events that aren't settled yet.
+    Show {
+        topic: String,
+        /// Include events every workflow is done with.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Hand a failed delivery of an event out again.
+    Retry {
+        /// The event id.
+        event: i64,
+        /// Which workflow's delivery, if it went to several.
+        #[arg(long)]
+        workflow: Option<String>,
+    },
+    /// Drop a pending or failed delivery of an event.
+    Remove {
+        /// The event id.
+        event: i64,
+        /// Which workflow's delivery, if it went to several.
+        #[arg(long)]
+        workflow: Option<String>,
     },
 }
 
@@ -593,11 +631,17 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             TriggersCommand::Ls => triggerscmd::ls(),
             TriggersCommand::Enable { project } => triggerscmd::enable(&current_dir()?, project, true),
             TriggersCommand::Disable { project } => triggerscmd::enable(&current_dir()?, project, false),
-            TriggersCommand::Fire { workflow, index, paths, dry_run } => {
-                triggerscmd::fire(&current_dir()?, &workflow, index, &paths, dry_run)
+            TriggersCommand::Fire { workflow, index, paths, payload, dry_run } => {
+                triggerscmd::fire(&current_dir()?, &workflow, index, &paths, payload.as_deref(), dry_run)
             }
         },
         Command::Publish { topic, text, dry_run } => eventscmd::publish(&current_dir()?, &topic, text, dry_run),
+        Command::Events { command } => match command {
+            EventsCommand::Ls => eventscmd::ls(&current_dir()?),
+            EventsCommand::Show { topic, all } => eventscmd::show(&current_dir()?, &topic, all),
+            EventsCommand::Retry { event, workflow } => eventscmd::retry(&current_dir()?, event, workflow.as_deref()),
+            EventsCommand::Remove { event, workflow } => eventscmd::remove(&current_dir()?, event, workflow.as_deref()),
+        },
         Command::Query { sql } => inspect::query(&sql),
         Command::Gc { older_than, dry_run } => gc::run(&older_than, dry_run),
     }

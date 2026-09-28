@@ -215,6 +215,7 @@ impl Engine {
                         "trigger": a.trigger.describe(),
                         "to": a.trigger.to.as_str(),
                         "polling": polling.get(&a.key()),
+                        "topic": self.topic_status(a),
                         "last": last(&a.workflow_path, project, a.index as i64),
                     })
                 })
@@ -283,7 +284,18 @@ impl Engine {
                 bus: None,
             }
         };
-        let kind = load(&workflow_path, project.as_deref()).ok().and_then(|wf| wf.frontmatter.triggers.get(index).map(|t| t.kind.clone()));
+        let loaded = load(&workflow_path, project.as_deref()).ok();
+        let kind = loaded.as_ref().and_then(|wf| wf.frontmatter.triggers.get(index).map(|t| t.kind.clone()));
+        if let (Some(wf), Some(TriggerKind::Topic { .. })) = (&loaded, &kind) {
+            let armed = arming::Armed {
+                workflow_path: workflow_path.clone(),
+                name: wf.name().to_string(),
+                project: project.clone(),
+                index,
+                trigger: wf.frontmatter.triggers[index].clone(),
+            };
+            return self.fire_topic(&armed, opt_str(p, "payload"), p["dry_run"] == true);
+        }
         let req = FireRequest {
             workflow_path,
             project,

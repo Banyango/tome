@@ -33,9 +33,10 @@ pub fn register(cwd: &Path) {
     }
 }
 
-/// `tome triggers fire <wf> [--index N] [--path p]... [--dry-run]`: send a
-/// synthetic event down the real firing path.
-pub fn fire(cwd: &Path, target: &str, index: Option<usize>, paths: &[String], dry_run: bool) -> CliResult<Report> {
+/// `tome triggers fire <wf> [--index N] [--path p]... [--payload text]
+/// [--dry-run]`: send a synthetic event down the real firing path. A topic
+/// trigger takes its next pending event, or a test event with `--payload`.
+pub fn fire(cwd: &Path, target: &str, index: Option<usize>, paths: &[String], payload: Option<&str>, dry_run: bool) -> CliResult<Report> {
     let library = Library::discover(cwd);
     // An invalid workflow still fires, so the daemon records the error.
     let path = match library.locate(target)? {
@@ -70,6 +71,7 @@ pub fn fire(cwd: &Path, target: &str, index: Option<usize>, paths: &[String], dr
             "project_path": project,
             "index": index,
             "paths": paths,
+            "payload": payload,
             "dry_run": dry_run,
         }),
     )?;
@@ -86,6 +88,9 @@ pub fn fire(cwd: &Path, target: &str, index: Option<usize>, paths: &[String], dr
                 human.push_str(&format!("\n  {k} = {v}"));
             }
         }
+    }
+    if let Some(hint) = out["hint"].as_str() {
+        human.push_str(&format!("\n  {hint}"));
     }
     let code = if matches!(outcome, "error" | "rejected") { exit::FAILURE } else { exit::OK };
     Ok(Report::new(out, human).with_exit(code))
@@ -145,6 +150,15 @@ pub fn ls() -> CliResult<Report> {
         }
         for t in triggers.iter().filter(|t| t["polling"].is_string()) {
             out.push_str(&format!("  {}: {} is polling: {}\n", text(&t["workflow"]), text(&t["trigger"]), text(&t["polling"])));
+        }
+        for t in triggers.iter().filter(|t| t["topic"].is_object()) {
+            let topic = &t["topic"];
+            let mut line = format!("  {}: {} has {} pending", text(&t["workflow"]), text(&t["trigger"]), topic["pending"]);
+            if let Some(last) = topic["last_event"].as_object() {
+                let runs: Vec<String> = last["run_ids"].as_array().into_iter().flatten().map(text).collect();
+                line.push_str(&format!("; last took event {} (run {})", last["event_id"], runs.join(", ")));
+            }
+            out.push_str(&format!("{line}\n"));
         }
         for e in &errors {
             out.push_str(&format!("  {}: not armed: {}\n", text(&e["workflow"]), text(&e["message"])));
