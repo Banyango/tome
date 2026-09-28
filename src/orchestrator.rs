@@ -208,6 +208,15 @@ pub fn notify_trigger(what: &str, message: &str) {
     }
 }
 
+/// A run that claimed an event didn't succeed, so its delivery failed.
+/// Logged, and sent as a cmux notification unless `TOME_NOTIFY=off`.
+pub fn notify_delivery(title: &str, message: &str) {
+    eprintln!("tome daemon: notify: {title}: {message}");
+    if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
+        Cmux.notify(&format!("tome: {title}"), message);
+    }
+}
+
 /// The daemon's hooks for runs that end without finishing themselves.
 pub struct Hooks;
 

@@ -10,7 +10,7 @@ use crate::api::{opt_str, req_id_at, req_str};
 use crate::arming::{self, Armed};
 use crate::engine::Engine;
 use crate::output::{CliError, CliResult};
-use crate::store::{delivery_state as state, BusEvent, Delivery, NewEvent, Run, Subscriber};
+use crate::store::{delivery_state as state, BusEvent, Delivery, NewEvent, Run, RunStatus, Subscriber};
 use crate::topic;
 use crate::triggers::{self, outcome, Event, FireRequest};
 use crate::workflow::{Target, TriggerKind};
@@ -263,6 +263,43 @@ impl Engine {
         }
     }
 
+    /// Settle what finished runs held, once per run: each claimed delivery
+    /// naming the run becomes `done` if it succeeded, else `failed`
+    /// (notified). Called every trigger-loop tick, so runs ended by recovery
+    /// before the daemon was up are settled too.
+    pub(crate) fn settle_ended(&self) {
+        let Ok(ids) = self.with_store(|store| store.unannounced_ends()) else { return };
+        for id in ids {
+            let settled = self.with_store(|store| {
+                let run = store.require_run(id)?;
+                let to = if run.status == RunStatus::Succeeded { state::DONE } else { state::FAILED };
+                let mut failed = Vec::new();
+                for d in store.deliveries_in(state::CLAIMED)?.into_iter().filter(|d| d.run_ids.contains(&id)) {
+                    if store.move_delivery(d.id, state::CLAIMED, to, None)? && to == state::FAILED {
+                        let event = store.bus_event(d.event_id)?;
+                        failed.push((d, event));
+                    }
+                }
+                store.set_announced(id, ENDED)?;
+                Ok((run, failed))
+            });
+            match settled {
+                Ok((run, failed)) => {
+                    for (d, event) in failed {
+                        let (topic, payload) = event.map(|e| (e.topic, e.payload)).unwrap_or_default();
+                        let first = payload.lines().next().unwrap_or("").trim();
+                        let why = run.reason.as_ref().or(run.summary.as_ref()).map(|r| format!(" ({r})")).unwrap_or_default();
+                        crate::orchestrator::notify_delivery(
+                            &format!("{} didn't handle {topic}", d.workflow),
+                            &format!("run {} {}{why}; event {} \"{first}\" is parked: `tome events retry {}`", run.id, run.status.as_str(), d.event_id, d.event_id),
+                        );
+                    }
+                }
+                Err(e) => eprintln!("tome daemon: settling deliveries of run {id} failed: {}", e.message),
+            }
+        }
+    }
+
     /// A subscription's pending deliveries, oldest first.
     fn pending_of(&self, a: &Armed) -> Vec<Delivery> {
         let (Some(project), Some(pattern)) = (&a.project, pattern_of(a)) else { return Vec::new() };
@@ -336,6 +373,9 @@ impl Engine {
         }
     }
 }
+
+/// `runs.announced` once a run's end has been handled.
+pub const ENDED: &str = "ended";
 
 /// The run history event recorded when a run publishes.
 pub const PUBLISHED: &str = "published";

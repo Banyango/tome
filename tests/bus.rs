@@ -223,3 +223,56 @@ fn backlogs_wait_for_triggers_to_be_enabled_and_workflows_to_be_valid() {
     assert_eq!(causes, [1, 2]);
     assert_eq!(deliveries(&env), [("deploy", "claimed"), ("deploy", "claimed")].map(|(a, b)| (a.to_string(), b.to_string())));
 }
+
+fn daemon_log(env: &Env) -> String {
+    fs::read_to_string(env.home().join("daemon.log")).unwrap_or_default()
+}
+
+#[test]
+fn deliveries_settle_with_the_run_that_claimed_them() {
+    let env = Env::new();
+    write_wf(&env, "review", "triggers:\n  - on: review\n", "## Review\nGo.\n");
+    start_fast_daemon(&env);
+    for payload in ["fine", "breaks\nsecond line", "stopped"] {
+        assert_eq!(env.json(&["publish", "review", payload]).0, 0);
+    }
+    common::eventually("a run per event", || runs(&env).len() == 3);
+    let ids: Vec<Value> = runs(&env).iter().map(|r| r["id"].clone()).collect();
+    finish(&env, &ids[0]);
+    let (code, out) = env.json(&["run", "finish", "--status", "failed", "--summary", "tests failed", "--run", &ids[1].to_string()]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(env.json(&["run", "cancel", &ids[2].to_string()]).0, 0);
+    let want = [("review", "done"), ("review", "failed"), ("review", "failed")].map(|(a, b)| (a.to_string(), b.to_string()));
+    common::eventually("the deliveries settled", || deliveries(&env) == want);
+
+    let log = daemon_log(&env);
+    let notes: Vec<&str> = log.lines().filter(|l| l.contains("notify: review didn't handle review")).collect();
+    assert_eq!(notes.len(), 2, "{log}");
+    assert!(notes[0].contains(&format!("run {} failed (tests failed)", ids[1])) && notes[0].contains("\"breaks\""), "{}", notes[0]);
+    assert!(!notes[0].contains("second line"), "first line only");
+    assert!(notes[1].contains(&format!("run {} cancelled", ids[2])), "{}", notes[1]);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(runs(&env).len(), 3, "failed deliveries aren't handed out again");
+
+    // gc takes the done delivery; the failed ones keep their events.
+    let (code, v) = env.json(&["gc", "--older-than", "1h"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["bus"], serde_json::json!({ "deliveries": 1, "events": 1 }));
+    assert_eq!(query(&env, "SELECT id FROM bus_events ORDER BY id").iter().map(|r| r[0].clone()).collect::<Vec<_>>(), [2, 3]);
+}
+
+#[test]
+fn runs_lost_to_a_daemon_restart_fail_their_deliveries() {
+    let env = Env::new();
+    write_wf(&env, "review", "triggers:\n  - on: review\n", "## Review\nGo.\n");
+    start_fast_daemon(&env);
+    assert_eq!(env.json(&["publish", "review", "x"]).0, 0);
+    common::eventually("a run", || runs(&env).len() == 1);
+    let (_, status) = env.json(&["daemon", "status"]);
+    unsafe { libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGKILL) };
+    common::eventually("daemon to die", || env.json(&["daemon", "status"]).0 == 3);
+
+    start_fast_daemon(&env);
+    common::eventually("the delivery failed", || deliveries(&env) == [("review".to_string(), "failed".to_string())]);
+    assert!(daemon_log(&env).contains("(daemon_restart); event 1 \"x\" is parked"), "{}", daemon_log(&env));
+}

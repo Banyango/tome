@@ -266,6 +266,7 @@ impl Engine {
                 self.fire_armed(&armed, event);
             }
             *self.file_polling.lock().unwrap_or_else(|p| p.into_inner()) = files.polling();
+            self.settle_ended();
             self.drain_all(&current.armed);
             std::thread::sleep(tick());
         }

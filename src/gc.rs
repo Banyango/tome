@@ -56,6 +56,11 @@ pub fn run(older_than: &str, dry_run: bool) -> CliResult<Report> {
         (n, true) => format!("{n} run{} would be deleted (dry run)", plural(n)),
         (n, false) => format!("{n} run{} deleted", plural(n)),
     });
+    let bus = (data["bus"]["deliveries"].as_u64().unwrap_or(0), data["bus"]["events"].as_u64().unwrap_or(0));
+    if bus != (0, 0) {
+        let verb = if dry_run { "would remove" } else { "removed" };
+        out.push_str(&format!("\n{verb} {} done deliver{} and {} settled event{}", bus.0, if bus.0 == 1 { "y" } else { "ies" }, bus.1, plural(bus.1 as usize)));
+    }
     let code = if kept.is_empty() { crate::output::exit::OK } else { crate::output::exit::FAILURE };
     Ok(Report::new(data, out).with_exit(code))
 }
@@ -109,7 +114,15 @@ pub fn collect(store: &mut Store, p: &Value) -> CliResult<Value> {
         store.delete_run(run.id).map_err(internal)?;
         deleted.push(entry);
     }
-    Ok(json!({ "dry_run": dry_run, "cutoff": store::fmt_ts(cutoff), "deleted": deleted, "kept": kept }))
+    // Settled deliveries, and events nothing is waiting on any more.
+    let (deliveries, events) = store.gc_bus(dry_run)?;
+    Ok(json!({
+        "dry_run": dry_run,
+        "cutoff": store::fmt_ts(cutoff),
+        "deleted": deleted,
+        "kept": kept,
+        "bus": { "deliveries": deliveries, "events": events },
+    }))
 }
 
 /// What gc would do with the branch tome made for a worktree: delete it
