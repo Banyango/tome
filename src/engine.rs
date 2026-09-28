@@ -214,7 +214,9 @@ impl Engine {
     fn launch(&self, run: Run) -> CliResult<Run> {
         self.launching.lock().unwrap_or_else(|p| p.into_inner()).insert(run.id);
         let agent: Agent = (run.id, None);
+        let mut waited = false;
         let result = orchestrator::plan(&run).and_then(|plan| {
+            waited = plan.start_timeout.is_some();
             self.expect_start(agent.clone(), plan.start_timeout, orchestrator::prompt_file(run.id));
             let session = orchestrator::launch(&run, &plan)?;
             // Recorded before the monitor may look (it skips launching runs).
@@ -224,7 +226,13 @@ impl Engine {
         });
         self.launching.lock().unwrap_or_else(|p| p.into_inner()).remove(&run.id);
         match result {
-            Ok(()) => Ok(run),
+            Ok(()) => {
+                // Without a handshake to wait for, it has started now.
+                if !waited {
+                    self.announce_started(run.id);
+                }
+                Ok(run)
+            }
             Err(e) => {
                 self.forget_start(&agent);
                 let _ = self.with_store(|store| {

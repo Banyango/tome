@@ -135,6 +135,9 @@ impl Engine {
             self.sync(store, agent.0);
             Ok(())
         });
+        if agent.1.is_none() {
+            self.announce_started(agent.0);
+        }
     }
 
     /// `agent.ready {run_id, worker?}`: `tome ready`. The call itself is the

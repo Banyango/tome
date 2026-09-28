@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod admin;
+mod lifecycle;
 
 pub const METHODS: &[&str] = &["events.publish", "events.ls", "events.show", "events.retry", "events.remove"];
 
@@ -27,6 +28,9 @@ pub const TEST: &str = "test";
 
 /// Who publishes tome's own events.
 pub const TOME: &str = "tome";
+
+/// How deep an event chain can go: an event deeper than this is refused.
+pub const MAX_DEPTH: i64 = 8;
 
 /// The topic triggers of a project's workflows, as armed (whether the
 /// project's triggers are enabled or not).
@@ -179,10 +183,13 @@ impl Engine {
         if let Some(only) = e.only {
             matches.retain(|a| a.name == only);
         }
+        let project = e.project.display().to_string();
+        if e.depth > MAX_DEPTH {
+            return Err(self.refuse(e, &project, dry_run));
+        }
         if dry_run {
             return Ok(Published { event: None, deliveries: Vec::new(), matches });
         }
-        let project = e.project.display().to_string();
         let subscribers: Vec<Subscriber> = matches
             .iter()
             .map(|a| Subscriber {
@@ -221,6 +228,37 @@ impl Engine {
             deliveries.len()
         );
         Ok(Published { event: Some(event), deliveries, matches })
+    }
+
+    /// An event too deep in a chain: recorded as refused (unless it's a dry
+    /// run) and notified, and not delivered.
+    fn refuse(&self, e: &Publish<'_>, project: &str, dry_run: bool) -> CliError {
+        let why = format!("depth {} is over the limit of {MAX_DEPTH}", e.depth);
+        let err = CliError::invalid(format!("refused to publish {}: {why}", e.topic))
+            .with_hint("each event a run publishes is one deeper than the event that started it; this chain probably loops");
+        if dry_run {
+            return err;
+        }
+        let recorded = self.with_store(|store| {
+            store.publish_event(
+                &NewEvent {
+                    project_path: project,
+                    topic: e.topic,
+                    payload: e.payload,
+                    sender: &e.sender,
+                    sender_run_id: e.sender_run,
+                    depth: e.depth,
+                    refused: Some(&why),
+                },
+                &[],
+            )
+        });
+        match recorded {
+            Ok((event, _)) => eprintln!("tome daemon: event {} on {} from {} refused: {why}", event.id, e.topic, e.sender),
+            Err(err) => eprintln!("tome daemon: recording a refused event on {} failed: {}", e.topic, err.message),
+        }
+        crate::orchestrator::notify_delivery(&format!("refused an event on {}", e.topic), &format!("from {}: {why}", e.sender));
+        err
     }
 
     /// Re-armed: drop the pending deliveries of subscriptions that are gone
@@ -322,9 +360,7 @@ impl Engine {
         }
         let Ok(ids) = self.with_store(|store| store.unannounced_ends()) else { return };
         for id in ids {
-            if let Err(e) = self.with_store(|store| store.set_announced(id, ENDED)) {
-                eprintln!("tome daemon: marking the end of run {id} failed: {}", e.message);
-            }
+            self.announce_ended(id);
         }
     }
 
@@ -417,6 +453,9 @@ impl Engine {
         Some((fired, held))
     }
 }
+
+/// `runs.announced` once a run's start has been published.
+pub const STARTED: &str = "started";
 
 /// `runs.announced` once a run's end has been handled.
 pub const ENDED: &str = "ended";

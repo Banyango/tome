@@ -254,11 +254,12 @@ fn deliveries_settle_with_the_run_that_claimed_them() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert_eq!(runs(&env).len(), 3, "failed deliveries aren't handed out again");
 
-    // gc takes the done delivery; the failed ones keep their events.
+    // gc takes the done delivery and the runs' undelivered lifecycle events
+    // (3 started, 3 ended); the failed deliveries keep their events.
     let (code, v) = env.json(&["gc", "--older-than", "1h"]);
     assert_eq!(code, 0, "{v}");
-    assert_eq!(v["bus"], serde_json::json!({ "deliveries": 1, "events": 1 }));
-    assert_eq!(query(&env, "SELECT id FROM bus_events ORDER BY id").iter().map(|r| r[0].clone()).collect::<Vec<_>>(), [2, 3]);
+    assert_eq!(v["bus"], serde_json::json!({ "deliveries": 1, "events": 7 }));
+    assert_eq!(query(&env, "SELECT payload FROM bus_events ORDER BY id").iter().map(|r| r[0].clone()).collect::<Vec<_>>(), ["breaks\nsecond line", "stopped"]);
 }
 
 #[test]
@@ -275,6 +276,9 @@ fn runs_lost_to_a_daemon_restart_fail_their_deliveries() {
     start_fast_daemon(&env);
     common::eventually("the delivery failed", || deliveries(&env) == [("review".to_string(), "failed".to_string())]);
     assert!(daemon_log(&env).contains("(daemon_restart); event 1 \"x\" is parked"), "{}", daemon_log(&env));
+    common::eventually("failed published", || events_on(&env, "tome.run.review.failed").len() == 1);
+    let payload: Value = serde_json::from_str(events_on(&env, "tome.run.review.failed")[0][2].as_str().unwrap()).unwrap();
+    assert_eq!(payload["reason"], "daemon_restart", "{payload}");
 }
 
 fn run_for_event(env: &Env, event: i64) -> Value {
@@ -378,18 +382,19 @@ fn firing_a_topic_trigger_takes_its_next_event_or_a_test_one() {
 
     let (_, v) = env.json(&["triggers", "fire", "review", "--payload", "hello", "--dry-run"]);
     assert_eq!(v["message"], "would start a new run of review", "{v}");
-    assert_eq!(query(&env, "SELECT count(*) FROM bus_events")[0][0], 1, "a dry run publishes nothing");
+    assert_eq!(query(&env, "SELECT count(*) FROM bus_events WHERE sender <> 'tome'")[0][0], 1, "a dry run publishes nothing");
 
     let (code, v) = env.json(&["triggers", "fire", "review", "--payload", "hello"]);
     assert_eq!(code, 0, "{v}");
-    assert_eq!(v["event_id"], 2);
+    // Event 2 is run 1's start.
+    assert_eq!(v["event_id"], 3);
     let (_, show) = env.json(&["runs", "show", &v["run_ids"][0].to_string(), "--snapshot"]);
     assert!(show["run"]["workflow_snapshot"].as_str().unwrap().contains("Got hello from test"));
-    assert_eq!(query(&env, "SELECT topic, sender FROM bus_events WHERE id = 2")[0], serde_json::json!(["review.test", "test"]));
+    assert_eq!(query(&env, "SELECT topic, sender FROM bus_events WHERE id = 3")[0], serde_json::json!(["review.test", "test"]));
 
-    assert_eq!(ls(), serde_json::json!({ "pending": 0, "last_event": { "event_id": 2, "run_ids": [2] } }));
+    assert_eq!(ls(), serde_json::json!({ "pending": 0, "last_event": { "event_id": 3, "run_ids": [2] } }));
     let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
-    assert!(human.contains("review: on review.* has 0 pending; last took event 2 (run 2)"), "{human}");
+    assert!(human.contains("review: on review.* has 0 pending; last took event 3 (run 2)"), "{human}");
 }
 
 #[test]
@@ -421,18 +426,100 @@ fn running_targets_signal_their_runs_and_settle_when_one_ends() {
     assert_eq!(runs(&env).len(), 1);
     assert_eq!(query(&env, "SELECT run_ids FROM deliveries WHERE id = 3")[0][0], format!("[{run}]"));
 
+    let look = query(&env, "SELECT id FROM bus_events WHERE payload = 'look'")[0][0].clone();
     let typed = env.home().join("typed.txt");
-    common::eventually("nudge typed", || fs::read_to_string(&typed).is_ok_and(|t| t.contains("[tome] event 3 on review.")));
+    common::eventually("nudge typed", || fs::read_to_string(&typed).is_ok_and(|t| t.contains(&format!("[tome] event {look} on review."))));
     let pull = || {
         let out = env.cmd(&["--json", "queue", "pull", "events"]).env("TOME_RUN_ID", run.to_string()).output().unwrap();
         serde_json::from_slice::<Value>(&out.stdout).unwrap()["message"].clone()
     };
     let body: Value = serde_json::from_str(pull()["body"].as_str().unwrap()).unwrap();
     assert_eq!((body["kind"].as_str(), body["topic"].as_str(), body["payload"].as_str()), (Some("topic"), Some("review"), Some("look")), "{body}");
-    assert_eq!(body["event_id"], "3");
+    assert_eq!(body["event_id"], look.to_string());
 
     finish(&env, &run);
     common::eventually("all settled", || deliveries(&env).iter().all(|d| d.1 == "done"));
     let outcomes: Vec<Value> = query(&env, "SELECT outcome FROM trigger_fires WHERE trigger_index >= 0 ORDER BY id").into_iter().map(|r| r[0].clone()).collect();
     assert_eq!(outcomes, ["no_target", "started", "signalled", "signalled"]);
+}
+
+fn events_on(env: &Env, topic: &str) -> Vec<Value> {
+    query(env, &format!("SELECT sender, depth, payload, refused FROM bus_events WHERE topic = '{topic}' ORDER BY id"))
+}
+
+#[test]
+fn runs_publish_their_lifecycle_for_other_workflows_to_chain_on() {
+    let mut env = Env::new();
+    // Wait for the orchestrator's first tome call, rather than the launch.
+    env.set_var("TOME_START_TIMEOUT", "60s");
+    write_wf(&env, "implement", "params:\n  x: {default: \"0\"}\n", "## Go\nGo {{params.x}}.\n");
+    write_wf(&env, "review", "triggers:\n  - on: tome.run.implement.*\n", "## Review\n{{trigger.topic}}: {{trigger.payload}}\n");
+    start_fast_daemon(&env);
+    let (code, run) = env.json(&["run", "implement", "--detach", "--param", "x=1"]);
+    assert_eq!(code, 0, "{run}");
+    let id = run["id"].to_string();
+    assert!(events_on(&env, "tome.run.implement.started").is_empty(), "not before its orchestrator starts");
+
+    // Its first tome call is the start handshake.
+    assert!(env.cmd(&["ready"]).env("TOME_RUN_ID", &id).output().unwrap().status.success());
+    common::eventually("started published", || events_on(&env, "tome.run.implement.started").len() == 1);
+    let started = &events_on(&env, "tome.run.implement.started")[0];
+    assert_eq!((started[0].as_str(), started[1].as_i64()), (Some("tome"), Some(0)));
+    let payload: Value = serde_json::from_str(started[2].as_str().unwrap()).unwrap();
+    assert_eq!((payload["run_id"].to_string(), payload["workflow"].as_str()), (id.clone(), Some("implement")), "{payload}");
+    assert_eq!(payload["params"]["x"], "1", "{payload}");
+    common::eventually("a review of the start", || runs(&env).len() == 2);
+    // Only once, however many calls it makes.
+    assert!(env.cmd(&["ready"]).env("TOME_RUN_ID", &id).output().unwrap().status.success());
+
+    let (code, out) = env.json(&["run", "finish", "--status", "succeeded", "--summary", "shipped", "--run", &id]);
+    assert_eq!(code, 0, "{out}");
+    common::eventually("succeeded published", || events_on(&env, "tome.run.implement.succeeded").len() == 1);
+    let payload: Value = serde_json::from_str(events_on(&env, "tome.run.implement.succeeded")[0][2].as_str().unwrap()).unwrap();
+    assert_eq!(payload["summary"], "shipped", "{payload}");
+    assert!(payload["duration"].is_i64(), "{payload}");
+    common::eventually("a review of the success", || runs(&env).len() == 3);
+    let review = runs(&env)[2]["id"].to_string();
+    let (_, show) = env.json(&["runs", "show", &review, "--snapshot"]);
+    assert_eq!(show["run"]["trigger"]["topic"], "tome.run.implement.succeeded");
+    assert_eq!(show["run"]["trigger"]["sender"], "tome");
+    assert_eq!(events_on(&env, "tome.run.implement.started").len(), 1);
+
+    // A cancelled review's events are a step deeper; nothing takes them.
+    assert_eq!(env.json(&["run", "cancel", &review]).0, 0);
+    common::eventually("cancelled published", || events_on(&env, "tome.run.review.cancelled").len() == 1);
+    let cancelled = &events_on(&env, "tome.run.review.cancelled")[0];
+    assert_eq!(cancelled[1], 1);
+    assert_eq!(serde_json::from_str::<Value>(cancelled[2].as_str().unwrap()).unwrap(), serde_json::json!({ "run_id": review.parse::<i64>().unwrap(), "workflow": "review" }));
+}
+
+#[test]
+fn event_chains_deeper_than_8_are_refused() {
+    let env = Env::new();
+    write_wf(&env, "echo", "triggers:\n  - manual\n  - on: tome.run.echo.succeeded\n", "## Echo\nGo.\n");
+    start_fast_daemon(&env);
+    assert_eq!(env.json(&["run", "echo", "--detach"]).0, 0);
+    // Each run's success starts the next, a step deeper.
+    for n in 1..10 {
+        common::eventually(&format!("run {n}"), || runs(&env).len() == n);
+        finish(&env, &runs(&env)[n - 1]["id"]);
+    }
+    common::eventually("run 10", || runs(&env).len() == 10);
+    let last = runs(&env)[9]["id"].to_string();
+    let (_, show) = env.json(&["runs", "show", &last]);
+    assert_eq!(show["run"]["trigger"]["depth"], 8);
+
+    let out = env.cmd(&["--json", "publish", "ping", "x"]).env("TOME_RUN_ID", &last).output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("depth 9 is over the limit of 8"));
+    let refused = events_on(&env, "ping");
+    assert_eq!((refused.len(), refused[0][1].as_i64()), (1, Some(9)));
+    assert!(refused[0][3].as_str().is_some());
+
+    finish(&env, &runs(&env)[9]["id"]);
+    common::eventually("the last success refused", || events_on(&env, "tome.run.echo.succeeded").len() == 10);
+    assert!(events_on(&env, "tome.run.echo.succeeded")[9][3].as_str().is_some());
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(runs(&env).len(), 10);
+    assert!(daemon_log(&env).contains("notify: refused an event on tome.run.echo.succeeded"), "{}", daemon_log(&env));
 }
