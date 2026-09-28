@@ -136,8 +136,8 @@ enum Mode {
 
 /// Where one trigger's changes come from.
 enum Source {
-    /// Walk the tree every tick.
-    Poll,
+    /// Walk the tree every tick, and why the trigger isn't on OS events.
+    Poll(Option<String>),
     Os(Os),
 }
 
@@ -202,9 +202,9 @@ impl Os {
 
     /// Note a directory the walk is about to read, watching it first when
     /// watches are per directory.
-    fn add_dir(&mut self, dir: &Path) -> notify::Result<()> {
+    fn add_dir(&mut self, dir: &Path) -> Result<(), String> {
         if self.dirs.insert(dir.to_path_buf()) && self.per_dir {
-            self.watcher.watch(dir, RecursiveMode::NonRecursive)?;
+            self.watcher.watch(dir, RecursiveMode::NonRecursive).map_err(|e| watch_failed(dir, e))?;
         }
         Ok(())
     }
@@ -244,9 +244,9 @@ impl Os {
                         *touched.entry(self.shown(p)).or_default() |= arrived;
                     }
                 }
-                Ok(Err(e)) => return Err(e.to_string()),
+                Ok(Err(e)) => return Err(format!("the OS watch failed: {e}")),
                 Err(TryRecvError::Empty) => return Ok((!rescan).then_some(touched)),
-                Err(TryRecvError::Disconnected) => return Err("the OS watcher stopped".into()),
+                Err(TryRecvError::Disconnected) => return Err("the OS watch stopped".into()),
             }
         }
     }
@@ -287,42 +287,68 @@ impl Watcher {
         for a in &scan.armed {
             let TriggerKind::File(f) = &a.trigger.kind else { continue };
             let key = a.key();
-            let mut st = states.remove(&key).unwrap_or_else(|| State::arm(a, f, self.mode, self.per_dir));
+            let (mut st, was_polling) = match states.remove(&key) {
+                Some(st) => {
+                    let polling = st.polling().is_some();
+                    (st, polling)
+                }
+                None => (State::arm(a, f, self.mode, self.per_dir), false),
+            };
             if let Some(event) = st.poll(a, f, scan, now, &active) {
                 out.push((a.clone(), event));
+            }
+            if let (false, Some(reason)) = (was_polling, st.polling()) {
+                eprintln!("tome daemon: {} of {} is polling: {reason}", a.trigger.describe(), a.name);
             }
             kept.insert(key, st);
         }
         self.states = kept;
         out
     }
+
+    /// The armed file triggers that are polling, by key, with why. They
+    /// stay polling until re-armed.
+    pub fn polling(&self) -> HashMap<String, String> {
+        self.states.iter().filter_map(|(k, st)| Some((k.clone(), st.polling()?.to_string()))).collect()
+    }
 }
 
 impl State {
+    /// Why the trigger is polling rather than on OS events, if it is.
+    fn polling(&self) -> Option<&str> {
+        match &self.source {
+            Source::Poll(reason) => reason.as_deref(),
+            Source::Os(_) => None,
+        }
+    }
+
     /// Set up the trigger's watch, then index what's there (firing
     /// nothing). The watch goes first so no change slips in between.
     fn arm(a: &Armed, f: &FileTrigger, mode: Mode, per_dir: bool) -> State {
         let mut st = State {
             spec: Spec::new(a, f),
-            source: Source::Poll,
+            source: Source::Poll(None),
             index: Index::new(),
             pending: Vec::new(),
             last_change: None,
             ignored_dirs: HashMap::new(),
         };
         let Some(spec) = &st.spec else { return st };
-        let mut os = match mode {
-            Mode::Os => Os::start(&spec.base, per_dir).ok(),
-            Mode::Poll => None,
+        let (mut os, mut failed) = match mode {
+            Mode::Os => match Os::start(&spec.base, per_dir) {
+                Ok(os) => (Some(os), None),
+                Err(e) => (None, Some(watch_failed(&spec.base, e))),
+            },
+            Mode::Poll => (None, None),
         };
-        let mut failed = None;
         st.index = walk(spec, &spec.base, &mut st.ignored_dirs, |dir| match &mut os {
             Some(os) if failed.is_none() && !os.waiting => failed = os.add_dir(dir).err(),
             _ => {}
         });
-        if let (Some(os), None) = (os, failed) {
-            st.source = Source::Os(os);
-        }
+        st.source = match (os, failed) {
+            (Some(os), None) => Source::Os(os),
+            (_, reason) => Source::Poll(reason),
+        };
         st
     }
 
@@ -360,7 +386,7 @@ impl State {
     fn changes(&mut self) -> Vec<(PathBuf, FileEvent)> {
         let Some(spec) = &self.spec else { return Vec::new() };
         let os = match &mut self.source {
-            Source::Poll => {
+            Source::Poll(_) => {
                 let files = walk(spec, &spec.base, &mut self.ignored_dirs, |_| {});
                 return diff(&mut self.index, &spec.base, files);
             }
@@ -369,10 +395,10 @@ impl State {
         // `None`: the OS dropped events.
         let touched = match os.drain() {
             Ok(t) => t,
-            Err(_) => {
+            Err(reason) => {
                 // Changes the OS watch missed are caught by the next walk,
                 // which diffs against the index.
-                self.source = Source::Poll;
+                self.source = Source::Poll(Some(reason));
                 return self.changes();
             }
         };
@@ -382,8 +408,8 @@ impl State {
             if touched.is_some_and(|t| t.is_empty()) {
                 return Vec::new();
             }
-            if os.aim(&spec.base).is_err() {
-                self.source = Source::Poll;
+            if let Err(e) = os.aim(&spec.base) {
+                self.source = Source::Poll(Some(watch_failed(&spec.base, e)));
                 return self.changes();
             }
             if !os.waiting {
@@ -394,8 +420,8 @@ impl State {
                         failed = os.add_dir(dir).err();
                     }
                 });
-                if failed.is_some() {
-                    self.source = Source::Poll;
+                if let Some(reason) = failed {
+                    self.source = Source::Poll(Some(reason));
                 }
             }
             return Vec::new();
@@ -404,8 +430,8 @@ impl State {
             // The base is gone. Its files leave the index (deletes never
             // fire), and its nearest ancestor is watched until it's back.
             self.index.clear();
-            if os.aim(&spec.base).is_err() {
-                self.source = Source::Poll;
+            if let Err(e) = os.aim(&spec.base) {
+                self.source = Source::Poll(Some(watch_failed(&spec.base, e)));
             }
             return Vec::new();
         }
@@ -422,8 +448,8 @@ impl State {
             for gone in os.dirs.difference(&seen).cloned().collect::<Vec<_>>() {
                 os.remove_dirs(&gone);
             }
-            if failed.is_some() {
-                self.source = Source::Poll;
+            if let Some(reason) = failed {
+                self.source = Source::Poll(Some(reason));
             }
             return diff(&mut self.index, &spec.base, files);
         };
@@ -463,11 +489,15 @@ impl State {
             };
             changes.extend(diff(&mut self.index, &path, fresh));
         }
-        if failed.is_some() {
-            self.source = Source::Poll;
+        if let Some(reason) = failed {
+            self.source = Source::Poll(Some(reason));
         }
         changes
     }
+}
+
+fn watch_failed(dir: &Path, e: notify::Error) -> String {
+    format!("couldn't watch {}: {e}", dir.display())
 }
 
 /// A file's stat, if the glob counts it. Symlinked files count.
@@ -708,6 +738,27 @@ mod tests {
             assert!(os.dirs.contains(&root.join("docs/new")), "{name}: new dirs are watched");
             assert!(!os.dirs.contains(&root.join("docs/gone")), "{name}: gone dirs are forgotten");
         }
+    }
+
+    #[test]
+    fn a_failed_os_watch_falls_back_to_polling() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        let s = scan(armed(&root, "file: \"docs/*.md\"\n    debounce: 0"));
+        let mut w = Watcher::default();
+        let now = Instant::now();
+        w.poll(&s, now, |_| false);
+        assert!(w.polling().is_empty());
+        // The OS watch stops: its sender is gone.
+        let Some(Source::Os(os)) = w.states.values_mut().next().map(|s| &mut s.source) else { panic!("not watching") };
+        os.events = mpsc::channel().1;
+        write(&root.join("docs/a.md"), "a");
+        assert_eq!(paths(&w.poll(&s, now, |_| false)), ["docs/a.md created"], "changes the OS missed are caught");
+        assert_eq!(w.polling().into_values().collect::<Vec<_>>(), ["the OS watch stopped"]);
+        write(&root.join("docs/b.md"), "b");
+        assert_eq!(paths(&w.poll(&s, now, |_| false)), ["docs/b.md created"], "polling keeps working");
+        assert_eq!(w.polling().len(), 1, "no retries");
     }
 
     #[test]

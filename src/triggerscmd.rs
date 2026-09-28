@@ -143,6 +143,9 @@ pub fn ls() -> CliResult<Report> {
                 out.push_str(&format!("  {line}\n"));
             }
         }
+        for t in triggers.iter().filter(|t| t["polling"].is_string()) {
+            out.push_str(&format!("  {}: {} is polling: {}\n", text(&t["workflow"]), text(&t["trigger"]), text(&t["polling"])));
+        }
         for e in &errors {
             out.push_str(&format!("  {}: not armed: {}\n", text(&e["workflow"]), text(&e["message"])));
         }
