@@ -135,6 +135,12 @@ fn windows(env: &Env) -> Vec<(String, String)> {
     lines(out).iter().filter_map(|l| l.split_once('\t')).map(|(p, n)| (p.to_string(), n.to_string())).collect()
 }
 
+/// The panes of the project's tome session's first window: `(pane, title)`.
+fn panes(env: &Env) -> Vec<(String, String)> {
+    let out = env.tmux(&["list-panes", "-t", "=p-orchestrator:^", "-F", "#{pane_id}\t#{pane_title}"]);
+    lines(out).iter().filter_map(|l| l.split_once('\t')).map(|(p, n)| (p.to_string(), n.to_string())).collect()
+}
+
 fn named(all: &[(String, String)], name: &str) -> bool {
     all.iter().any(|(_, n)| n == name)
 }
@@ -193,6 +199,35 @@ fn tab_is_the_default_and_puts_sessions_in_windows_of_the_project_session() {
     assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
     common::eventually("run 1's windows closed", || windows(&env).iter().all(|(_, n)| !n.starts_with("tome: build #1")));
     assert_eq!(windows(&env).len(), 1, "{:?}", windows(&env));
+}
+
+#[test]
+fn split_puts_each_session_in_its_own_pane() {
+    let env = env();
+    env.set_config(&format!("{}layout: split\n", common::IDLE_CONFIG));
+    write_wf(&env, "build", "");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    assert_eq!(sessions(&env, 1)[0]["layout"], "split");
+    spawn(&env, 1, "w1", &["sleep", "30"]);
+    spawn(&env, 1, "w2", &["sleep", "30"]);
+    let all = panes(&env);
+    assert_eq!(all.len(), 4, "the shell and three sessions, side by side: {all:?}");
+    assert!(named(&all, "tome: build #1") && named(&all, "tome: build #1 / w2"), "{all:?}");
+    assert_eq!(windows(&env).len(), 1);
+    // The newest is on the right.
+    let right = lines(env.tmux(&["list-panes", "-t", "=p-orchestrator:^", "-F", "#{pane_right} #{pane_title}"]));
+    let rightmost = right.iter().max_by_key(|l| l.split(' ').next().unwrap().parse::<i64>().unwrap()).unwrap();
+    assert!(rightmost.ends_with("tome: build #1 / w2"), "{right:?}");
+
+    // Closing one pane ends just that session.
+    let (w1, _) = all.iter().find(|(_, n)| n == "tome: build #1 / w1").unwrap();
+    assert!(env.tmux(&["kill-pane", "-t", w1]).status.success());
+    let w = wait(&env, 1, "w1");
+    assert_eq!((w["status"].as_str(), w["reason"].as_str()), (Some("failed"), Some("worker_exited")), "{w}");
+
+    assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
+    common::eventually("only the shell is left", || panes(&env).len() == 1);
 }
 
 #[test]

@@ -253,3 +253,26 @@ fn tab_layout_opens_sessions_as_tabs_of_one_split_in_the_tome_workspace() {
     eventually("the split is gone again", || panes_of(&ws).len() == 1);
     assert!(cmux_has_workspace(&ws));
 }
+
+#[test]
+fn split_layout_opens_each_session_in_its_own_split_to_the_right() {
+    let Some(env) = layout_env("split") else { return };
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    assert_eq!(session(&env)["layout"], "split");
+    let ws = workspace(&env);
+    spawn(&env, "w1", &["sleep", "60"]);
+    spawn(&env, "w2", &["sleep", "60"]);
+    let panes = panes_of(&ws);
+    let titles: Vec<String> = titles(&panes).into_iter().skip(1).flatten().collect();
+    assert_eq!(titles, ["tome: build #1", "tome: build #1 / w1", "tome: build #1 / w2"], "{panes:?}");
+
+    // Nudges reach the orchestrator's pane.
+    spawn(&env, "w3", &["true"]);
+    eventually("the nudge", || got(&env).contains("[tome] worker w3 done"));
+    eventually("w3's pane closed", || panes_of(&ws).len() == 4);
+
+    assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
+    eventually("only the shell is left", || panes_of(&ws).len() == 1);
+    assert!(cmux_has_workspace(&ws));
+}
