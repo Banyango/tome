@@ -199,7 +199,18 @@ impl Engine {
         let polling = self.file_polling.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let last = |path: &Path, project: Option<&Path>, index: i64| {
             let (path, project) = (path.display().to_string(), project.map(|p| p.display().to_string()));
-            fires.iter().find(|f| f.workflow_path == path && f.project_path == project && f.trigger_index == index).cloned()
+            let fire = fires.iter().find(|f| f.workflow_path == path && f.project_path == project && f.trigger_index == index)?;
+            // The fire's message holds each run's status when it fired;
+            // `runs` has what it is now.
+            let runs: Vec<Value> = fire
+                .run_ids
+                .iter()
+                .filter_map(|&id| self.with_store(|store| store.require_run(id)).ok())
+                .map(|r| json!({ "id": r.id, "status": r.status.as_str() }))
+                .collect();
+            let mut last = json!(fire);
+            last["runs"] = json!(runs);
+            Some(last)
         };
         let section = |project: Option<&Path>| {
             let triggers: Vec<Value> = scan

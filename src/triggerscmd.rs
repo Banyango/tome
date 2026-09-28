@@ -176,6 +176,14 @@ fn result(last: &Value) -> String {
     if last.is_null() {
         return String::new();
     }
+    // A started or queued run's message is its status when it fired, so
+    // show what it is now instead (runs gc'd since keep the message).
+    let runs = last["runs"].as_array().cloned().unwrap_or_default();
+    let live = matches!(last["outcome"].as_str(), Some("started" | "queued")) && !runs.is_empty();
+    if live {
+        let runs: Vec<String> = runs.iter().map(|r| format!("run {} {}", r["id"], text(&r["status"]))).collect();
+        return format!("{} ({})", text(&last["outcome"]), runs.join(", "));
+    }
     match last["message"].as_str() {
         Some(m) => format!("{} ({m})", text(&last["outcome"])),
         None => text(&last["outcome"]),

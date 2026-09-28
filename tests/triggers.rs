@@ -239,6 +239,12 @@ fn projects_register_themselves_and_their_triggers_are_listed() {
     assert_eq!(v["projects"][0]["triggers"][0]["last"]["outcome"], "started", "{v}");
     let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
     assert!(human.contains("nightly") && human.contains("started (run 1"), "{human}");
+    // The result shows the run as it is now, not as it was when it fired.
+    assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
+    let v = ls(&env);
+    assert_eq!(v["projects"][0]["triggers"][0]["last"]["runs"][0]["status"], "cancelled", "{v}");
+    let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
+    assert!(human.contains("started (run 1 cancelled)"), "{human}");
 
     // Disabling sticks across a daemon restart.
     let (code, v) = env.json(&["triggers", "disable"]);
