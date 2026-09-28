@@ -454,8 +454,9 @@ fn from_falls_back_to_the_last_pane_when_its_anchor_is_gone() {
     let a = pane_of(&env, "tome-1-build-a");
     let window = |p: &str| lines(env.tmux(&["display-message", "-p", "-t", p, "#{window_id}"]))[0].clone();
     assert_eq!(window(&a), window(&orch));
-    // With the orchestrator's pane gone, the next opens off the last (a).
-    assert!(env.tmux(&["kill-pane", "-t", &orch]).status.success());
+    // With the orchestrator's pane gone from the workspace (moved to one of
+    // its own: killing it would end the run), the next opens off the last (a).
+    assert_eq!(env.json(&["session", "move", "1/orchestrator", "--workspace", "own"]).0, 0);
     spawn_with(&env, 1, "b", &["--layout", "split", "--from", "orchestrator"], &["sleep", "600"]);
     let b = pane_of(&env, "tome-1-build-b");
     assert_eq!(window(&b), window(&a));
@@ -537,4 +538,101 @@ fn focused_is_the_attached_session_when_the_run_starts_or_else_the_project() {
     assert!(human.contains("  note: workspace: focused: no tmux client is attached"), "{human}");
     let row = human.lines().find(|l| l.trim_start().starts_with("workspace ")).unwrap_or_else(|| panic!("{human}"));
     assert_eq!(row.split_whitespace().collect::<Vec<_>>(), ["workspace", "focused", "`tome", "run`", "flags"], "{human}");
+}
+
+/// `tome session move <session> <flags>`.
+fn move_session(env: &Env, session: &str, flags: &[&str]) -> (i32, Value) {
+    let mut args = vec!["session", "move", session];
+    args.extend_from_slice(flags);
+    env.json(&args)
+}
+
+fn session_named(env: &Env, name: &str) -> Value {
+    sessions(env, 1).into_iter().find(|s| s["name"] == name).unwrap_or_else(|| panic!("no session {name}"))
+}
+
+#[test]
+fn session_move_moves_a_live_worker_without_restarting_it() {
+    let env = env();
+    env.set_config(common::IDLE_CONFIG);
+    write_wf(&env, "build", "");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    let pidfile = env.home().join("w1.pid");
+    spawn(&env, 1, "w1", &["sh", "-c", &format!("echo $$ > {}; exec sleep 600", pidfile.display())]);
+    common::eventually("the worker started", || fs::read_to_string(&pidfile).is_ok_and(|p| !p.trim().is_empty()));
+    let pid = fs::read_to_string(&pidfile).unwrap().trim().to_string();
+    let pane = pane_of(&env, "tome-1-build-w1");
+    let title = "tome: build #1 / w1";
+    assert!(named(&windows(&env), title));
+
+    // A tab becomes a split along the bottom of the first window.
+    let (code, moved) = move_session(&env, "1/w1", &["--layout", "split", "--direction", "down"]);
+    assert_eq!(code, 0, "{moved}");
+    assert_eq!(moved["pane"], pane.as_str(), "{moved}");
+    assert!(moved["attach_command"].as_str().unwrap().contains(&pane), "{moved}");
+    assert!(panes(&env).iter().any(|(p, _)| *p == pane), "{:?}", panes(&env));
+    assert!(!named(&windows(&env), title));
+    let s = session_named(&env, "tome-1-build-w1");
+    assert_eq!((s["layout"].as_str(), s["placement"]["direction"].as_str()), (Some("split"), Some("down")), "{s}");
+    assert_eq!(s["placement"]["sources"]["split.direction"], "`tome session move` flags", "{s}");
+
+    // Then a tmux session of its own, keeping the direction it had.
+    let (code, moved) = move_session(&env, "1/w1", &["--workspace", "own"]);
+    assert_eq!(code, 0, "{moved}");
+    assert!(env.has_session("tome-1-build-w1"));
+    let own = lines(env.tmux(&["list-panes", "-s", "-t", "=tome-1-build-w1", "-F", "#{pane_id}"]));
+    assert_eq!(own, vec![pane.clone()]);
+    let s = session_named(&env, "tome-1-build-w1");
+    assert_eq!((s["layout"].as_str(), s["handle"].as_str()), (Some("workspace"), None), "{s}");
+    assert_eq!(s["placement"]["direction"], "down", "{s}");
+
+    // Then a tab of a named workspace; its own session goes with it.
+    let out = env.cmd(&["session", "move", "1/w1", "--workspace", "reviews"]).output().unwrap();
+    let human = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{human}{}", String::from_utf8_lossy(&out.stderr));
+    assert!(human.contains("moved w1: tab in workspace reviews") && human.contains("attach: "), "{human}");
+    assert!(!env.has_session("tome-1-build-w1"));
+    let reviews = lines(env.tmux(&["list-windows", "-t", "=p-reviews", "-F", "#{pane_id}\t#{window_name}"]));
+    assert!(reviews.contains(&format!("{pane}\t{title}")), "{reviews:?}");
+    let s = session_named(&env, "tome-1-build-w1");
+    assert_eq!(s["placement"]["sources"]["layout"], "the default", "{s}");
+
+    // The same process all along, still running.
+    assert_eq!(fs::read_to_string(&pidfile).unwrap().trim(), pid);
+    assert!(std::process::Command::new("kill").args(["-0", &pid]).status().unwrap().success());
+    assert_eq!(env.json(&["worker", "status", "w1", "--run", "1"]).1["status"], "running");
+
+    // The orchestrator moves by its role's name.
+    let (code, moved) = move_session(&env, "1/orchestrator", &["--layout", "split"]);
+    assert_eq!(code, 0, "{moved}");
+    assert_eq!(moved["layout"], "split", "{moved}");
+}
+
+#[test]
+fn session_move_refuses_bad_requests_and_leaves_the_session() {
+    let env = env();
+    env.set_config(common::IDLE_CONFIG);
+    write_wf(&env, "build", "");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    spawn(&env, 1, "w1", &["sleep", "600"]);
+    let before = session_named(&env, "tome-1-build-w1");
+
+    let (code, err) = move_session(&env, "1/w1", &["--preset", "nope"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err["error"]["message"].as_str().unwrap().contains("unknown layout preset `nope` (from `tome session move` flags)"), "{err}");
+    assert!(err["error"]["hint"].as_str().unwrap().contains("known presets: split, tab, workspace"), "{err}");
+
+    let (code, err) = move_session(&env, "1/w9", &["--layout", "split"]);
+    assert_ne!(code, 0, "{err}");
+    assert!(err["error"]["message"].as_str().unwrap().contains("run 1 has no session `w9`"), "{err}");
+    assert!(err["error"]["hint"].as_str().unwrap().contains("its sessions: orchestrator, w1"), "{err}");
+
+    let (code, err) = move_session(&env, "1/w1", &[]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err["error"]["message"].as_str().unwrap().contains("say where to move it"), "{err}");
+
+    let after = session_named(&env, "tome-1-build-w1");
+    assert_eq!((&after["handle"], &after["pane"], &after["layout"]), (&before["handle"], &before["pane"], &before["layout"]));
 }

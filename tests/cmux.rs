@@ -314,3 +314,37 @@ fn a_tab_with_from_joins_the_anchor_pane_and_size_is_best_effort() {
     assert!(d["placement"]["warnings"].is_null() || warnings.contains("split.size 10"), "{d}");
     assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
 }
+
+#[test]
+fn session_move_moves_a_live_surface_between_tabs_splits_and_its_own_workspace() {
+    let Some(env) = layout_env("tab") else { return };
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    let ws = workspace(&env);
+    spawn(&env, "w1", &["sleep", "60"]);
+    let surface = worker_session(&env, "w1")["pane"].as_str().unwrap().to_string();
+    eventually("w1's tab", || titles(&panes_of(&ws)).get(1).is_some_and(|t| t.len() == 2));
+
+    // Out of the tabs split into a split of its own.
+    let (code, moved) = env.json(&["session", "move", "1/w1", "--layout", "split"]);
+    assert_eq!(code, 0, "{moved}");
+    assert_eq!((moved["pane"].as_str(), moved["handle"].as_str()), (Some(surface.as_str()), Some(ws.as_str())), "{moved}");
+    let panes = panes_of(&ws);
+    assert_eq!(panes.len(), 3, "{panes:?}");
+    assert!(panes.iter().any(|(_, s)| s.len() == 1 && s[0].0 == surface), "{panes:?}");
+
+    // Into a workspace of its own, then back as a tab: the one it had is
+    // closed once it's empty.
+    let (code, moved) = env.json(&["session", "move", "1/w1", "--workspace", "own"]);
+    assert_eq!(code, 0, "{moved}");
+    let own = moved["handle"].as_str().unwrap().to_string();
+    assert_ne!(own, ws);
+    assert_eq!(panes_of(&own).iter().flat_map(|(_, s)| s.iter().map(|(id, _)| id.clone())).collect::<Vec<_>>(), [surface.clone()]);
+    let (code, moved) = env.json(&["session", "move", "1/w1", "--layout", "tab"]);
+    assert_eq!(code, 0, "{moved}");
+    assert_eq!(moved["handle"], ws.as_str(), "{moved}");
+    eventually("its own workspace closed", || !cmux_has_workspace(&own));
+    assert_eq!(titles(&panes_of(&ws))[1], ["tome: build #1", "tome: build #1 / w1"]);
+    assert_eq!(env.json(&["worker", "status", "w1", "--run", "1"]).1["status"], "running");
+    assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
+}

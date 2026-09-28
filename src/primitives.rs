@@ -79,6 +79,28 @@ pub fn spawn(a: Spawn) -> CliResult<Report> {
     Ok(Report::new(w, human))
 }
 
+/// `tome session move <run>/<name> [placement flags]`
+pub fn session_move(session: &str, placement: &crate::placement::Settings) -> CliResult<Report> {
+    let (run, name) = match session.split_once('/') {
+        Some((run, name)) => (run.to_string(), name),
+        None => (run_id(std::env::var("TOME_RUN_ID").ok()).map_err(|e| e.with_hint("give the session as <run>/<name>"))?, session),
+    };
+    if name.is_empty() {
+        return Err(CliError::invalid("which session? give it as <run>/<name>, e.g. 42/orchestrator or 42/w1"));
+    }
+    let moved = call("session.move", json!({ "run_id": run, "name": name, "placement": placement }))?;
+    let p = &moved["placement"];
+    let mut human = format!("moved {name}: {}", s(&p["layout"]));
+    if let Some(w) = p["workspace"].as_str() {
+        human.push_str(&format!(" in workspace {w}"));
+    }
+    for w in p["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        human.push_str(&format!("\nwarning: {w}"));
+    }
+    human.push_str(&format!("\nattach: {}", s(&moved["attach_command"])));
+    Ok(Report::new(moved, human))
+}
+
 /// `tome worker done|fail [--summary ...]`
 pub fn report(event: &str, summary: Option<String>, name: Option<String>, run: Option<String>) -> CliResult<Report> {
     let run = run_id(run)?;

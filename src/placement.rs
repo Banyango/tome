@@ -709,6 +709,40 @@ impl Placement {
     pub fn to_json(&self) -> Value {
         json!(self)
     }
+
+    /// A recorded placement; `None` if it isn't one (sessions from before
+    /// placements).
+    pub fn from_json(v: &Value) -> Option<Placement> {
+        let str_of = |key: &str| v[key].as_str();
+        let sources = v["sources"]
+            .as_object()
+            .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+            .unwrap_or_default();
+        Some(Placement {
+            layout: Layout::parse(str_of("layout")?)?,
+            workspace: Workspace::parse(str_of("workspace")?).ok()?,
+            direction: str_of("direction").and_then(Direction::parse).unwrap_or(Direction::Right),
+            size: str_of("size").and_then(|s| Size::parse(s).ok()),
+            from: str_of("from").and_then(From::parse),
+            sources,
+            warnings: Vec::new(),
+        })
+    }
+
+    /// What a session from before placements had: its layout, in the
+    /// project workspace or its own.
+    pub fn of_layout(layout: Layout) -> Placement {
+        let workspace = if layout == Layout::Workspace { Workspace::Own } else { Workspace::Project };
+        Placement {
+            layout,
+            workspace,
+            direction: Direction::Right,
+            size: None,
+            from: None,
+            sources: BTreeMap::new(),
+            warnings: Vec::new(),
+        }
+    }
 }
 
 /// One level, before its preset is expanded.
@@ -833,6 +867,80 @@ pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> 
     })
 }
 
+/// Where `tome session move` puts a session placed at `current`: each
+/// setting its `flags` (or their preset) give, the rest as they were. A
+/// preset that isn't defined is an error.
+pub fn moved(current: &Placement, flags: &Settings, project: Option<&Path>) -> CliResult<Placement> {
+    let presets = presets(&Config::load(project)?)?;
+    let source = "`tome session move` flags";
+    let mut levels = vec![Level { source: source.into(), settings: flags.clone() }];
+    if let Some(name) = &flags.preset {
+        let p = presets.get(name).ok_or_else(|| unknown_preset(name, &presets, source))?;
+        levels.push(Level { source: format!("preset `{name}` (from {source})"), settings: p.settings.clone() });
+    }
+    let mut out = Placement { warnings: Vec::new(), ..current.clone() };
+    macro_rules! pick {
+        ($field:ident, $key:expr) => {{
+            let found = levels.iter().enumerate().find_map(|(i, l)| l.settings.$field.clone().map(|v| (i, v)));
+            if let Some((i, _)) = &found {
+                out.sources.insert($key.to_string(), levels[*i].source.clone());
+            }
+            found
+        }};
+    }
+    let layout = pick!(layout, "layout");
+    let workspace = pick!(workspace, "workspace");
+    if let Some((_, d)) = pick!(direction, "split.direction") {
+        out.direction = d;
+    }
+    if let Some((_, s)) = pick!(size, "split.size") {
+        out.size = Some(s);
+    }
+    if let Some((_, f)) = pick!(from, "from") {
+        out.from = Some(f);
+    }
+    let default = |out: &mut Placement, key: &str| {
+        out.sources.insert(key.to_string(), "the default".into());
+    };
+    // As in [`resolve_in`]: `layout: workspace` is `workspace: own` unless
+    // the workspace was chosen above it; leaving `own` goes to the project
+    // workspace (or a tab) unless that's given too.
+    match (layout, workspace) {
+        (Some((li, Layout::Workspace)), Some((wi, w))) if wi < li && w != Workspace::Own => {
+            (out.layout, out.workspace) = (Layout::Tab, w);
+            default(&mut out, "layout");
+        }
+        (Some((li, Layout::Workspace)), _) => {
+            (out.layout, out.workspace) = (Layout::Workspace, Workspace::Own);
+            out.sources.insert("workspace".into(), levels[li].source.clone());
+        }
+        (_, Some((wi, Workspace::Own))) => {
+            (out.layout, out.workspace) = (Layout::Workspace, Workspace::Own);
+            out.sources.insert("layout".into(), levels[wi].source.clone());
+        }
+        (Some((_, l)), w) => {
+            out.layout = l;
+            match w {
+                Some((_, w)) => out.workspace = w,
+                None if out.workspace == Workspace::Own => {
+                    out.workspace = Workspace::Project;
+                    default(&mut out, "workspace");
+                }
+                None => {}
+            }
+        }
+        (None, Some((_, w))) => {
+            out.workspace = w;
+            if out.layout == Layout::Workspace {
+                out.layout = Layout::Tab;
+                default(&mut out, "layout");
+            }
+        }
+        (None, None) => {}
+    }
+    Ok(out)
+}
+
 /// Check every preset a workflow names against `presets`, for commands that
 /// fail on an undefined one.
 pub fn check_presets(spec: Option<&Spec>, project: Option<&Path>) -> CliResult<()> {
@@ -859,6 +967,38 @@ pub fn undefined_presets(spec: Option<&Spec>, project: Option<&Path>) -> Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_move_changes_what_its_flags_give() {
+        let tab = Placement::of_layout(Layout::Tab);
+        let flags = |s: &str| {
+            let mut f = Settings::default();
+            for kv in s.split_whitespace() {
+                let (k, v) = kv.split_once('=').unwrap();
+                match k {
+                    "layout" => f.layout = Some(Layout::parse(v).unwrap()),
+                    "workspace" => f.workspace = Some(Workspace::parse(v).unwrap()),
+                    "direction" => f.direction = Some(Direction::parse(v).unwrap()),
+                    _ => unreachable!(),
+                }
+            }
+            f
+        };
+        let m = moved(&tab, &flags("layout=split direction=down"), None).unwrap();
+        assert_eq!((m.layout, &m.workspace, m.direction), (Layout::Split, &Workspace::Project, Direction::Down));
+        assert_eq!(m.sources["split.direction"], "`tome session move` flags");
+        let own = moved(&m, &flags("workspace=own"), None).unwrap();
+        assert_eq!((own.layout, &own.workspace, own.direction), (Layout::Workspace, &Workspace::Own, Direction::Down));
+        let back = moved(&own, &flags("layout=tab"), None).unwrap();
+        assert_eq!((back.layout, &back.workspace), (Layout::Tab, &Workspace::Project));
+        assert_eq!(back.sources["workspace"], "the default");
+        let named = moved(&own, &flags("workspace=reviews"), None).unwrap();
+        assert_eq!((named.layout, &named.workspace), (Layout::Tab, &Workspace::Named("reviews".into())));
+        let f = Settings { preset: Some("nope".into()), ..Settings::default() };
+        let err = moved(&tab, &f, None).unwrap_err();
+        assert!(err.message.contains("unknown layout preset `nope` (from `tome session move` flags)"), "{}", err.message);
+        assert_eq!(Placement::from_json(&m.to_json()), Some(m));
+    }
 
     fn spec(yaml: &str) -> (Option<Spec>, Vec<Problem>) {
         let mut problems = Vec::new();

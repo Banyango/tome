@@ -51,7 +51,7 @@ struct Watchers {
     status: RunStatus,
 }
 
-const METHODS: &[&str] = &["run.start", "run.finish", "run.cancel", "step.report"];
+const METHODS: &[&str] = &["run.start", "run.finish", "run.cancel", "step.report", "session.move"];
 
 pub struct Engine {
     /// `None` only once shutdown has closed the database.
@@ -111,6 +111,7 @@ impl Engine {
             "run.finish" => self.finish(p).map(|run| json!(run)),
             "run.cancel" => self.cancel(req_id(p)?, opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED)).map(|run| json!(run)),
             "step.report" => self.step(p),
+            "session.move" => self.move_session(p),
             m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
             m if triggers::METHODS.contains(&m) => self.dispatch_triggers(m, p),
             m if crate::bus::METHODS.contains(&m) => self.dispatch_bus(m, p),
@@ -327,6 +328,83 @@ impl Engine {
 
     pub(crate) fn recorded_sessions(&self, run_id: i64) -> Vec<store::Session> {
         self.with_store(|store| store.sessions(run_id).map_err(internal)).unwrap_or_default()
+    }
+
+    /// `session.move {run_id, name, placement}`: move a live session of the
+    /// run (`orchestrator` or a worker's name) as the placement flags say,
+    /// without restarting it. Settings the flags don't give stay as they
+    /// were. Returns the session, with `attach_command`.
+    fn move_session(&self, p: &Value) -> CliResult<Value> {
+        let run_id = req_id_at(p, "run_id")?;
+        let name = req_str(p, "name")?;
+        let flags = p
+            .get("placement")
+            .filter(|v| !v.is_null())
+            .map(placement::Settings::from_json)
+            .transpose()?
+            .filter(|f| !f.is_empty())
+            .ok_or_else(|| {
+                CliError::invalid("say where to move it").with_hint("give placement flags, e.g. --layout split or --preset <name>")
+            })?;
+        let run = self.with_store(|store| {
+            store.get_run(run_id, false).map_err(internal)?.ok_or_else(|| CliError::not_found(format!("run {run_id} not found")))
+        })?;
+        let recorded = self.recorded_sessions(run_id);
+        let orch = session::run_session_name(run.id, &run.workflow_name, orchestrator::ROLE);
+        let name_of = |s: &store::Session| -> String {
+            match s.role.as_str() {
+                orchestrator::ROLE => orchestrator::ROLE.to_string(),
+                _ => s.name.strip_prefix(&format!("{orch}-")).unwrap_or(&s.name).to_string(),
+            }
+        };
+        let s = recorded.iter().find(|s| name_of(s) == name).cloned().ok_or_else(|| {
+            let names: Vec<String> = recorded.iter().map(name_of).collect();
+            let hint = match names.is_empty() {
+                true => "it has no sessions".to_string(),
+                false => format!("its sessions: {}", names.join(", ")),
+            };
+            CliError::not_found(format!("run {run_id} has no session `{name}`")).with_hint(hint)
+        })?;
+        if session::is_alive(&s) != Some(true) {
+            return Err(CliError::invalid(format!("session `{name}` of run {run_id} isn't running")));
+        }
+        let project = orchestrator::run_project(&run);
+        placement::check_flag_preset(&flags, "`tome session move` flags", project.as_deref())?;
+        let current = s
+            .placement
+            .as_ref()
+            .and_then(placement::Placement::from_json)
+            .unwrap_or_else(|| placement::Placement::of_layout(session::Layout::of(&s)));
+        let mut placement = placement::moved(&current, &flags, project.as_deref())?;
+        let others: Vec<store::Session> = recorded.iter().filter(|o| o.name != s.name).cloned().collect();
+        let split = session::Split::new(placement.direction, placement.size, placement.from, &others);
+        // `focused` is the workspace focused now, not when the run started.
+        let mut warnings = Vec::new();
+        let target = match &placement.workspace {
+            placement::Workspace::Focused => match session::Kind::parse(&s.backend).ok_or("its backend is unknown".to_string()).and_then(session::focused) {
+                Ok(id) => session::Target::Focused(id),
+                Err(why) => {
+                    warnings.push(format!("workspace: focused: {why}; used the project workspace"));
+                    session::Target::Project
+                }
+            },
+            _ => orchestrator::target(&run, &placement).0,
+        };
+        let title = match s.role.as_str() {
+            orchestrator::ROLE => format!("tome: {} #{}", run.workflow_name, run.id),
+            _ => format!("tome: {} #{} / {name}", run.workflow_name, run.id),
+        };
+        let (moved, more) = session::move_to(
+            &s,
+            &session::Move { title: &title, layout: placement.layout, split: &split, target: &target, project: project.as_deref() },
+        )?;
+        warnings.extend(more);
+        placement.warnings = warnings;
+        let moved = store::Session { placement: Some(placement.to_json()), ..moved };
+        self.with_store(|store| store.add_session(&moved).map_err(internal))?;
+        let mut out = json!(moved);
+        out["attach_command"] = json!(session::attach_command(&moved));
+        Ok(out)
     }
 
     pub(crate) fn kill_sessions(&self, run_id: i64) {

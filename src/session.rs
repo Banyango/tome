@@ -20,11 +20,12 @@
 //! agent's environment, captures its output to a log and `exec`s it, so the
 //! session ends when the agent does.
 
+mod moves;
 mod split;
 mod workspace;
 
+pub use moves::{move_to, Move};
 pub use split::Split;
-
 
 use crate::config::Config;
 use crate::harness::shell_quote;
@@ -155,27 +156,15 @@ impl Backend {
             (Backend::Tmux(t), layout) => {
                 let _held = workspace::lock();
                 let places = workspace::Places::open();
-                let id = match &launch.target {
-                    Target::Focused(id) if t.session_exists(id) => id.clone(),
-                    target => {
-                        gone(target, &mut warnings);
-                        places.tmux(t, launch.project, target.name(), &home)?
-                    }
-                };
+                let id = t.workspace(&places, launch.target, launch.project, &home, &mut warnings)?;
                 let pane = t.launch_in(&id, layout, launch, &mut warnings)?;
                 (t.socket.clone(), Some(id), pane)
             }
             (Backend::Cmux(c), layout) => {
                 let _held = workspace::lock();
                 let places = workspace::Places::open();
-                let (record, keep) = match &launch.target {
-                    Target::Focused(id) if c.is_alive(id) == Some(true) => (workspace::Record::unkept("cmux", id), None),
-                    target => {
-                        gone(target, &mut warnings);
-                        (places.cmux(c, launch.project, target.name(), &home)?, Some(&places))
-                    }
-                };
-                let surface = c.launch_in(keep, record.clone(), layout, launch, &mut warnings)?;
+                let (record, kept) = c.workspace(&places, launch.target, launch.project, &home, &mut warnings)?;
+                let surface = c.launch_in(kept.then_some(&places), record.clone(), layout, launch, &mut warnings)?;
                 (None, Some(record.id), surface)
             }
         };
@@ -462,7 +451,7 @@ impl Tmux {
         let mut anchored = false;
         let out = match layout {
             Layout::Split => {
-                let (out, from_anchor) = self.split_window(id, launch.split, &cwd, &["sh", &script], warnings)?;
+                let (out, from_anchor) = self.split_window(id, launch.split, split::Opening::New { cwd: &cwd, argv: &["sh", &script] }, warnings)?;
                 anchored = from_anchor;
                 out
             }
@@ -491,6 +480,25 @@ impl Tmux {
         let _ = self.run(&["pipe-pane", "-t", &pane, "-o", &pipe]);
         fs::write(&ready, "")?;
         Ok(pane)
+    }
+
+    /// The session `target` names: the focused one if it's still there,
+    /// else the tome session, made if needed (`places` must be locked).
+    fn workspace(
+        &self,
+        places: &workspace::Places,
+        target: &Target,
+        project: Option<&Path>,
+        home: &Path,
+        warnings: &mut Vec<String>,
+    ) -> CliResult<String> {
+        match target {
+            Target::Focused(id) if self.session_exists(id) => Ok(id.clone()),
+            target => {
+                gone(target, warnings);
+                places.tmux(self, project, target.name(), home)
+            }
+        }
     }
 
     /// Whether the session (by id, `$<n>`) exists.
@@ -723,6 +731,26 @@ impl Cmux {
             return Err(CliError::internal(format!("cmux couldn't start `{}` in its new terminal", launch.name)));
         }
         Ok(surface)
+    }
+
+    /// The workspace `target` names: the focused one if it's still open,
+    /// else the tome workspace, made if needed (`places` must be locked),
+    /// and whether tome keeps it in `places`.
+    fn workspace(
+        &self,
+        places: &workspace::Places,
+        target: &Target,
+        project: Option<&Path>,
+        home: &Path,
+        warnings: &mut Vec<String>,
+    ) -> CliResult<(workspace::Record, bool)> {
+        match target {
+            Target::Focused(id) if self.is_alive(id) == Some(true) => Ok((workspace::Record::unkept("cmux", id), false)),
+            target => {
+                gone(target, warnings);
+                Ok((places.cmux(self, project, target.name(), home)?, true))
+            }
+        }
     }
 
     /// Every terminal in every workspace of every window, as cmux's tree

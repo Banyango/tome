@@ -99,6 +99,11 @@ enum Command {
         #[command(subcommand)]
         command: WorkerCommand,
     },
+    /// Move a run's live sessions.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
     /// Group workers to wait on them together.
     Group {
         #[command(subcommand)]
@@ -473,6 +478,20 @@ impl PlacementArgs {
 }
 
 #[derive(Subcommand)]
+enum SessionCommand {
+    /// Move an orchestrator or worker session without restarting it; settings
+    /// the flags don't give stay as they were.
+    Move {
+        /// `<run>/<name>`: `orchestrator` or a worker's name (the run defaults
+        /// to TOME_RUN_ID).
+        #[arg(value_name = "RUN/NAME")]
+        session: String,
+        #[command(flatten)]
+        placement: PlacementArgs,
+    },
+}
+
+#[derive(Subcommand)]
 enum LayoutCommand {
     /// List the built-in, global and project layout presets with their settings.
     Presets,
@@ -662,6 +681,9 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             WorkerCommand::Status { name, run } => primitives::worker_status(name, false, run.run),
             WorkerCommand::Kill { name, run } => primitives::kill(name, run.run),
         },
+        Command::Session { command: SessionCommand::Move { session, placement } } => {
+            primitives::session_move(&session, &placement.settings()?)
+        }
         Command::Group { command } => match command {
             GroupCommand::Create { name, fail_fast, run } => primitives::group_create(name, fail_fast, run.run),
             GroupCommand::Close { name, run } => primitives::group("group.close", name, false, run.run),

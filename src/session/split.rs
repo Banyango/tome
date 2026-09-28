@@ -107,21 +107,28 @@ fn cells(n: u32, available: u32, warnings: &mut Vec<String>) -> Option<u32> {
 
 // --- tmux ------------------------------------------------------------------
 
+/// What a split opens: a new pane running `argv`, or a pane already open
+/// elsewhere, moved there.
+#[derive(Clone, Copy)]
+pub(super) enum Opening<'a> {
+    New { cwd: &'a str, argv: &'a [&'a str] },
+    Join(&'a str),
+}
+
 impl Tmux {
     /// The first of `split`'s anchors that's still a pane of session `id`.
     pub(super) fn anchor<'a>(&self, id: &str, split: &'a Split) -> Option<&'a str> {
         split.anchors.iter().find(|a| a.handle == id && self.pane_exists(&a.pane)).map(|a| a.pane.as_str())
     }
 
-    /// Open `argv` in a new pane of session `id` as `split` says: off the
-    /// anchor pane, else along the whole first window's edge. Returns the
-    /// `split-window` output and whether it opened off an anchor.
+    /// Open a pane in session `id` as `split` says: off the anchor pane,
+    /// else along the whole first window's edge. Returns the `split-window`
+    /// (or `join-pane`) output and whether it opened off an anchor.
     pub(super) fn split_window(
         &self,
         id: &str,
         split: &Split,
-        cwd: &str,
-        argv: &[&str],
+        opening: Opening,
         warnings: &mut Vec<String>,
     ) -> std::io::Result<(std::process::Output, bool)> {
         let anchor = self.anchor(id, split);
@@ -138,18 +145,28 @@ impl Tmux {
             }
         });
         let run = |size: Option<&str>| {
-            let mut args = vec!["split-window", "-d", if split.horizontal() { "-h" } else { "-v" }];
+            let verb = match opening {
+                Opening::New { .. } => "split-window",
+                Opening::Join(_) => "join-pane",
+            };
+            let mut args = vec![verb, "-d", if split.horizontal() { "-h" } else { "-v" }];
             if matches!(split.direction, Direction::Left | Direction::Up) {
                 args.push("-b");
             }
             if whole {
                 args.push("-f");
             }
-            args.extend(["-t", &target, "-c", cwd, "-P", "-F", "#{pane_id}"]);
+            args.extend(["-t", &target]);
             if let Some(size) = size {
                 args.extend(["-l", size]);
             }
-            args.extend_from_slice(argv);
+            match opening {
+                Opening::New { cwd, argv } => {
+                    args.extend(["-c", cwd, "-P", "-F", "#{pane_id}"]);
+                    args.extend_from_slice(argv);
+                }
+                Opening::Join(pane) => args.extend(["-s", pane]),
+            }
             self.run(&args)
         };
         let out = run(size.as_deref())?;
