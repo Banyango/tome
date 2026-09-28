@@ -8,7 +8,8 @@ A rule in [[workflow]] frontmatter that makes the [[daemon]] react to an event, 
 
 - kinds (v1):
   - `manual`: documentation only; `tome run` always works
-  - `file`: a glob, `on: [created, modified]`, `debounce`, `ignore`; changes are batched into one event; muted while any run of the workflow is active
+  - `file`: a glob, `on: [created, modified]`, `debounce`, `ignore`, `while_running`; changes are batched into one event
+  - `while_running:` what a file trigger does with changes while a run of its workflow is active (`to: new` only): `mute` (default; dropped) or `parallel` (each batch starts a run through `concurrency` / `on_conflict`)
   - `cron`: a 5-field expression in local time; missed times are skipped
 - `to:` `new` (default), `running`, or `running-or-new`
 - `params:` fills in workflow params

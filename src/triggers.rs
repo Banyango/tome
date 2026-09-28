@@ -314,7 +314,7 @@ impl Engine {
             Err(e) => return err(outcome::ERROR, e.message),
         };
         let active_ids: Vec<i64> = active.iter().map(|r| r.id).collect();
-        if matches!(trigger.kind, TriggerKind::File(_)) && !active.is_empty() {
+        if trigger.mutes_while_running() && !active.is_empty() {
             return Fired {
                 outcome: outcome::MUTED,
                 message: Some(format!("muted while run {} is active", join_ids(&active_ids))),

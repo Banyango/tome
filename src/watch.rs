@@ -94,9 +94,10 @@ pub struct Watcher {
 
 impl Watcher {
     /// Walk every armed file trigger and return those whose batched changes
-    /// are ready to fire. `active` says whether a trigger's workflow has a
-    /// run going; changes while it does are dropped.
-    pub fn poll(&mut self, scan: &Scan, now: Instant, active: impl Fn(&Armed) -> bool) -> Vec<(Armed, Event)> {
+    /// are ready to fire. `muted` says whether a trigger is muted right now
+    /// (`while_running: mute` and its workflow has a run going); changes
+    /// while it is are dropped.
+    pub fn poll(&mut self, scan: &Scan, now: Instant, muted: impl Fn(&Armed) -> bool) -> Vec<(Armed, Event)> {
         let mut out = Vec::new();
         let mut states = std::mem::take(&mut self.states);
         let mut kept = HashMap::new();
@@ -111,7 +112,7 @@ impl Watcher {
                 last_change: None,
                 ignored_dirs: HashMap::new(),
             });
-            if let Some(event) = st.poll(a, f, scan, now, &active) {
+            if let Some(event) = st.poll(a, f, scan, now, &muted) {
                 out.push((a.clone(), event));
             }
             kept.insert(key, st);
@@ -122,7 +123,7 @@ impl Watcher {
 }
 
 impl State {
-    fn poll(&mut self, a: &Armed, f: &FileTrigger, scan: &Scan, now: Instant, active: &impl Fn(&Armed) -> bool) -> Option<Event> {
+    fn poll(&mut self, a: &Armed, f: &FileTrigger, scan: &Scan, now: Instant, muted: &impl Fn(&Armed) -> bool) -> Option<Event> {
         let spec = self.spec.as_ref()?;
         let files = walk(spec, &mut self.ignored_dirs);
         let before = std::mem::replace(&mut self.seen, files);
@@ -144,7 +145,7 @@ impl State {
             changes.retain(|(p, _)| !ignored.contains(p));
         }
         if !changes.is_empty() {
-            if active(a) {
+            if muted(a) {
                 eprintln!("tome daemon: {} change(s) for {} dropped: its workflow is running", changes.len(), a.trigger.describe());
             } else {
                 changes.sort_by(|a, b| a.0.cmp(&b.0));

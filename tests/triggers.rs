@@ -340,3 +340,30 @@ fn file_changes_start_runs_in_the_project() {
     let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
     assert!(snap.contains("Changed: specs/b.md (modified)"), "{snap}");
 }
+
+#[test]
+fn parallel_file_triggers_start_a_run_per_batch() {
+    let env = Env::new();
+    write_wf(&env, "free", "triggers:\n  - file: \"docs/*.md\"\n    while_running: parallel\n", "## Go\nGo.\n");
+    write_wf(
+        &env,
+        "limited",
+        "concurrency: 1\non_conflict: queue\ntriggers:\n  - file: \"docs/*.md\"\n    while_running: parallel\n",
+        "## Go\nGo.\n",
+    );
+    env.start_daemon();
+    let fire = |wf: &str, path: &str| env.json(&["triggers", "fire", wf, "--path", path]).1;
+
+    // Without a limit, each batch runs right away.
+    let runs: Vec<Value> = ["docs/a.md", "docs/b.md"].iter().map(|p| fire("free", p)).collect();
+    for v in &runs {
+        assert_eq!(v["outcome"], "started", "{v}");
+        assert_eq!(v["run"]["status"], "running", "{v}");
+    }
+
+    // Under `on_conflict: queue`, each batch gets its own queued run.
+    assert_eq!(fire("limited", "docs/a.md")["run"]["status"], "running");
+    let (b, c) = (fire("limited", "docs/b.md"), fire("limited", "docs/c.md"));
+    assert_eq!((b["run"]["status"].as_str(), c["run"]["status"].as_str()), (Some("queued"), Some("queued")), "{b} {c}");
+    assert_ne!(b["run_ids"], c["run_ids"], "batches don't merge");
+}
