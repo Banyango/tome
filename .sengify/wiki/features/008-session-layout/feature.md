@@ -8,8 +8,8 @@ Today tome opens a new cmux workspace (or tmux session) for every [[orchestrator
 
 | layout | cmux | tmux |
 |---|---|---|
-| `tab` (default) | a tab (surface) in one split pane of the project's tome workspace | a window in the `tome-<project>` session |
-| `split` | its own split pane in the project's tome workspace | a pane in the `tome-<project>` session |
+| `tab` (default) | a tab (surface) in one split pane of the project's tome workspace | a window in the `<project>-orchestrator` session |
+| `split` | its own split pane in the project's tome workspace | a pane in the `<project>-orchestrator` session |
 | `workspace` | its own workspace (today's behaviour) | its own session (today's behaviour) |
 
 - **`tab`:** the split that holds the tabs is created on first use and reused after that. cmux removes it when its last tab closes, and it's created again the next time it's needed.
@@ -17,8 +17,8 @@ Today tome opens a new cmux workspace (or tmux session) for every [[orchestrator
 
 ### The tome workspace
 
-- **One per project:** a cmux workspace (or tmux session) per project, titled e.g. `tome: tome-cli` (tmux: `tome-tome-cli`). It's created on first use and reused after that.
-- **Global workflows:** those that run outside a project use `tome: global`.
+- **One per project:** a cmux workspace (or tmux session) per project, named e.g. `tome-cli-orchestrator` (the same name on tmux). It's created on first use and reused after that.
+- **Global workflows:** those that run outside a project use `global-orchestrator`.
 - **When it's empty:** the workspace stays open. A plain shell in the project directory keeps its place, so it doesn't move around in the sidebar.
 - **Layouts that use it:** `tab` and `split` only.
 
