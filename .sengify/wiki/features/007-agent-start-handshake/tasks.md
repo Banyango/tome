@@ -2,6 +2,8 @@
 
 Source feature: [feature.md](./feature.md)
 
+> All tasks are done: implemented as 007-1 to 007-3 directly on main (7a2c286, c7baffd, 4597194).
+
 ## Tasks
 
 ### 007-1. Orchestrator start handshake, nudge and fail

@@ -13,3 +13,4 @@
 - 2026-09-27 19:00 — feature — 009-project-queues — pages touched: features/009-project-queues/feature.md, entities/queue.md, entities/trigger.md, index.md
 - 2026-09-27 19:30 — update — 008 tome workspace renamed to `<project>-orchestrator` — pages touched: features/008-session-layout/feature.md, features/008-session-layout/tasks.md
 - 2026-09-27 20:50 — update — 005-os-file-events and 006-file-trigger-while-running implemented — pages touched: features/005-os-file-events/tasks.md, features/006-file-trigger-while-running/tasks.md
+- 2026-09-27 21:02 — update — 007-agent-start-handshake implemented — pages touched: features/007-agent-start-handshake/tasks.md
