@@ -83,6 +83,7 @@ mod tests {
                         params: &params,
                         status,
                         trigger: None,
+                        placement: None,
                     },
                     |id| format!("snapshot {id}"),
                 )

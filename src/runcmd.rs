@@ -5,6 +5,7 @@
 //! through `--run <id>` or `TOME_RUN_ID`.
 
 use crate::engine::reason;
+use crate::placement::Settings;
 use crate::output::{exit, CliError, CliResult, Mode, Report};
 use crate::paths;
 use crate::rpc;
@@ -29,19 +30,23 @@ fn run_id(run: Option<String>) -> CliResult<String> {
 /// Resolve a workflow by name or path and ask the daemon to start it. The
 /// daemon re-validates it; an invalid workflow is exit `2` and no run is
 /// recorded.
-pub fn start_params(cwd: &Path, target: &str, params: &[String]) -> CliResult<Value> {
+pub fn start_params(cwd: &Path, target: &str, params: &[String], placement: &Settings) -> CliResult<Value> {
     let wf = Library::discover(cwd).find(target)?;
-    Ok(json!({
+    let mut p = json!({
         "workflow_path": wf.path,
         "source": wf.source,
         "project_path": cwd,
         "params": params,
-    }))
+    });
+    if !placement.is_empty() {
+        p["placement"] = json!(placement);
+    }
+    Ok(p)
 }
 
 /// `tome run <wf> --detach`: start the run and return its id right away.
-pub fn start_detached(cwd: &Path, target: &str, params: &[String]) -> CliResult<Report> {
-    let run = call("run.start", start_params(cwd, target, params)?)?;
+pub fn start_detached(cwd: &Path, target: &str, params: &[String], placement: &Settings) -> CliResult<Report> {
+    let run = call("run.start", start_params(cwd, target, params, placement)?)?;
     let human = format!("run {} {} ({})", run["id"], run["status"].as_str().unwrap_or("?"), s(&run["workflow_name"]));
     Ok(Report::new(run, human))
 }
@@ -53,8 +58,8 @@ pub fn start_detached(cwd: &Path, target: &str, params: &[String]) -> CliResult<
 /// Ctrl-C (or SIGTERM/SIGHUP) cancels the run and waits for the daemon to
 /// confirm; a second one exits right away. If this process dies instead, the
 /// daemon notices the closed connection and cancels the run itself.
-pub fn start_attached(cwd: &Path, target: &str, params: &[String], mode: Mode) -> CliResult<Report> {
-    let mut start = start_params(cwd, target, params)?;
+pub fn start_attached(cwd: &Path, target: &str, params: &[String], placement: &Settings, mode: Mode) -> CliResult<Report> {
+    let mut start = start_params(cwd, target, params, placement)?;
     start["attach"] = json!(true);
     let mut client = rpc::Client::connect(&paths::socket_path())?;
     install_signal_handlers();

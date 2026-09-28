@@ -84,6 +84,8 @@ enum Command {
         /// Return the run id right away instead of streaming the run.
         #[arg(long)]
         detach: bool,
+        #[command(flatten)]
+        placement: PlacementArgs,
     },
     /// Tell tome this agent has started: the first thing an agent runs.
     Ready,
@@ -262,6 +264,8 @@ enum WorkerCommand {
         /// Keep the worker's session open after it finishes.
         #[arg(long)]
         keep_open: bool,
+        #[command(flatten)]
+        placement: PlacementArgs,
         /// The agent worker's task.
         #[arg(long, conflicts_with = "prompt_file")]
         prompt: Option<String>,
@@ -432,6 +436,42 @@ enum RunsCommand {
     },
 }
 
+/// Where a session goes; each flag overrides the workflow and config.
+#[derive(clap::Args, Default)]
+struct PlacementArgs {
+    /// A layout preset: built-in (tab, split, workspace) or from `layout_presets`.
+    #[arg(long, value_name = "NAME", help_heading = "Placement")]
+    preset: Option<String>,
+    /// tab, split, or workspace (a workspace of its own).
+    #[arg(long, value_name = "LAYOUT", help_heading = "Placement")]
+    layout: Option<String>,
+    /// project, focused, own, or a name for a `<project>-<name>` workspace.
+    #[arg(long, value_name = "WORKSPACE", help_heading = "Placement")]
+    workspace: Option<String>,
+    /// Which way a split opens: right, left, down, or up.
+    #[arg(long, value_name = "DIR", help_heading = "Placement")]
+    direction: Option<String>,
+    /// A split's size: a percentage (30%) or cells (80).
+    #[arg(long, value_name = "SIZE", help_heading = "Placement")]
+    size: Option<String>,
+    /// The pane a split or tab opens from: orchestrator, last, or first.
+    #[arg(long, value_name = "PANE", help_heading = "Placement")]
+    from: Option<String>,
+}
+
+impl PlacementArgs {
+    fn settings(&self) -> CliResult<placement::Settings> {
+        placement::from_flags(
+            self.preset.as_deref(),
+            self.layout.as_deref(),
+            self.workspace.as_deref(),
+            self.direction.as_deref(),
+            self.size.as_deref(),
+            self.from.as_deref(),
+        )
+    }
+}
+
 #[derive(Subcommand)]
 enum LayoutCommand {
     /// List the built-in, global and project layout presets with their settings.
@@ -575,12 +615,13 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             RunCommand::Finish { status, summary, run } => runcmd::finish(run, &status, summary),
             RunCommand::Cancel { id } => runcmd::cancel(id),
         },
-        Command::Run { command: None, workflow, params, detach } => {
+        Command::Run { command: None, workflow, params, detach, placement } => {
             let workflow = workflow.expect("clap requires a workflow");
+            let placement = placement.settings()?;
             if detach {
-                runcmd::start_detached(&current_dir()?, &workflow, &params)
+                runcmd::start_detached(&current_dir()?, &workflow, &params, &placement)
             } else {
-                runcmd::start_attached(&current_dir()?, &workflow, &params, mode)
+                runcmd::start_attached(&current_dir()?, &workflow, &params, &placement, mode)
             }
         }
         Command::Ready => runcmd::ready(),
@@ -597,11 +638,13 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 base,
                 harness,
                 keep_open,
+                placement,
                 prompt,
                 prompt_file,
                 run,
                 command,
             } => primitives::spawn(primitives::Spawn {
+                placement: placement.settings()?,
                 run: run.run,
                 name,
                 group,

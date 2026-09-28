@@ -219,6 +219,9 @@ const MIGRATIONS: &[&str] = &[
     // 9: a session's resolved placement (JSON: its settings, where each came
     // from, and any warnings)
     "ALTER TABLE sessions ADD COLUMN placement VARCHAR;",
+    // 10: a run's placement state (JSON: its `tome run` flags, the
+    // workspace focused when it started, and notes)
+    "ALTER TABLE runs ADD COLUMN placement VARCHAR;",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -313,6 +316,9 @@ pub struct Run {
     pub trigger: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow_snapshot: Option<String>,
+    /// Placement state: `{flags?, focused?, notes?}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -400,6 +406,8 @@ pub struct NewRun<'a> {
     pub status: RunStatus,
     /// What started it, for a triggered run.
     pub trigger: Option<&'a Value>,
+    /// Its placement state (see [`Run::placement`]).
+    pub placement: Option<&'a Value>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -509,8 +517,8 @@ impl Store {
         let id: i64 = tx.query_row("SELECT nextval('run_id_seq')", [], |r| r.get(0))?;
         let snapshot = render(id);
         tx.execute(
-            "INSERT INTO runs (id, workflow_name, workflow_path, project_path, params, workflow_snapshot, status, created_at, trigger_cause)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO runs (id, workflow_name, workflow_path, project_path, params, workflow_snapshot, status, created_at, trigger_cause, placement)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
                 new.workflow_name,
@@ -521,6 +529,7 @@ impl Store {
                 new.status.as_str(),
                 now(),
                 new.trigger.map(Value::to_string),
+                new.placement.map(Value::to_string),
             ],
         )?;
         tx.commit()?;
@@ -933,7 +942,7 @@ fn internal_any(e: anyhow::Error) -> CliError {
 
 fn run_select(with_snapshot: bool) -> String {
     format!(
-        "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at, trigger_cause{} FROM runs",
+        "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at, trigger_cause, placement{} FROM runs",
         if with_snapshot { ", workflow_snapshot" } else { "" }
     )
 }
@@ -953,7 +962,8 @@ fn run_from_row(r: &Row<'_>, with_snapshot: bool) -> duckdb::Result<Run> {
         created_at: fmt_ts(r.get(8)?),
         finished_at: r.get::<_, Option<NaiveDateTime>>(9)?.map(fmt_ts),
         trigger: r.get::<_, Option<String>>(10)?.and_then(|t| serde_json::from_str(&t).ok()),
-        workflow_snapshot: if with_snapshot { r.get(11)? } else { None },
+        placement: r.get::<_, Option<String>>(11)?.and_then(|t| serde_json::from_str(&t).ok()),
+        workflow_snapshot: if with_snapshot { r.get(12)? } else { None },
     })
 }
 
@@ -1000,6 +1010,7 @@ mod tests {
                     params: &params,
                     status: RunStatus::Running,
                     trigger: None,
+                    placement: None,
                 },
                 |id| format!("snapshot for run {id}"),
             )

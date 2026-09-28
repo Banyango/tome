@@ -568,6 +568,46 @@ pub fn presets(cfg: &Config) -> CliResult<BTreeMap<String, Preset>> {
     Ok(out)
 }
 
+/// Placement settings from a command's flags. On the command line a
+/// reserved word given to `--workspace` is the keyword.
+pub fn from_flags(
+    preset: Option<&str>,
+    layout: Option<&str>,
+    workspace: Option<&str>,
+    direction: Option<&str>,
+    size: Option<&str>,
+    from: Option<&str>,
+) -> CliResult<Settings> {
+    let bad = |flag: &str, e: String| CliError::invalid(format!("--{flag}: {e}"));
+    Ok(Settings {
+        preset: preset.map(str::to_string),
+        layout: layout.map(parse_layout).transpose().map_err(|e| bad("layout", e))?,
+        workspace: workspace.map(Workspace::parse).transpose().map_err(|e| bad("workspace", e))?,
+        direction: direction.map(parse_direction).transpose().map_err(|e| bad("direction", e))?,
+        size: size.map(Size::parse).transpose().map_err(|e| bad("size", e))?,
+        from: from.map(parse_from).transpose().map_err(|e| bad("from", e))?,
+    })
+}
+
+impl Settings {
+    /// Settings sent over RPC or stored on a run (as serialized above).
+    pub fn from_json(v: &Value) -> CliResult<Settings> {
+        let get = |k: &str| v.get(k).and_then(Value::as_str);
+        from_flags(get("preset"), get("layout"), get("workspace"), get("direction"), get("size"), get("from"))
+    }
+}
+
+/// Fail on a flag's preset that isn't defined, before anything is recorded.
+pub fn check_flag_preset(flags: &Settings, source: &str, project: Option<&Path>) -> CliResult<()> {
+    let Some(name) = &flags.preset else { return Ok(()) };
+    let known = presets(&Config::load(project)?)?;
+    if known.contains_key(name) {
+        Ok(())
+    } else {
+        Err(unknown_preset(name, &known, source))
+    }
+}
+
 /// Every preset definition, built-in first, each marked with whether a
 /// later one of the same name replaces it.
 pub fn list(cfg: &Config) -> CliResult<Vec<(Preset, bool)>> {

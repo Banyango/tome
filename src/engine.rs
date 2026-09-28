@@ -133,7 +133,11 @@ impl Engine {
         let project = opt_str(p, "project_path").map(std::path::Path::new);
         orchestrator::harness_for(fm, project)?;
         session::Kind::choose(fm.defaults.backend.as_deref(), project)?;
-        orchestrator::placement(fm, project)?;
+        let flags = p.get("placement").filter(|v| !v.is_null()).map(placement::Settings::from_json).transpose()?;
+        if let Some(flags) = &flags {
+            placement::check_flag_preset(flags, "`tome run` flags", project)?;
+        }
+        orchestrator::placement(fm, flags.as_ref(), project)?;
         placement::check_presets(fm.defaults.layout.as_ref(), project)?;
         let run = self.with_store(|store| {
             let status = match fm.concurrency {

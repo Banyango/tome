@@ -9,7 +9,7 @@ use crate::harness::{self, Harness, Vars};
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::recovery::RecoveryHooks;
-use crate::placement::{self, Inputs, Placement, Role};
+use crate::placement::{self, Inputs, Placement, Role, Settings};
 use crate::session::{self, Backend, Cmux, Kind, Launch, Tmux};
 use crate::store::{Run, Session, Worker};
 use crate::workflow::{self, Frontmatter, Workflow};
@@ -34,9 +34,14 @@ pub fn harness_for(fm: &Frontmatter, project: Option<&Path>) -> CliResult<Harnes
 }
 
 /// Where a run's orchestrator goes.
-pub fn placement(fm: &Frontmatter, project: Option<&Path>) -> CliResult<Placement> {
-    let inputs = Inputs { role: Role::Orchestrator, flags: None, run_flags: None, spec: fm.defaults.layout.as_ref() };
+pub fn placement(fm: &Frontmatter, flags: Option<&Settings>, project: Option<&Path>) -> CliResult<Placement> {
+    let inputs = Inputs { role: Role::Orchestrator, flags, run_flags: None, spec: fm.defaults.layout.as_ref() };
     placement::resolve(&inputs, project)
+}
+
+/// The placement flags `tome run` was given for this run, if any.
+pub fn run_flags(run: &Run) -> CliResult<Option<Settings>> {
+    run.placement.as_ref().and_then(|p| p.get("flags")).map(Settings::from_json).transpose()
 }
 
 /// A run's orchestrator, ready to launch.
@@ -81,7 +86,7 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
     Ok(Plan {
         harness: harness_for(&wf.frontmatter, project)?,
         backend: Kind::choose(wf.frontmatter.defaults.backend.as_deref(), project)?,
-        placement: placement(&wf.frontmatter, project)?,
+        placement: placement(&wf.frontmatter, run_flags(run)?.as_ref(), project)?,
         session: session::run_session_name(run.id, &run.workflow_name, ROLE),
         title: format!("tome: {} #{}", run.workflow_name, run.id),
         cwd,

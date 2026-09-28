@@ -301,3 +301,85 @@ fn an_undefined_preset_fails_the_run_and_warns_in_validate() {
     assert!(err["error"]["message"].as_str().unwrap().contains("unknown layout preset `nope`"), "{err}");
     assert!(err["error"]["hint"].as_str().unwrap().contains("workspace"), "{err}");
 }
+
+#[test]
+fn run_flags_place_the_orchestrator_and_sit_below_the_workers_blocks() {
+    let env = env();
+    env.set_config(&format!("{}layout: tab\n", common::IDLE_CONFIG));
+    write_wf(&env, "build", "defaults:\n  layout:\n    workers:\n      - match: review-*\n        layout: tab\n");
+    env.start_daemon();
+    let (code, run) = env.json(&["run", "build", "--detach", "--layout", "split", "--size", "30%"]);
+    assert_eq!(code, 0, "{run}");
+    let o = &sessions(&env, 1)[0];
+    assert_eq!(o["layout"], "split", "{o}");
+    assert_eq!(o["placement"]["sources"]["layout"], "`tome run` flags", "{o}");
+    assert_eq!(o["placement"]["size"], "30%", "{o}");
+    spawn(&env, 1, "review-1", &["sleep", "600"]);
+    spawn(&env, 1, "build-1", &["sleep", "600"]);
+    let all = sessions(&env, 1);
+    let find = |n: &str| all.iter().find(|s| s["name"].as_str().unwrap().ends_with(&format!("-{n}"))).cloned().unwrap_or_else(|| panic!("{all:?}"));
+    // The rule beats the run's flags; with no rule, they apply.
+    assert_eq!(find("review-1")["layout"], "tab");
+    assert_eq!(find("build-1")["layout"], "split");
+    assert_eq!(find("build-1")["placement"]["sources"]["layout"], "`tome run` flags");
+}
+
+#[test]
+fn spawn_flags_are_the_top_level_for_a_worker() {
+    let env = env();
+    env.set_config(common::IDLE_CONFIG);
+    write_wf(&env, "build", "defaults:\n  layout:\n    workers:\n      layout: split\n");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    spawn_with(&env, 1, "w", &["--layout", "tab", "--direction", "down"], &["sleep", "600"]);
+    let w = sessions(&env, 1).into_iter().find(|s| s["name"] == "tome-1-build-w").unwrap();
+    assert_eq!(w["layout"], "tab", "{w}");
+    assert_eq!(w["placement"]["direction"], "down", "{w}");
+    assert_eq!(w["placement"]["sources"]["layout"], "`tome worker spawn` flags", "{w}");
+}
+
+#[test]
+fn a_reserved_word_flag_is_the_keyword_and_bad_flags_are_refused() {
+    let env = env();
+    env.set_config(common::IDLE_CONFIG);
+    write_wf(&env, "build", "");
+    env.start_daemon();
+    let (code, run) = env.json(&["run", "build", "--detach", "--workspace", "own"]);
+    assert_eq!(code, 0, "{run}");
+    let o = &sessions(&env, 1)[0];
+    assert_eq!((o["layout"].as_str(), o["placement"]["workspace"].as_str()), (Some("workspace"), Some("own")), "{o}");
+
+    for (flag, value, message) in [
+        ("--layout", "sideways", "--layout: unknown `layout` `sideways`"),
+        ("--size", "0", "--size:"),
+        ("--workspace", "a b", "--workspace: unknown workspace `a b`"),
+        ("--preset", "nope", "unknown layout preset `nope` (from `tome run` flags)"),
+    ] {
+        let (code, err) = env.json(&["run", "build", "--detach", flag, value]);
+        assert_eq!(code, 2, "{flag} {value}: {err}");
+        assert!(err["error"]["message"].as_str().unwrap().contains(message), "{err}");
+    }
+    let (_, runs) = env.json(&["runs", "list"]);
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn spawning_with_an_undefined_preset_fails_with_the_known_ones() {
+    let env = env();
+    env.set_config(common::IDLE_CONFIG);
+    write_wf(&env, "build", "");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    let out = env
+        .cmd(&["--json", "worker", "spawn", "--name", "w", "--preset", "nope", "--", "sleep", "600"])
+        .env("TOME_RUN_ID", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(err["error"]["message"].as_str().unwrap().contains("unknown layout preset `nope` (from `tome worker spawn` flags)"), "{err}");
+    assert!(err["error"]["hint"].as_str().unwrap().contains("known presets: split, tab, workspace"), "{err}");
+    let (_, workers) = env.json(&["worker", "status", "--run", "1"]);
+    assert_eq!(workers["workers"].as_array().map(Vec::len), Some(0), "{workers}");
+}

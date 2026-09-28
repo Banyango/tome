@@ -81,6 +81,8 @@ pub fn create_run(store: &mut Store, p: &Value, wf: &Workflow, status: RunStatus
     // A run queued by a `while_running: queue` trigger has more paths merged
     // in while it waits, so its placeholders are filled in when it starts.
     let deferred = crate::triggers::waits_for_idle(p.get("cause"));
+    // `tome run`'s placement flags, kept for the run's workers.
+    let placement = p.get("placement").filter(|v| v.as_object().is_some_and(|o| !o.is_empty())).map(|f| json!({ "flags": f }));
 
     let mut body = String::new();
     let run = store
@@ -92,6 +94,7 @@ pub fn create_run(store: &mut Store, p: &Value, wf: &Workflow, status: RunStatus
                 params: &params,
                 status,
                 trigger: p.get("cause").filter(|c| c.is_object()),
+                placement: placement.as_ref(),
             },
             |id| {
                 if deferred {

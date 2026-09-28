@@ -14,7 +14,7 @@ use crate::harness::{self, shell_quote, Vars};
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::paths;
-use crate::placement::{self, Inputs, Role};
+use crate::placement::{self, Inputs, Role, Settings};
 use crate::session::{self, Backend, Kind, Launch};
 use crate::store::{self, NewWorker, NewWorktree, Pulled, Run, RunStatus, Store, Worker, WorkerEnd, WorkerStatus};
 use crate::worktree;
@@ -146,7 +146,7 @@ impl Engine {
     }
 
     /// `worker.spawn {run_id, name?, group?, worktree?, base?, harness?,
-    /// keep_open?, prompt? | command?, caller?, cwd?}`
+    /// keep_open?, prompt? | command?, placement?, caller?, cwd?}`
     fn spawn_worker(&self, run_id: i64, p: &Value) -> CliResult<Value> {
         if let Some(me) = caller(p) {
             return Err(CliError::invalid(format!("worker `{me}` can't spawn workers; only the orchestrator can"))
@@ -186,6 +186,10 @@ impl Engine {
                     .with_hint("e.g. `tome worker spawn --prompt \"...\"` or `tome worker spawn -- cargo test`"))
             }
         };
+        let flags = p.get("placement").filter(|v| !v.is_null()).map(Settings::from_json).transpose()?;
+        if let Some(flags) = &flags {
+            placement::check_flag_preset(flags, "`tome worker spawn` flags", orchestrator::run_project(&run).as_deref())?;
+        }
         // Resolve the base before recording anything, so a bad one spawns nothing.
         let base = if with_worktree { Some(worktree::resolve_base(&repo_dir(&run, p), base)?) } else { None };
 
@@ -246,7 +250,7 @@ impl Engine {
         if matches!(task, Task::Agent { .. }) {
             self.expect_start(agent.clone(), handshake::timeout(&wf.frontmatter), prompt_file(run_id, &name));
         }
-        match self.launch_worker(&run, &name, &task, &cwd, created.as_ref().map(|c| c.path.as_path()), worker.keep_open) {
+        match self.launch_worker(&run, &name, &task, &cwd, created.as_ref().map(|c| c.path.as_path()), worker.keep_open, flags.as_ref()) {
             Ok(s) => {
                 let started = self.with_store(|store| {
                     store.add_session(&s).map_err(internal)?;
@@ -286,6 +290,7 @@ impl Engine {
         cwd: &Path,
         worktree: Option<&Path>,
         keep_open: bool,
+        flags: Option<&Settings>,
     ) -> CliResult<store::Session> {
         let recorded = self.recorded_sessions(run.id);
         let orch = recorded.iter().find(|s| s.role == orchestrator::ROLE);
@@ -295,7 +300,9 @@ impl Engine {
             Some(kind) => kind,
             None => Kind::choose(wf.frontmatter.defaults.backend.as_deref(), project.as_deref())?,
         };
-        let inputs = Inputs { role: Role::Worker(name), flags: None, run_flags: None, spec: wf.frontmatter.defaults.layout.as_ref() };
+        let run_flags = orchestrator::run_flags(run)?;
+        let inputs =
+            Inputs { role: Role::Worker(name), flags, run_flags: run_flags.as_ref(), spec: wf.frontmatter.defaults.layout.as_ref() };
         let placement = placement::resolve(&inputs, project.as_deref())?;
         let layout = placement.layout;
         let dir = run_dir(run.id);
