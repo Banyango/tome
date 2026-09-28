@@ -47,3 +47,43 @@ With `to: running`, a delivery is claimed by each running run of the workflow an
 Tome publishes `tome.run.<workflow>.started` (after the start handshake), `.succeeded`, `.failed` (including `orchestrator_exited`, and `daemon_restart` for runs recovered on daemon start) and `.cancelled`, with sender `tome` and a JSON payload: run id, workflow, and params/cause, summary/duration, or reason as fits. They go through the same delivery path as user events. Every event records its depth: `0` from the user, and one more than the event that started the publishing run, including that run's lifecycle events. An event deeper than `8` isn't delivered. Its publish is refused (exit `2` for `tome publish`), recorded and notified.
 
 > All tasks are done: implemented as 009-1 to 009-7 directly on main (1f87309, 66a8fa9, 7eafd9e, 85b1930, 7353f81, 14eaffa, 9bf55b9).
+
+## What changed
+
+- **Store:** new `bus_events` and `deliveries` tables, and a `runs.announced` column (`started` / `ended`) so each lifecycle event is published once. Runs that had already finished before the migration are marked `ended`, so upgrading doesn't flood the bus.
+- **`tome publish`:** `tome publish <topic> <payload>` reads the payload from stdin when it's `-`, for payloads too big for the command line. Outside a run it needs a project (a directory with `.tome/`). Inside a run (`TOME_RUN_ID`) it publishes to the run's project, as `run N` or `run N worker W`, and the publish shows in the run's stream. `--dry-run` shows what each matching subscription would do (start, wait and why, signal, or be dropped).
+- **Handing out deliveries:** each trigger-loop tick drains every topic subscription in publish order, on a background thread.
+  - `to: new`: claims a delivery before starting its run, up to `concurrency`.
+  - `to: running`: holds a delivery on the runs it signals. With no run to signal, the delivery is `done`.
+  - `running-or-new`: signals running runs, or starts a new run when none is running.
+  - A fire error stalls the subscription (see `tome publish --dry-run`) until the next rescan, so it doesn't retry every tick.
+  - An invalid workflow claims nothing.
+- **Settling:** a claimed delivery settles when the first of its runs ends. It becomes `done` if that run succeeded, else `failed`, with a notification naming the event and `tome events retry`. This also covers the race where a signalled run ends before the signal is recorded, and runs failed by `daemon_restart`.
+- **Signalling:** the `events` queue message for a topic event carries `kind: topic`, `topic`, `payload`, `event_id` and `sender`. The nudge reads `[tome] event N on <topic>. Details: tome queue pull events`.
+- **Inspecting and repairing:**
+  - `tome events ls` and `tome events show <topic> [--all]` inspect the bus. `show` hides fully settled events unless `--all` is given.
+  - `tome events retry` (`failed` → `pending`) and `tome events remove` (`pending`/`failed` → `dropped`) take `--workflow` when the event went to several workflows.
+  - `tome triggers ls` shows each topic trigger's backlog and the last event a run took.
+  - `tome triggers fire` on a topic trigger takes the next pending event. With `--payload`, it instead publishes a `test` event to the pattern with wildcards replaced by `test`, delivered to that workflow only.
+- **Lifecycle events:**
+  - `.started`: published after the orchestrator's first tome call (the 007 handshake). When the handshake is off (`start_timeout: off` / `TOME_START_TIMEOUT=off`), it's published at launch instead, which the spec didn't cover.
+  - End events: published from the trigger loop, so they're up to one tick late.
+  - Payloads:
+    - `started`: `{run_id, workflow, params, cause}`
+    - `succeeded`: `{run_id, workflow, summary, duration}`, where `duration` is whole seconds from creation to finish
+    - `failed`: `{run_id, workflow, reason, summary}`
+    - `cancelled`: `{run_id, workflow}`
+- **Chain guard:** a publish deeper than 8 is recorded with `refused` set and no deliveries, logged, and notified. `tome publish` exits `2`, and so does `--dry-run`, which records nothing.
+- **gc:** `tome gc` removes `done` deliveries, and events whose deliveries are all settled. That includes lifecycle events nobody subscribed to.
+- **Tests:** `tests/bus.rs`. Lifecycle events take event ids, so the tests look events up by topic or payload instead of assuming ids.
+
+## Potential follow-ups
+
+- **Unsubscribed lifecycle events:** every run records about two events even when nothing subscribes to them, and only `tome gc` clears them. Consider skipping the record when there are no deliveries.
+- **Lost end events:** a run's end is marked handled before its event is published, so a failed publish (such as a store error) is logged and lost rather than retried.
+- **Workflow names that aren't topic segments:** a name with uppercase letters or dots gets no lifecycle events, only a daemon log line. `tome validate` could warn about it.
+- **Refused publishes from a run:** these return exit `2` to the caller, but don't show in the run's stream the way successful publishes do.
+- **`to: running` deliveries on long-lived runs:** they stay `claimed` until one of the signalled runs ends. A run that never finishes holds them indefinitely. `tome events remove` only takes `pending` or `failed` deliveries.
+- **`event_id` in the queue body is a string:** it comes from the `{{trigger.*}}` fields, which are all strings. Consumers that expect a number need to parse it.
+- **Stalled subscriptions:** these clear only on a rescan (a workflow edit, or `tome triggers enable`). A transient error therefore waits for the next rescan before it's retried.
+

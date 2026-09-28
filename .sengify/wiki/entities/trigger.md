@@ -15,7 +15,7 @@ A rule in [[workflow]] frontmatter that makes the [[daemon]] react to an event, 
       - `mute`: the changes are dropped (the default before 006; workflows that relied on it must now say `while_running: mute`)
     - tome has no loop guard: a run that edits files its own trigger watches queues or starts another run. Avoid it with `ignore:`, `on: [created]`, or `while_running: mute`
   - `cron`: a 5-field expression in local time; missed times are skipped
-  - `on`: a topic pattern on the project's message bus (`*` one segment, trailing `**` one or more); each subscribing workflow gets its own durable delivery of every matching [[event]]; `to: new` starts one run per delivery, limited by `concurrency`; project workflows only (feature 009)
+  - `on`: a topic pattern on the project's message bus (`*` one segment, trailing `**` one or more); each subscribing workflow gets its own durable delivery of every matching [[event]]; `to: new` starts one run per delivery, limited by `concurrency`; `to: running` holds the delivery on the runs it signals (or marks it `done` when none run); project workflows only; `tome triggers fire` takes the next pending event, or publishes a `test` one with `--payload` _(source: [009](../features/009-message-bus/feature.md))_
 - `to:` `new` (default), `running`, or `running-or-new`, for cron and file triggers alike; a file trigger signalling runs passes its changed paths as event data
 - `params:` fills in workflow params
 - event data: `{{trigger.*}}` placeholders in the body
