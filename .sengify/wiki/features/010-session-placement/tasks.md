@@ -66,3 +66,5 @@ Launches on tmux and cmux follow the resolved `workspace`:
 - **tmux:** it uses `join-pane`, `break-pane` and `move-window`.
 
 tome updates the session's recorded handle and resolved placement, so liveness checks, kill, nudges and crash recovery follow the session to its new place. A preset that isn't defined fails with a hint. If a move fails partway, the session stays where it was, its recorded handle doesn't change, and the command errors. (UC 12)
+
+> All tasks are done: implemented as 010-1 to 010-7 directly on main (2b214b1, 0a30973, 03db0ec, e9ee58b, 51707d1, 55fa914, 390ec6f).

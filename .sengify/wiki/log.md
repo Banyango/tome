@@ -21,3 +21,4 @@
 - 2026-09-28 10:46 — update — 009-message-bus: what changed and potential follow-ups — pages touched: features/009-message-bus/tasks.md, entities/event.md, entities/trigger.md
 - 2026-09-28 11:05 — update — 009-message-bus: follow-ups moved to their own page — pages touched: features/009-message-bus/follow-ups.md (new), features/009-message-bus/tasks.md, index.md
 - 2026-09-28 12:53 — feature — 010-session-placement: placement settings (layout, workspace, split direction/size, anchor), presets, per-role and per-worker rules, project config, spawn/run flags, session move — pages touched: features/010-session-placement/feature.md (new), index.md
+- 2026-09-28 14:04 — update — 010-session-placement implemented — pages touched: features/010-session-placement/tasks.md
