@@ -17,7 +17,7 @@ use crate::engine::Engine;
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::session;
-use crate::store::{RunStatus, Store};
+use crate::store::{RunStatus, Store, WorkerStatus};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -35,6 +35,8 @@ pub mod state {
 
 /// Why a run failed when its orchestrator never made a tome call.
 pub const ORCHESTRATOR_NO_START: &str = "orchestrator_no_start";
+/// Why a worker failed when it never made a tome call.
+pub const WORKER_NO_START: &str = "worker_no_start";
 
 /// How long an agent has to make its first tome call, by default.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -175,10 +177,8 @@ impl Engine {
                 self.forget_start(&agent);
                 continue;
             }
-            let Some(s) = self.agent_session(&agent) else {
-                self.forget_start(&agent);
-                continue;
-            };
+            // Not recorded yet (still launching): look again next time.
+            let Some(s) = self.agent_session(&agent) else { continue };
             // Its session is over: the exit handling takes it.
             if session::is_alive(&s) == Some(false) {
                 continue;
@@ -238,8 +238,9 @@ impl Engine {
 
     fn fail_no_start(&self, agent: &Agent, pending: &Pending) {
         let message = format!("no tome call in {} after the nudge", secs(pending.timeout));
-        if agent.1.is_none() {
-            self.fail_orchestrator_start(agent, &message);
+        match &agent.1 {
+            None => self.fail_orchestrator_start(agent, &message),
+            Some(name) => self.fail_worker_start(agent, name, &message),
         }
     }
 
@@ -253,7 +254,7 @@ impl Engine {
                 return Ok(None);
             }
             record(store, agent, state::NO_START, message)?;
-            let cut = store.end_active_workers(run_id, crate::store::WorkerStatus::Cancelled, ORCHESTRATOR_NO_START)?;
+            let cut = store.end_active_workers(run_id, WorkerStatus::Cancelled, ORCHESTRATOR_NO_START)?;
             let run = store.abort_run(run_id, RunStatus::Failed, ORCHESTRATOR_NO_START, Some(message))?;
             self.sync(store, run_id);
             Ok(Some((run, cut)))
@@ -264,5 +265,27 @@ impl Engine {
         orchestrator::kill_sessions(run_id, &recorded);
         orchestrator::notify(&run, &recorded, &cut);
         self.promote(&run.workflow_name);
+    }
+
+    /// The worker fails (`worker_no_start`) and its session is killed (its
+    /// log stays in the run directory). The orchestrator gets the usual
+    /// worker-finished nudge and decides what to do; the user isn't told.
+    fn fail_worker_start(&self, agent: &Agent, name: &str, message: &str) {
+        let run_id = agent.0;
+        let end = self.with_store(|store| {
+            if store.require_worker(run_id, name)?.status.is_final() {
+                return Ok(None);
+            }
+            record(store, agent, state::NO_START, message)?;
+            let end = store.finish_worker(run_id, name, WorkerStatus::Failed, Some(WORKER_NO_START), Some(message), None, true)?;
+            self.sync(store, run_id);
+            Ok(Some(end))
+        });
+        let Ok(Some(end)) = end else { return };
+        eprintln!("tome daemon: run {run_id} worker {name} failed: {WORKER_NO_START}");
+        if let Some(s) = self.worker_session(run_id, &end.worker) {
+            session::kill(&s);
+        }
+        self.after_end(run_id, &end, None);
     }
 }

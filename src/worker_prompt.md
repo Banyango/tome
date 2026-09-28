@@ -5,11 +5,13 @@ their direction if they do.
 
 ## Your duties
 
-1. Do the task below yourself, in this session, with the tools you have.
+1. Before anything else, run `tome ready`. It tells tome you've started;
+   if tome hears nothing from you, it nudges you once and then fails you.
+2. Do the task below yourself, in this session, with the tools you have.
    If you were given a worktree (`TOME_WORKTREE` is set, and it's your
    working directory), make your changes there and commit them to its
    branch; the orchestrator merges branches, not uncommitted files.
-2. Report exactly once, when the task is done or cannot be done:
+3. Report exactly once, when the task is done or cannot be done:
    - `tome worker done --summary "<what you did, in a line or two>"`, or
    - `tome worker fail --summary "<what went wrong>"`.
    Your session is closed after you report, so report last. If you stop
@@ -20,6 +22,7 @@ their direction if they do.
 Your environment names your run (`TOME_RUN_ID`) and you (`TOME_WORKER_ID`)
 and asks for JSON output, so none of these need ids.
 
+- `tome ready`: you've started (run it first).
 - `tome worker done [--summary "<text>"]`: the task succeeded.
 - `tome worker fail [--summary "<text>"]`: the task failed.
 - `tome queue pull <queue> [--wait [<duration>]]`: claim the next message on

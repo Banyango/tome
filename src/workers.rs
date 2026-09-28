@@ -9,6 +9,7 @@
 
 use crate::api::{internal, opt_str, req_id_at, req_str};
 use crate::engine::Engine;
+use crate::handshake::{self, Agent};
 use crate::harness::{self, shell_quote, Vars};
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
@@ -73,6 +74,11 @@ fn run_dir(run_id: i64) -> PathBuf {
 
 fn exit_file(run_id: i64, name: &str) -> PathBuf {
     run_dir(run_id).join(format!("worker-{name}.exit"))
+}
+
+/// Where an agent worker's prompt is written.
+fn prompt_file(run_id: i64, name: &str) -> PathBuf {
+    run_dir(run_id).join(format!("worker-{name}-prompt.md"))
 }
 
 fn log_file(run_id: i64, name: &str) -> PathBuf {
@@ -233,6 +239,12 @@ impl Engine {
         })?;
 
         let cwd = created.as_ref().map(|c| c.path.clone()).unwrap_or_else(|| orchestrator::run_cwd(&run));
+        // Agent workers must show they've started; command workers report
+        // by exit code.
+        let agent: Agent = (run_id, Some(name.clone()));
+        if matches!(task, Task::Agent { .. }) {
+            self.expect_start(agent.clone(), handshake::timeout(), prompt_file(run_id, &name));
+        }
         match self.launch_worker(&run, &name, &task, &cwd, created.as_ref().map(|c| c.path.as_path()), worker.keep_open) {
             Ok(s) => {
                 let started = self.with_store(|store| {
@@ -247,6 +259,7 @@ impl Engine {
                 }
             }
             Err(e) => {
+                self.forget_start(&agent);
                 let end = self.with_store(|store| {
                     let end = store.finish_worker(run_id, &name, WorkerStatus::Failed, Some(LAUNCH_FAILED), Some(&e.message), None, true);
                     self.sync(store, run_id);
@@ -286,7 +299,7 @@ impl Engine {
         let (argv, harness) = match task {
             Task::Agent { harness, prompt } => {
                 let full = format!("{}\n\n{}\n", PROMPT.trim_end(), prompt.trim());
-                let prompt_file = dir.join(format!("worker-{name}-prompt.md"));
+                let prompt_file = prompt_file(run.id, name);
                 fs::write(&prompt_file, &full)?;
                 let argv = harness.command(&Vars {
                     prompt: &full,
@@ -396,7 +409,7 @@ impl Engine {
         Ok(json!({ "name": name, "path": created.path, "branch": created.branch, "base": base.name }))
     }
 
-    fn worker_session(&self, run_id: i64, w: &Worker) -> Option<store::Session> {
+    pub(crate) fn worker_session(&self, run_id: i64, w: &Worker) -> Option<store::Session> {
         let name = w.session.as_deref()?;
         self.recorded_sessions(run_id).into_iter().find(|s| s.name == name)
     }
@@ -404,7 +417,7 @@ impl Engine {
     /// After a worker ended: close its session (after `grace`, unless it
     /// was kept open), kill any members fail-fast cut off, and tell the
     /// orchestrator.
-    fn after_end(&self, run_id: i64, end: &WorkerEnd, grace: Option<Duration>) {
+    pub(crate) fn after_end(&self, run_id: i64, end: &WorkerEnd, grace: Option<Duration>) {
         let sessions = self.recorded_sessions(run_id);
         let session_of = |w: &Worker| w.session.as_deref().and_then(|n| sessions.iter().find(|s| s.name == n).cloned());
         if !end.worker.keep_open {

@@ -172,3 +172,81 @@ fn ready_needs_an_agent() {
     assert_eq!(code, 2, "{out}");
     assert!(out["error"]["message"].as_str().unwrap().contains("TOME_RUN_ID"), "{out}");
 }
+
+// --- workers ----------------------------------------------------------------
+
+/// A tome command as the run's orchestrator (`TOME_RUN_ID` set), `--json`.
+fn as_orchestrator(env: &Env, run: &str, args: &[&str]) -> Value {
+    let mut full = vec!["--json"];
+    full.extend_from_slice(args);
+    let out = env.cmd(&full).env("TOME_RUN_ID", run).output().unwrap();
+    assert!(out.status.success(), "tome {args:?}: {}", String::from_utf8_lossy(&out.stdout));
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+fn worker(env: &Env, run: &str, name: &str) -> Value {
+    as_orchestrator(env, run, &["worker", "status", name])
+}
+
+#[test]
+fn a_silent_agent_worker_is_nudged_then_failed() {
+    let env = env_with_timeout("700ms");
+    write_wf(&env, "build", "---\nname: build\n---\n## Build\nGo.\n");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    // The orchestrator's call counts as its start.
+    as_orchestrator(&env, "1", &["worker", "spawn", "--name", "w", "--prompt", "Paint the fence."]);
+    assert!(env.has_session("tome-1-build-w"));
+
+    eventually("the worker nudge", || states(&env, "1").contains(&"w nudged".to_string()));
+    let pane = String::from_utf8_lossy(&env.tmux(&["capture-pane", "-p", "-t", "=tome-1-build-w:"]).stdout).into_owned();
+    assert!(pane.contains("worker-w-prompt.md and follow it"), "{pane}");
+
+    eventually("the worker to fail", || worker(&env, "1", "w")["status"] == "failed");
+    let w = worker(&env, "1", "w");
+    assert_eq!(w["reason"], "worker_no_start", "{w}");
+    assert_eq!(
+        states(&env, "1"),
+        ["orchestrator waiting", "orchestrator ready", "w waiting", "w nudged", "w no_start"]
+    );
+    assert!(!env.has_session("tome-1-build-w"), "its session is killed");
+    assert!(env.home().join("runs/1/worker-w.log").exists(), "its log is kept");
+
+    // The run carries on, and the orchestrator hears about it; the user doesn't.
+    assert_eq!(status(&env, "1"), "running");
+    eventually("the orchestrator nudge", || {
+        let pane = env.tmux(&["capture-pane", "-p", "-t", "=tome-1-build:"]).stdout;
+        String::from_utf8_lossy(&pane).contains("[tome] worker w failed. Details: tome worker status w")
+    });
+    let log = fs::read_to_string(env.home().join("daemon.log")).unwrap();
+    assert!(!log.contains("notify:"), "{log}");
+
+    // A late call is refused.
+    let out = env.cmd(&["--json", "ready"]).env("TOME_RUN_ID", "1").env("TOME_WORKER_ID", "w").output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("has already finished (failed)"));
+}
+
+#[test]
+fn a_ready_agent_worker_is_left_alone_and_commands_are_not_checked() {
+    let env = env_with_timeout("300ms");
+    stub_harness(
+        &env,
+        "painter",
+        "grep -q 'run `tome ready`' \"$1\" || exit 3\ntome ready > \"$TOME_HOME/ready.json\"\nexec sleep 600\n",
+    );
+    write_wf(&env, "build", "---\nname: build\n---\n## Build\nGo.\n");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    as_orchestrator(&env, "1", &["worker", "spawn", "--name", "p", "--harness", "painter", "--prompt", "Paint."]);
+    as_orchestrator(&env, "1", &["worker", "spawn", "--name", "c", "--", "sleep", "600"]);
+
+    eventually("the worker's ready", || states(&env, "1").contains(&"p ready".to_string()));
+    let ready: Value = serde_json::from_str(&fs::read_to_string(env.home().join("ready.json")).unwrap()).unwrap();
+    assert_eq!((ready["role"].as_str(), ready["worker"].as_str()), (Some("worker"), Some("p")), "{ready}");
+
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    assert_eq!(worker(&env, "1", "p")["status"], "running");
+    assert_eq!(worker(&env, "1", "c")["status"], "running");
+    assert_eq!(states(&env, "1"), ["orchestrator waiting", "orchestrator ready", "p waiting", "p ready"]);
+}
