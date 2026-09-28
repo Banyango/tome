@@ -146,6 +146,19 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
         out.push_str(&indent(&table(&["TIME", "EVENT", "STEP", "MESSAGE"], rows)));
     }
 
+    let handshake = data["handshake"].as_array().cloned().unwrap_or_default();
+    if !handshake.is_empty() {
+        out.push_str("\nstart:\n");
+        let rows = handshake
+            .iter()
+            .map(|h| {
+                let agent = h["worker"].as_str().map_or("orchestrator".to_string(), |w| format!("worker {w}"));
+                vec![ts(&h["occurred_at"]), agent, s(&h["state"]), h["message"].as_str().unwrap_or("").to_string()]
+            })
+            .collect();
+        out.push_str(&indent(&table(&["TIME", "AGENT", "STATE", "MESSAGE"], rows)));
+    }
+
     let workers = data["workers"].as_array().cloned().unwrap_or_default();
     if !workers.is_empty() {
         out.push_str("\nworkers:\n");

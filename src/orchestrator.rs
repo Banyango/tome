@@ -40,6 +40,8 @@ pub struct Plan {
     pub title: String,
     pub cwd: PathBuf,
     pub prompt: String,
+    /// How long it has to make its first tome call; `None` when unchecked.
+    pub start_timeout: Option<std::time::Duration>,
 }
 
 /// The workflow a run was started with (its snapshot; `run` must have been
@@ -68,6 +70,7 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
         title: format!("tome: {} #{}", run.workflow_name, run.id),
         cwd,
         prompt: bootstrap(run, &wf.frontmatter, &wf.body),
+        start_timeout: crate::handshake::timeout(),
     })
 }
 
@@ -94,6 +97,11 @@ pub fn bootstrap(run: &Run, fm: &Frontmatter, body: &str) -> String {
     out
 }
 
+/// Where a run's orchestrator prompt is written.
+pub fn prompt_file(run_id: i64) -> PathBuf {
+    paths::runs_dir().join(run_id.to_string()).join("orchestrator-prompt.md")
+}
+
 /// Start the orchestrator's session and return its record. The launcher
 /// script, the bootstrap prompt and the session's output all go in the
 /// run's directory.
@@ -101,7 +109,7 @@ pub fn launch(run: &Run, plan: &Plan) -> CliResult<Session> {
     let backend = Backend::new(plan.backend);
     let dir = paths::runs_dir().join(run.id.to_string());
     fs::create_dir_all(&dir)?;
-    let prompt_file = dir.join("orchestrator-prompt.md");
+    let prompt_file = prompt_file(run.id);
     fs::write(&prompt_file, &plan.prompt)?;
     let argv = plan.harness.command(&Vars {
         prompt: &plan.prompt,

@@ -6,6 +6,7 @@ mod duration;
 mod engine;
 mod gc;
 mod glob;
+mod handshake;
 mod harness;
 mod inspect;
 mod lifecycle;
@@ -79,6 +80,8 @@ enum Command {
         #[arg(long)]
         detach: bool,
     },
+    /// Tell tome this agent has started: the first thing an agent runs.
+    Ready,
     /// Report step progress for a run (used by the orchestrator).
     Step {
         #[command(subcommand)]
@@ -516,6 +519,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 runcmd::start_attached(&current_dir()?, &workflow, &params, mode)
             }
         }
+        Command::Ready => runcmd::ready(),
         Command::Step { command } => match command {
             StepCommand::Start { name, report } => runcmd::step("start", Some(name), report.message, report.run),
             StepCommand::Done { name, report } => runcmd::step("done", name, report.message, report.run),

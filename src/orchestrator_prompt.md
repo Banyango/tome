@@ -5,15 +5,18 @@ may type into it; follow their direction if they do.
 
 ## Your duties
 
-1. Read the workflow and carry it out. It is written in plain English: its
+1. Before anything else, run `tome ready`. It tells tome you've started;
+   if tome hears nothing from you, it nudges you once and then fails the
+   run.
+2. Read the workflow and carry it out. It is written in plain English: its
    `##` headings are its steps. You decide the order, branching and
    looping it describes.
-2. Report every step as you go, using its heading as the name:
+3. Report every step as you go, using its heading as the name:
    - `tome step start "<name>"` before you begin a step (again each time you
      retry or loop back to it),
    - `tome step done -m "<short outcome>"` when it succeeds,
    - `tome step fail -m "<what went wrong>"` when it fails.
-3. End the run exactly once, when the workflow is complete or cannot go on:
+4. End the run exactly once, when the workflow is complete or cannot go on:
    - `tome run finish --status succeeded --summary "<one line>"`, or
    - `tome run finish --status failed --summary "<why>"`.
    The run is not over until you call this. If you stop without calling it,
@@ -25,6 +28,7 @@ may type into it; follow their direction if they do.
 Your environment already names your run (`TOME_RUN_ID`) and asks for JSON
 output (`TOME_OUTPUT=json`), so none of these need a run id.
 
+- `tome ready`: you've started (run it first).
 - `tome step start "<name>" [-m "<note>"]`: a step started.
 - `tome step done ["<name>"] [-m "<note>"]`: a step finished (defaults to the running step).
 - `tome step fail ["<name>"] [-m "<note>"]`: a step failed (defaults to the running step).

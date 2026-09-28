@@ -146,7 +146,11 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
         if line.trim().is_empty() {
             continue;
         }
-        let (resp, shutdown) = match serde_json::from_str::<Request>(&line) {
+        let req = serde_json::from_str::<Request>(&line);
+        if let Some(agent) = req.as_ref().ok().and_then(|r| r.caller.as_ref()).and_then(crate::handshake::caller_of) {
+            daemon.engine.seen(agent);
+        }
+        let (resp, shutdown) = match req {
             Ok(req) if streams(&req) => match stream_run(daemon, &req, &mut writer) {
                 Some(Ok(value)) => (Response::ok(req.id, value), false),
                 Some(Err(err)) => (Response::from_cli_error(req.id, &err), false),

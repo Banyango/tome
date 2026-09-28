@@ -1,4 +1,5 @@
-//! `tome run`, `tome run finish|cancel` and `tome step start|done|fail`.
+//! `tome run`, `tome run finish|cancel`, `tome step start|done|fail` and
+//! `tome ready`.
 //!
 //! The run-side commands are what an orchestrator calls. They find their run
 //! through `--run <id>` or `TOME_RUN_ID`.
@@ -141,6 +142,18 @@ fn event_line(ev: &Value) -> String {
             }
             line
         }
+        // `[14:02:31] orchestrator start: nudged (no tome call in 60s; ...)`
+        Some("handshake") => {
+            let who = match ev["worker"].as_str() {
+                Some(w) => format!("worker {w}"),
+                None => "orchestrator".to_string(),
+            };
+            let mut line = format!("[{time}] {who} start: {}", s(&ev["event"]));
+            if let Some(m) = ev["message"].as_str() {
+                line.push_str(&format!(" ({m})"));
+            }
+            line
+        }
         // `[14:02:31] trigger: file specs/**/*.md fired (specs/a.md (modified))`
         Some("trigger") => format!("[{time}] trigger: {}", s(&ev["message"])),
         Some("group") => {
@@ -183,6 +196,22 @@ pub fn cancel(run: Option<String>) -> CliResult<Report> {
     let id = run_id(run)?;
     let run = call("run.cancel", json!({ "id": id }))?;
     Ok(Report::new(run.clone(), finished_line(&run)))
+}
+
+/// `tome ready`: an agent tome started saying it has. It only works from
+/// the agent's session, where `TOME_RUN_ID` (and, for a worker,
+/// `TOME_WORKER_ID`) are set.
+pub fn ready() -> CliResult<Report> {
+    let var = |k| std::env::var(k).ok().filter(|v: &String| !v.trim().is_empty());
+    let id = var("TOME_RUN_ID").ok_or_else(|| {
+        CliError::invalid("`tome ready` is for agents tome started (TOME_RUN_ID isn't set)")
+    })?;
+    let ready = call("agent.ready", json!({ "run_id": id, "worker": var("TOME_WORKER_ID") }))?;
+    let human = match ready["worker"].as_str() {
+        Some(w) => format!("ready: worker {w} of run {id}"),
+        None => format!("ready: orchestrator of run {id}"),
+    };
+    Ok(Report::new(ready, human))
 }
 
 /// `tome step start|done|fail [<name>] [--message ...]`

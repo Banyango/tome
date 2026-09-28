@@ -154,7 +154,7 @@ fn runs_list(store: &mut Store, p: &Value) -> CliResult<Value> {
 }
 
 /// `runs.show {id, snapshot?}`: the run with its steps, step history,
-/// worktrees and (freshly indexed) log files.
+/// agents' start handshakes, worktrees and (freshly indexed) log files.
 fn runs_show(store: &mut Store, p: &Value) -> CliResult<Value> {
     let id = req_id(p)?;
     store.require_run(id)?;
@@ -165,6 +165,12 @@ fn runs_show(store: &mut Store, p: &Value) -> CliResult<Value> {
         "steps": store.steps(id).map_err(internal)?,
         "history": store.step_history(id).map_err(internal)?,
         "workers": store.workers(id)?,
+        "handshake": store
+            .worker_history(id)?
+            .iter()
+            .filter(|h| h.group.is_none() && crate::handshake::state::ALL.contains(&h.event.as_str()))
+            .map(|h| json!({ "worker": h.worker, "state": h.event, "message": h.message, "occurred_at": h.occurred_at }))
+            .collect::<Vec<_>>(),
         "groups": store.groups(id)?,
         "worktrees": store.worktrees(id).map_err(internal)?,
         "sessions": store

@@ -9,6 +9,7 @@
 //! way.
 
 use crate::api::{self, internal, opt_str, req_id, req_id_at, req_str};
+use crate::handshake::{self, Agent, Pending};
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::session;
@@ -60,6 +61,8 @@ pub struct Engine {
     /// File triggers polling rather than on OS events, by armed key, with
     /// why. Kept by the trigger loop.
     pub(crate) file_polling: Mutex<HashMap<String, String>>,
+    /// Launched agents that haven't made a tome call yet.
+    pub(crate) starts: Mutex<HashMap<Agent, Pending>>,
 }
 
 impl Engine {
@@ -69,6 +72,7 @@ impl Engine {
             watchers: Mutex::new(HashMap::new()),
             launching: Mutex::new(HashSet::new()),
             file_polling: Mutex::new(HashMap::new()),
+            starts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -86,7 +90,10 @@ impl Engine {
     }
 
     pub fn handles(method: &str) -> bool {
-        METHODS.contains(&method) || workers::METHODS.contains(&method) || triggers::METHODS.contains(&method)
+        METHODS.contains(&method)
+            || workers::METHODS.contains(&method)
+            || triggers::METHODS.contains(&method)
+            || handshake::METHODS.contains(&method)
     }
 
     pub fn dispatch(&self, method: &str, p: &Value) -> CliResult<Value> {
@@ -97,6 +104,7 @@ impl Engine {
             "step.report" => self.step(p),
             m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
             m if triggers::METHODS.contains(&m) => self.dispatch_triggers(m, p),
+            "agent.ready" => self.ready(p),
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
     }
@@ -186,11 +194,14 @@ impl Engine {
         }
     }
 
-    /// Start a running run's orchestrator. If that fails the run is marked
-    /// failed (`launch_failed`) and the error returned.
+    /// Start a running run's orchestrator, and the clock on its start
+    /// handshake. If that fails the run is marked failed (`launch_failed`)
+    /// and the error returned.
     fn launch(&self, run: Run) -> CliResult<Run> {
         self.launching.lock().unwrap_or_else(|p| p.into_inner()).insert(run.id);
+        let agent: Agent = (run.id, None);
         let result = orchestrator::plan(&run).and_then(|plan| {
+            self.expect_start(agent.clone(), plan.start_timeout, orchestrator::prompt_file(run.id));
             let session = orchestrator::launch(&run, &plan)?;
             // Recorded before the monitor may look (it skips launching runs).
             self.with_store(|store| store.add_session(&session).map_err(internal)).inspect_err(|_| {
@@ -201,6 +212,7 @@ impl Engine {
         match result {
             Ok(()) => Ok(run),
             Err(e) => {
+                self.forget_start(&agent);
                 let _ = self.with_store(|store| {
                     let failed = store.abort_run(run.id, RunStatus::Failed, orchestrator::LAUNCH_FAILED, Some(&e.message));
                     self.sync(store, run.id);
@@ -275,8 +287,9 @@ impl Engine {
     }
 
     /// Fail running runs whose orchestrator has exited without finishing the
-    /// run (`orchestrator_exited`), and end workers whose session is over.
-    /// Runs until the daemon closes the store.
+    /// run (`orchestrator_exited`), end workers whose session is over, and
+    /// nudge or fail agents that haven't started. Runs until the daemon
+    /// closes the store.
     pub fn monitor(self: Arc<Self>) {
         loop {
             std::thread::sleep(MONITOR_POLL);
@@ -311,6 +324,7 @@ impl Engine {
                     self.promote(&run.workflow_name);
                 }
             }
+            self.check_starts();
         }
     }
 
@@ -528,10 +542,24 @@ pub fn step_event(run_id: i64, h: &StepHistory) -> Value {
 }
 
 /// `{"type": "worker", "run_id", "worker", "group", "event", "message", "time"}`
-/// (events: spawned, started, done, failed, cancelled), for a group
+/// (events: spawned, started, done, failed, cancelled), for an agent's start
+/// handshake `{"type": "handshake", "run_id", "role", "worker", "event", "message", "time"}`
+/// (events: waiting, nudged, ready, no_start),
+/// for a group
 /// `{"type": "group", "run_id", "group", "event": "finished", "message", "time"}`,
 /// or for a trigger signal `{"type": "trigger", "run_id", "event": "trigger", "message", "time"}`.
 pub fn worker_event(run_id: i64, h: &WorkerHistory) -> Value {
+    if h.group.is_none() && handshake::state::ALL.contains(&h.event.as_str()) {
+        return json!({
+            "type": "handshake",
+            "run_id": run_id,
+            "role": if h.worker.is_some() { workers::ROLE } else { orchestrator::ROLE },
+            "worker": h.worker,
+            "event": h.event,
+            "message": h.message,
+            "time": h.occurred_at,
+        });
+    }
     match &h.worker {
         None if h.group.is_none() => json!({
             "type": "trigger",

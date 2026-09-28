@@ -38,6 +38,10 @@ pub struct Request {
     pub method: String,
     #[serde(default)]
     pub params: Value,
+    /// The agent making the call (`{run_id, worker?}`), from `TOME_RUN_ID`
+    /// and `TOME_WORKER_ID`. Any call from an agent proves it started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -186,13 +190,20 @@ impl Client {
     fn send(&mut self, method: &str, params: Value) -> CliResult<()> {
         let id = self.next_id;
         self.next_id += 1;
-        let req = Request { jsonrpc: JSONRPC.into(), id: json!(id), method: method.into(), params };
+        let req = Request { jsonrpc: JSONRPC.into(), id: json!(id), method: method.into(), params, caller: caller() };
         let mut line = serde_json::to_string(&req).map_err(|e| CliError::internal(e.to_string()))?;
         line.push('\n');
         self.writer
             .write_all(line.as_bytes())
             .map_err(|e| CliError::internal(format!("failed to send request to daemon: {e}")))
     }
+}
+
+/// Who this process is, if tome started it as an agent.
+fn caller() -> Option<Value> {
+    let var = |k| std::env::var(k).ok().filter(|v: &String| !v.trim().is_empty());
+    let run_id = var("TOME_RUN_ID")?;
+    Some(json!({ "run_id": run_id, "worker": var("TOME_WORKER_ID") }))
 }
 
 fn parse_response(line: &[u8]) -> CliResult<Value> {

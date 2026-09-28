@@ -11,7 +11,8 @@ use std::process::{Command, Output};
 ///
 /// Sessions go to a private tmux server, or with [`Env::cmux`] to the cmux
 /// app the tests run in; either way desktop notifications are off unless a
-/// test sets `TOME_NOTIFY` in `vars`.
+/// test sets `TOME_NOTIFY` in `vars`. The start handshake is off too (the
+/// idle harness never calls tome) unless a test sets `TOME_START_TIMEOUT`.
 pub struct Env {
     pub dir: tempfile::TempDir,
     /// `TOME_BACKEND` for tome commands; empty leaves it unset (auto).
@@ -42,12 +43,20 @@ impl Env {
     fn with_backend(backend: &'static str) -> Env {
         // Keep paths short: Unix socket paths are limited to ~104 bytes.
         let dir = tempfile::Builder::new().prefix("tm").tempdir_in("/tmp").unwrap();
-        let env = Env { dir, backend, vars: vec![("TOME_NOTIFY".into(), "off".into())] };
+        let vars = vec![("TOME_NOTIFY".into(), "off".into()), ("TOME_START_TIMEOUT".into(), "off".into())];
+        let env = Env { dir, backend, vars };
         std::fs::create_dir_all(env.project()).unwrap();
         std::fs::create_dir_all(env.home()).unwrap();
         // Never launch a real agent: the default harness idles until killed.
         env.set_config(IDLE_CONFIG);
         env
+    }
+
+    /// Set an environment variable for every tome command (and the daemon),
+    /// replacing any earlier value.
+    pub fn set_var(&mut self, key: &str, value: &str) {
+        self.vars.retain(|(k, _)| k != key);
+        self.vars.push((key.into(), value.into()));
     }
 
     /// Replace `~/.tome/config.yaml`.
