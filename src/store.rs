@@ -216,6 +216,9 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE runs ADD COLUMN announced VARCHAR;
     UPDATE runs SET announced = 'ended' WHERE finished_at IS NOT NULL;
     ",
+    // 9: a session's resolved placement (JSON: its settings, where each came
+    // from, and any warnings)
+    "ALTER TABLE sessions ADD COLUMN placement VARCHAR;",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -382,6 +385,9 @@ pub struct Session {
     /// layouts (which had their own workspace).
     pub layout: Option<String>,
     pub harness: Option<String>,
+    /// The resolved placement; `None` for sessions from before placements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Value>,
     pub created_at: String,
 }
 
@@ -864,8 +870,20 @@ impl Store {
     /// Record a session (its `created_at` is set to now).
     pub fn add_session(&mut self, s: &Session) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO sessions (run_id, name, role, backend, socket, handle, pane, layout, harness, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            params![s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.pane, s.layout, s.harness, now()],
+            "INSERT OR REPLACE INTO sessions (run_id, name, role, backend, socket, handle, pane, layout, harness, placement, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                s.run_id,
+                s.name,
+                s.role,
+                s.backend,
+                s.socket,
+                s.handle,
+                s.pane,
+                s.layout,
+                s.harness,
+                s.placement.as_ref().map(Value::to_string),
+                now()
+            ],
         )?;
         Ok(())
     }
@@ -885,7 +903,7 @@ impl Store {
     fn query_sessions(&self, rest: &str, args: &[&dyn duckdb::ToSql]) -> anyhow::Result<Vec<Session>> {
         let mut stmt = self
             .conn
-            .prepare(&format!("SELECT s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.pane, s.layout, s.harness, s.created_at FROM sessions s {rest}"))?;
+            .prepare(&format!("SELECT s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.pane, s.layout, s.harness, s.placement, s.created_at FROM sessions s {rest}"))?;
         let rows = stmt.query_map(args, |r| {
             Ok(Session {
                 run_id: r.get(0)?,
@@ -897,7 +915,8 @@ impl Store {
                 pane: r.get(6)?,
                 layout: r.get(7)?,
                 harness: r.get(8)?,
-                created_at: fmt_ts(r.get(9)?),
+                placement: r.get::<_, Option<String>>(9)?.and_then(|p| serde_json::from_str(&p).ok()),
+                created_at: fmt_ts(r.get(10)?),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)

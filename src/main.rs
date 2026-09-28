@@ -16,6 +16,7 @@ mod lifecycle;
 mod orchestrator;
 mod output;
 mod paths;
+mod placement;
 mod primitives;
 mod query;
 mod recovery;
@@ -135,6 +136,11 @@ enum Command {
     Events {
         #[command(subcommand)]
         command: EventsCommand,
+    },
+    /// Session placement: list the layout presets.
+    Layout {
+        #[command(subcommand)]
+        command: LayoutCommand,
     },
     /// Run a read-only SQL query against the run store.
     Query {
@@ -427,6 +433,12 @@ enum RunsCommand {
 }
 
 #[derive(Subcommand)]
+enum LayoutCommand {
+    /// List the built-in, global and project layout presets with their settings.
+    Presets,
+}
+
+#[derive(Subcommand)]
 enum TriggersCommand {
     /// List each project's armed triggers, with when each last fired.
     Ls,
@@ -643,6 +655,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             EventsCommand::Retry { event, workflow } => eventscmd::retry(&current_dir()?, event, workflow.as_deref()),
             EventsCommand::Remove { event, workflow } => eventscmd::remove(&current_dir()?, event, workflow.as_deref()),
         },
+        Command::Layout { command: LayoutCommand::Presets } => placement::presets_report(&current_dir()?),
         Command::Query { sql } => inspect::query(&sql),
         Command::Gc { older_than, dry_run } => gc::run(&older_than, dry_run),
     }

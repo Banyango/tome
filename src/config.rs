@@ -47,6 +47,11 @@ impl File {
         }
     }
 
+    /// A top-level value in this file.
+    pub fn get(&self, key: &str) -> Option<&Yaml> {
+        self.doc.get(key).filter(|v| !v.is_null())
+    }
+
     /// An error about this file's contents.
     pub fn error(&self, e: impl std::fmt::Display) -> CliError {
         CliError::invalid(format!("{}: {e}", self.path.display()))

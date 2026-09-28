@@ -118,9 +118,10 @@ pub struct ParamSpec {
 pub struct Defaults {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
-    /// `tab`, `split` or `workspace`.
+    /// Where its sessions go: a layout name or a block of placement
+    /// settings (see [`crate::placement`]).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub layout: Option<String>,
+    pub layout: Option<crate::placement::Spec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -922,13 +923,14 @@ fn parse_defaults(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> 
         };
         match key {
             "backend" => d.backend = as_string(errors),
-            "layout" => match as_string(errors) {
-                Some(l) if crate::session::Layout::parse(&l).is_none() => errors.push(Diagnostic::new(
-                    line,
-                    format!("unknown `defaults.layout` `{l}` (expected one of: {})", crate::session::Layout::NAMES.join(", ")),
-                )),
-                l => d.layout = l,
-            },
+            "layout" => {
+                let mut problems = Vec::new();
+                d.layout = crate::placement::parse_spec(v, &mut problems);
+                for p in problems {
+                    let path: Vec<&str> = p.path.iter().map(String::as_str).collect();
+                    errors.push(Diagnostic::new(loc.line(&path), p.message));
+                }
+            }
             "harness" => d.harness = as_string(errors),
             "orchestrator_harness" => d.orchestrator_harness = as_string(errors),
             "on_failure" => d.on_failure = as_string(errors),
@@ -1447,7 +1449,8 @@ Retry up to {{params.retries}} times on {{params.ticket}}.
     fn layout_is_tab_split_or_workspace() {
         let with = |v: &str| p(&format!("---\nname: x\ndefaults:\n  layout: {v}\n---\n## A\n"));
         for ok in ["tab", "split", "workspace"] {
-            assert_eq!(with(ok).unwrap().frontmatter.defaults.layout.as_deref(), Some(ok));
+            let spec = with(ok).unwrap().frontmatter.defaults.layout.unwrap();
+            assert_eq!(spec.base.layout.map(|l| l.as_str()), Some(ok));
         }
         for bad in ["tabs", "[tab]"] {
             let err = with(bad).unwrap_err();

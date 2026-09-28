@@ -13,9 +13,8 @@
 //! `~/.tome/config.yaml`, else cmux when the daemon runs
 //! inside cmux and tmux otherwise.
 //!
-//! Its [`Layout`] decides where in that backend its sessions go, and
-//! resolves the same way (`defaults.layout`, `TOME_LAYOUT`, `layout:`), else
-//! `tab`.
+//! Where in that backend each session goes is its placement (see
+//! [`crate::placement`]); [`Layout`] is the part launches act on.
 //!
 //! Either way the session's command is a launcher script that sets the
 //! agent's environment, captures its output to a log and `exec`s it, so the
@@ -93,8 +92,6 @@ pub enum Layout {
 }
 
 impl Layout {
-    pub const NAMES: &'static [&'static str] = &["tab", "split", "workspace"];
-
     pub fn as_str(self) -> &'static str {
         match self {
             Layout::Tab => "tab",
@@ -110,24 +107,6 @@ impl Layout {
             "workspace" => Some(Layout::Workspace),
             _ => None,
         }
-    }
-
-    /// The layout for a run whose workflow asks for `requested` (see the
-    /// module docs for the order).
-    pub fn choose(requested: Option<&str>, project: Option<&Path>) -> CliResult<Layout> {
-        let env = std::env::var("TOME_LAYOUT").ok().filter(|s| !s.is_empty());
-        let (name, source) = match (requested, env) {
-            (Some(r), _) => (r.to_string(), "the workflow's `defaults.layout`".to_string()),
-            (None, Some(e)) => (e, "TOME_LAYOUT".to_string()),
-            (None, None) => match Config::load(project)?.str("layout")? {
-                Some((c, file)) => (c, format!("`layout` in {}", file.label())),
-                None => return Ok(Layout::Tab),
-            },
-        };
-        Layout::parse(&name).ok_or_else(|| {
-            CliError::invalid(format!("unknown session layout `{name}` (from {source})"))
-                .with_hint(format!("use {}", Layout::NAMES.join(", ")))
-        })
     }
 
     /// A recorded session's layout; sessions from before layouts had their
@@ -192,6 +171,7 @@ impl Backend {
             pane: Some(pane),
             layout: None,
             harness: None,
+            placement: None,
             created_at: String::new(),
         })
     }

@@ -70,13 +70,15 @@ fn unknown_layout_in_the_config_is_refused_with_a_hint() {
 #[test]
 fn the_workflow_layout_overrides_the_config() {
     let env = env();
-    env.set_config(&format!("{}layout: sideways\n", common::IDLE_CONFIG));
+    // Every level is checked, so the overridden config value must be valid.
+    env.set_config(&format!("{}layout: split\n", common::IDLE_CONFIG));
     write_wf(&env, "build", "defaults:\n  layout: workspace\n");
     env.start_daemon();
     let (code, run) = env.json(&["run", "build", "--detach"]);
     assert_eq!(code, 0, "{run}");
     let s = &sessions(&env, 1)[0];
     assert_eq!(s["layout"], "workspace", "{s}");
+    assert_eq!(s["placement"]["sources"]["layout"], "`defaults.layout`", "{s}");
     // Under `workspace` a run keeps its own tmux session, as before.
     assert!(env.has_session("tome-1-build"));
 }
@@ -252,4 +254,50 @@ fn a_restart_kills_the_sessions_but_leaves_the_tome_session() {
     common::eventually("run 2's window", || named(&windows(&env), "tome: build #2"));
     let out = env.tmux(&["list-sessions", "-F", "#{session_name}"]);
     assert_eq!(lines(out), ["p-orchestrator"]);
+}
+
+#[test]
+fn layout_presets_lists_built_in_global_and_project_presets() {
+    let env = env();
+    env.set_config(&format!("{}layout_presets:\n  side:\n    layout: split\n    split:\n      size: 30%\n  wide:\n    layout: tab\n", common::IDLE_CONFIG));
+    let dir = env.project().join(".tome");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("config.yaml"), "layout_presets:\n  wide:\n    layout: split\n    split:\n      direction: down\n").unwrap();
+    let (code, out) = env.json(&["layout", "presets"]);
+    assert_eq!(code, 0, "{out}");
+    let presets = out["presets"].as_array().unwrap();
+    let find = |name: &str, scope: &str| presets.iter().find(|p| p["name"] == name && p["scope"] == scope).cloned();
+    assert!(find("workspace", "built-in").is_some(), "{out}");
+    assert_eq!(find("side", "global").unwrap()["settings"]["size"], "30%", "{out}");
+    assert_eq!(find("wide", "global").unwrap()["overridden"], true, "{out}");
+    assert_eq!(find("wide", "project").unwrap()["settings"]["direction"], "down", "{out}");
+}
+
+#[test]
+fn a_preset_sets_the_placement_and_names_itself_as_the_source() {
+    let env = env();
+    env.set_config(&format!("{}layout_presets:\n  side:\n    layout: workspace\n", common::IDLE_CONFIG));
+    write_wf(&env, "build", "defaults:\n  layout:\n    preset: side\n");
+    env.start_daemon();
+    let (code, run) = env.json(&["run", "build", "--detach"]);
+    assert_eq!(code, 0, "{run}");
+    let s = &sessions(&env, 1)[0];
+    assert_eq!(s["layout"], "workspace", "{s}");
+    let source = s["placement"]["sources"]["layout"].as_str().unwrap();
+    assert!(source.starts_with("preset `side`"), "{s}");
+}
+
+#[test]
+fn an_undefined_preset_fails_the_run_and_warns_in_validate() {
+    let env = env();
+    env.set_config(common::IDLE_CONFIG);
+    write_wf(&env, "build", "defaults:\n  layout:\n    preset: nope\n");
+    let (code, out) = env.json(&["validate", "build"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.to_string().contains("layout preset `nope` isn't defined"), "{out}");
+    env.start_daemon();
+    let (code, err) = env.json(&["run", "build", "--detach"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err["error"]["message"].as_str().unwrap().contains("unknown layout preset `nope`"), "{err}");
+    assert!(err["error"]["hint"].as_str().unwrap().contains("workspace"), "{err}");
 }

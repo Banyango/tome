@@ -14,7 +14,8 @@ use crate::harness::{self, shell_quote, Vars};
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::paths;
-use crate::session::{self, Backend, Kind, Launch, Layout};
+use crate::placement::{self, Inputs, Role};
+use crate::session::{self, Backend, Kind, Launch};
 use crate::store::{self, NewWorker, NewWorktree, Pulled, Run, RunStatus, Store, Worker, WorkerEnd, WorkerStatus};
 use crate::worktree;
 use serde_json::{json, Value};
@@ -288,17 +289,15 @@ impl Engine {
     ) -> CliResult<store::Session> {
         let recorded = self.recorded_sessions(run.id);
         let orch = recorded.iter().find(|s| s.role == orchestrator::ROLE);
-        let (kind, layout) = match orch.and_then(|s| Kind::parse(&s.backend)) {
-            Some(kind) => (kind, Layout::of(orch.expect("found above"))),
-            None => {
-                let defaults = orchestrator::snapshot(run)?.frontmatter.defaults;
-                let project = orchestrator::run_project(run);
-                (
-                    Kind::choose(defaults.backend.as_deref(), project.as_deref())?,
-                    Layout::choose(defaults.layout.as_deref(), project.as_deref())?,
-                )
-            }
+        let wf = orchestrator::snapshot(run)?;
+        let project = orchestrator::run_project(run);
+        let kind = match orch.and_then(|s| Kind::parse(&s.backend)) {
+            Some(kind) => kind,
+            None => Kind::choose(wf.frontmatter.defaults.backend.as_deref(), project.as_deref())?,
         };
+        let inputs = Inputs { role: Role::Worker(name), flags: None, run_flags: None, spec: wf.frontmatter.defaults.layout.as_ref() };
+        let placement = placement::resolve(&inputs, project.as_deref())?;
+        let layout = placement.layout;
         let dir = run_dir(run.id);
         fs::create_dir_all(&dir)?;
         let exit = exit_file(run.id, name);
@@ -336,7 +335,14 @@ impl Engine {
             layout,
             project: orchestrator::run_project(run).as_deref(),
         })?;
-        Ok(store::Session { run_id: run.id, role: ROLE.to_string(), layout: Some(layout.as_str().to_string()), harness, ..s })
+        Ok(store::Session {
+            run_id: run.id,
+            role: ROLE.to_string(),
+            layout: Some(layout.as_str().to_string()),
+            harness,
+            placement: Some(placement.to_json()),
+            ..s
+        })
     }
 
     /// `worker.report {run_id, name, event: done|fail, summary?}`

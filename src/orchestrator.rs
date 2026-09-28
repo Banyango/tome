@@ -9,7 +9,8 @@ use crate::harness::{self, Harness, Vars};
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::recovery::RecoveryHooks;
-use crate::session::{self, Backend, Cmux, Kind, Launch, Layout, Tmux};
+use crate::placement::{self, Inputs, Placement, Role};
+use crate::session::{self, Backend, Cmux, Kind, Launch, Tmux};
 use crate::store::{Run, Session, Worker};
 use crate::workflow::{self, Frontmatter, Workflow};
 use std::fs;
@@ -32,11 +33,17 @@ pub fn harness_for(fm: &Frontmatter, project: Option<&Path>) -> CliResult<Harnes
     harness::resolve(d.orchestrator_harness.as_deref().or(d.harness.as_deref()).unwrap_or(harness::DEFAULT), project)
 }
 
+/// Where a run's orchestrator goes.
+pub fn placement(fm: &Frontmatter, project: Option<&Path>) -> CliResult<Placement> {
+    let inputs = Inputs { role: Role::Orchestrator, flags: None, run_flags: None, spec: fm.defaults.layout.as_ref() };
+    placement::resolve(&inputs, project)
+}
+
 /// A run's orchestrator, ready to launch.
 pub struct Plan {
     pub harness: Harness,
     pub backend: Kind,
-    pub layout: Layout,
+    pub placement: Placement,
     pub session: String,
     pub title: String,
     pub cwd: PathBuf,
@@ -74,7 +81,7 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
     Ok(Plan {
         harness: harness_for(&wf.frontmatter, project)?,
         backend: Kind::choose(wf.frontmatter.defaults.backend.as_deref(), project)?,
-        layout: Layout::choose(wf.frontmatter.defaults.layout.as_deref(), project)?,
+        placement: placement(&wf.frontmatter, project)?,
         session: session::run_session_name(run.id, &run.workflow_name, ROLE),
         title: format!("tome: {} #{}", run.workflow_name, run.id),
         cwd,
@@ -135,14 +142,15 @@ pub fn launch(run: &Run, plan: &Plan) -> CliResult<Session> {
         env: &session_env(run.id),
         script: &dir.join("orchestrator.sh"),
         log: &dir.join(format!("{ROLE}.log")),
-        layout: plan.layout,
+        layout: plan.placement.layout,
         project: run_project(run).as_deref(),
     })?;
     Ok(Session {
         run_id: run.id,
         role: ROLE.to_string(),
-        layout: Some(plan.layout.as_str().to_string()),
+        layout: Some(plan.placement.layout.as_str().to_string()),
         harness: Some(plan.harness.name.clone()),
+        placement: Some(plan.placement.to_json()),
         ..session
     })
 }

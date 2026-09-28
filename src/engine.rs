@@ -11,6 +11,7 @@
 use crate::api::{self, internal, opt_str, req_id, req_id_at, req_str};
 use crate::handshake::{self, Agent, Pending};
 use crate::orchestrator;
+use crate::placement;
 use crate::output::{CliError, CliResult};
 use crate::session;
 use crate::store::{self, Run, RunStatus, StepEvent, StepHistory, Store, WorkerHistory, WorkerStatus};
@@ -127,12 +128,13 @@ impl Engine {
     pub(crate) fn start(&self, p: &Value) -> CliResult<Run> {
         let wf = api::load_workflow(p)?;
         let fm = &wf.frontmatter;
-        // An unknown harness, backend or layout is a bad request: refuse
-        // before recording a run.
+        // An unknown harness, backend, placement value or preset is a bad
+        // request: refuse before recording a run.
         let project = opt_str(p, "project_path").map(std::path::Path::new);
         orchestrator::harness_for(fm, project)?;
         session::Kind::choose(fm.defaults.backend.as_deref(), project)?;
-        session::Layout::choose(fm.defaults.layout.as_deref(), project)?;
+        orchestrator::placement(fm, project)?;
+        placement::check_presets(fm.defaults.layout.as_ref(), project)?;
         let run = self.with_store(|store| {
             let status = match fm.concurrency {
                 _ if triggers::waits_for_idle(p.get("cause")) => RunStatus::Queued,

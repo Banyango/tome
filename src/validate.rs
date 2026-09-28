@@ -4,6 +4,7 @@
 //! daemon. Exits `2` if anything is invalid.
 
 use crate::output::{exit, CliResult, Report};
+use crate::placement;
 use crate::workflow::{self, Entry, Invalid, Library, Scope, Workflow};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -20,7 +21,7 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
                 Ok(wf) => {
                     let check = wf.resolve_params(&overrides, !overrides.is_empty()).err();
                     let mut r = result_json(wf.name(), &wf.path, None, check.as_ref(), None);
-                    r["warnings"] = warnings_json(&wf);
+                    r["warnings"] = warnings_json(&wf, cwd);
                     results.push(r);
                 }
                 Err(inv) => {
@@ -61,7 +62,7 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
                     overridden_by.map(|p| p.as_path()),
                 );
                 if let Ok(wf) = &entry.result {
-                    r["warnings"] = warnings_json(wf);
+                    r["warnings"] = warnings_json(wf, cwd);
                 }
                 results.push(r);
             }
@@ -102,8 +103,29 @@ fn result_json(name: &str, path: &Path, scope: Option<Scope>, invalid: Option<&I
     v
 }
 
-fn warnings_json(wf: &Workflow) -> Value {
-    json!(wf.warnings().iter().map(|d| json!({ "line": d.line, "message": d.message })).collect::<Vec<_>>())
+fn warnings_json(wf: &Workflow, cwd: &Path) -> Value {
+    let mut all: Vec<Value> = wf.warnings().iter().map(|d| json!({ "line": d.line, "message": d.message })).collect();
+    // Presets depend on the environment, so a missing one only warns.
+    for name in placement::undefined_presets(wf.frontmatter.defaults.layout.as_ref(), Some(cwd)) {
+        let line = preset_line(wf, &name);
+        all.push(json!({
+            "line": line,
+            "message": format!("layout preset `{name}` isn't defined here (known: built-in presets and `layout_presets` in the tome config)"),
+        }));
+    }
+    json!(all)
+}
+
+/// The file line naming a preset, or the frontmatter's first.
+fn preset_line(wf: &Workflow, name: &str) -> usize {
+    wf.source
+        .lines()
+        .position(|l| {
+            let l = l.trim_start().trim_start_matches("- ");
+            l.contains("preset:") && l.split("preset:").nth(1).is_some_and(|v| v.trim().trim_matches(['"', '\'', '}', ',', ' ']) == name)
+        })
+        .map(|i| i + 1)
+        .unwrap_or(1)
 }
 
 fn render_human(results: &[Value], listing: bool) -> String {
