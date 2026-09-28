@@ -100,7 +100,9 @@ impl Engine {
     /// `run.start {workflow_path, source?, project_path?, params?}`: validate
     /// the workflow, record the run with its resolved snapshot, launch its
     /// orchestrator and return the run. At the workflow's concurrency limit
-    /// the run is queued instead, or refused (`on_conflict: reject`).
+    /// the run is queued instead, or refused (`on_conflict: reject`). A run
+    /// for a `while_running: queue` trigger is always queued; it waits for
+    /// the workflow to be idle.
     pub(crate) fn start(&self, p: &Value) -> CliResult<Run> {
         let wf = api::load_workflow(p)?;
         let fm = &wf.frontmatter;
@@ -110,6 +112,7 @@ impl Engine {
         session::Kind::choose(fm.defaults.backend.as_deref())?;
         let run = self.with_store(|store| {
             let status = match fm.concurrency {
+                _ if triggers::waits_for_idle(p.get("cause")) => RunStatus::Queued,
                 None => RunStatus::Running,
                 Some(limit) => {
                     let running = store.count_runs(&wf.name(), RunStatus::Running).map_err(internal)?;
@@ -140,18 +143,23 @@ impl Engine {
     }
 
     /// Start queued runs of `workflow`, oldest first, while there are free
-    /// slots. Each queued run is held to the limit in its own snapshot. Call
-    /// whenever a run of the workflow ends.
-    fn promote(&self, workflow: &str) {
+    /// slots. Each queued run is held to the limit in its own snapshot, or
+    /// to an idle workflow if a `while_running: queue` trigger queued it.
+    /// Call whenever a run of the workflow ends.
+    pub(crate) fn promote(&self, workflow: &str) {
         loop {
             let next = self.with_store(|store| {
                 let Some(run) = store.next_queued(workflow).map_err(internal)? else { return Ok(None) };
-                if let Some(limit) = snapshot_limit(&run) {
+                let idle = triggers::waits_for_idle(run.trigger.as_ref());
+                if let Some(limit) = if idle { Some(1) } else { snapshot_limit(&run) } {
                     if store.count_runs(workflow, RunStatus::Running).map_err(internal)? >= limit {
                         return Ok(None);
                     }
                 }
-                let run = store.dequeue_run(run.id)?;
+                let mut run = store.dequeue_run(run.id)?;
+                if idle {
+                    render_deferred(store, &mut run);
+                }
                 self.sync(store, run.id);
                 Ok(Some(run))
             });
@@ -454,6 +462,28 @@ fn history(store: &Store, run_id: i64, after: i64) -> CliResult<Vec<(i64, Value)
 }
 
 /// The concurrency limit in a run's workflow snapshot.
+/// Fill in the placeholders of a run whose snapshot was saved unrendered
+/// (see [`Workflow::template_snapshot`](crate::workflow::Workflow::template_snapshot)),
+/// from its params and the trigger event recorded in its cause.
+fn render_deferred(store: &mut Store, run: &mut Run) {
+    let Some(template) = &run.workflow_snapshot else { return };
+    let path = PathBuf::from(run.workflow_path.as_deref().unwrap_or_default());
+    let wf = match workflow::parse(&path, template) {
+        Ok(wf) => wf,
+        Err(inv) => {
+            eprintln!("tome daemon: run {}: can't fill in its placeholders: {}", run.id, triggers::first_errors(&inv));
+            return;
+        }
+    };
+    let params = run.params.as_object().cloned().unwrap_or_default();
+    let event = run.trigger.as_ref().and_then(|c| c["event"].as_object()).cloned().unwrap_or_default();
+    let snapshot = wf.render_snapshot(&params, &run.id.to_string(), &event);
+    match store.set_snapshot(run.id, &snapshot) {
+        Ok(()) => run.workflow_snapshot = Some(snapshot),
+        Err(e) => eprintln!("tome daemon: run {}: saving its snapshot failed: {e:#}", run.id),
+    }
+}
+
 fn snapshot_limit(run: &Run) -> Option<usize> {
     let snapshot = run.workflow_snapshot.as_deref()?;
     let path = PathBuf::from(run.workflow_path.clone().unwrap_or_default());

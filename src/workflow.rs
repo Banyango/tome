@@ -406,16 +406,20 @@ impl FileEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WhileRunning {
+    /// Queue one run that starts once the workflow is idle; later batches
+    /// merge into it.
+    #[default]
+    Queue,
     /// Start a run for each batch, through `concurrency` / `on_conflict`.
     Parallel,
     /// Drop the changes.
-    #[default]
     Mute,
 }
 
 impl WhileRunning {
     pub fn as_str(self) -> &'static str {
         match self {
+            WhileRunning::Queue => "queue",
             WhileRunning::Parallel => "parallel",
             WhileRunning::Mute => "mute",
         }
@@ -652,10 +656,11 @@ fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Opti
                         n(errors, format!("`while_running` only applies to `to: new`, not `to: {}`", to.as_str()));
                     }
                     match v.as_str() {
+                        Some("queue") => WhileRunning::Queue,
                         Some("parallel") => WhileRunning::Parallel,
                         Some("mute") => WhileRunning::Mute,
                         _ => {
-                            n(errors, "`while_running` must be `parallel` or `mute`".into());
+                            n(errors, "`while_running` must be `queue`, `parallel` or `mute`".into());
                             WhileRunning::default()
                         }
                     }
@@ -1095,6 +1100,13 @@ impl Workflow {
         out
     }
 
+    /// The workflow as saved with a run whose placeholders are filled in
+    /// when it starts: [`render_snapshot`](Self::render_snapshot) without the
+    /// substitution. [`parse`] reads it back.
+    pub fn template_snapshot(&self) -> String {
+        format!("---\n{}\n---\n{}", self.frontmatter_text, self.body)
+    }
+
     /// The resolved workflow as saved with a run: the original frontmatter
     /// followed by the substituted body.
     pub fn render_snapshot(&self, params: &Map<String, Value>, run_id: &str, trigger: &Map<String, Value>) -> String {
@@ -1410,7 +1422,7 @@ triggers:
         assert_eq!((f.file.as_str(), f.on.as_slice(), f.debounce), ("specs/**/*.md", &[FileEvent::Created][..], Duration::from_secs(5)));
         assert!(f.glob.matches("specs/a/b.md") && f.ignore_globs[0].matches("specs/drafts/x.md"));
         assert_eq!((t[1].to, t[1].line), (Target::New, 8));
-        assert_eq!(f.while_running, WhileRunning::Mute, "the default");
+        assert_eq!(f.while_running, WhileRunning::Queue, "the default");
         let parallel = p("---\nname: t\ntriggers:\n  - file: \"*.md\"\n    while_running: parallel\n---\n").unwrap();
         let TriggerKind::File(f) = &parallel.frontmatter.triggers[0].kind else { panic!() };
         assert_eq!(f.while_running, WhileRunning::Parallel);
@@ -1420,6 +1432,18 @@ triggers:
         assert_eq!((t[2].to, t[2].line, t[2].params["base"].clone()), (Target::RunningOrNew, 13, json!("dev")));
         let v = serde_json::to_value(&t[2]).unwrap();
         assert_eq!((v["kind"].as_str(), v["cron"].as_str(), v["to"].as_str()), (Some("cron"), Some("0 9 * * 1-5"), Some("running-or-new")));
+    }
+
+    #[test]
+    fn template_snapshots_render_like_the_workflow() {
+        let wf = p(TRIGGERS).unwrap();
+        let params = wf.resolve_params(&[("spec".into(), "s".into())], true).unwrap();
+        let ev = json!({"kind": "file", "paths": [{"path": "specs/a.md", "event": "created"}]});
+        let ev = ev.as_object().unwrap();
+        let template = wf.template_snapshot();
+        assert!(template.contains("{{trigger.paths}}"));
+        let back = parse(Path::new("t.md"), &template).unwrap();
+        assert_eq!(back.render_snapshot(&params, "7", ev), wf.render_snapshot(&params, "7", ev));
     }
 
     #[test]

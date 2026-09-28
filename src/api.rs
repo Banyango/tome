@@ -78,6 +78,9 @@ pub fn create_run(store: &mut Store, p: &Value, wf: &Workflow, status: RunStatus
     // The `{{trigger.*}}` fields of the event that started this run, if any.
     let no_trigger = serde_json::Map::new();
     let trigger = p.get("trigger").and_then(Value::as_object).unwrap_or(&no_trigger);
+    // A run queued by a `while_running: queue` trigger has more paths merged
+    // in while it waits, so its placeholders are filled in when it starts.
+    let deferred = crate::triggers::waits_for_idle(p.get("cause"));
 
     let mut body = String::new();
     let run = store
@@ -91,6 +94,10 @@ pub fn create_run(store: &mut Store, p: &Value, wf: &Workflow, status: RunStatus
                 trigger: p.get("cause").filter(|c| c.is_object()),
             },
             |id| {
+                if deferred {
+                    body = wf.body.clone();
+                    return wf.template_snapshot();
+                }
                 body = wf.render_body(&params, &id.to_string(), trigger);
                 wf.render_snapshot(&params, &id.to_string(), trigger)
             },

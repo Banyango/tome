@@ -58,23 +58,22 @@ fn a_fired_trigger_starts_a_run_that_records_its_cause() {
     let human = String::from_utf8_lossy(&env.run(&["runs", "show", &id.to_string()]).stdout).to_string();
     assert!(human.contains("trigger   cron 0 9 * * 1-5 [fired by hand]"), "{human}");
 
-    // A file trigger reports its paths, relative to the project root. It's
-    // muted while the cron run is active.
+    // A file trigger reports its paths, relative to the project root. While
+    // the cron run is active it queues a run, which starts once that ends.
     fs::create_dir_all(env.project().join("specs")).unwrap();
     let (code, v) = env.json(&["triggers", "fire", "review", "--index", "2", "--path", "specs/a.md"]);
     assert_eq!(code, 0, "{v}");
-    assert_eq!(v["outcome"], "muted", "{v}");
+    assert_eq!(v["outcome"], "queued", "{v}");
+    let queued = v["run_ids"][0].to_string();
 
     let (code, _) = env.json(&["run", "finish", "--status", "succeeded", "--run", &id.to_string()]);
     assert_eq!(code, 0);
-    let (code, v) = env.json(&["triggers", "fire", "review", "--index", "2", "--path", "specs/a.md"]);
-    assert_eq!(code, 0, "{v}");
-    assert_eq!(v["outcome"], "started");
-    let (_, show) = env.json(&["runs", "show", &v["run_ids"][0].to_string(), "--snapshot"]);
+    let (_, show) = env.json(&["runs", "show", &queued, "--snapshot"]);
+    assert_eq!(show["run"]["status"], "running");
     let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
     assert!(snap.contains("Review specs (file, modified) [specs/a.md (modified)]"), "{snap}");
 
-    assert_eq!(outcomes(&env), ["started", "muted", "started"]);
+    assert_eq!(outcomes(&env), ["started", "queued"]);
 }
 
 #[test]
@@ -315,7 +314,7 @@ fn file_changes_start_runs_in_the_project() {
     write_wf(
         &env,
         "specs",
-        "triggers:\n  - file: \"specs/**/*.md\"\n    debounce: 1\n    ignore: [\"specs/drafts/**\"]\n",
+        "triggers:\n  - file: \"specs/**/*.md\"\n    debounce: 1\n    ignore: [\"specs/drafts/**\"]\n    while_running: mute\n",
         "## Go\nChanged: {{trigger.paths}}\n",
     );
     start_fast_daemon(&env);
@@ -376,4 +375,100 @@ fn parallel_file_triggers_start_a_run_per_batch() {
     let (b, c) = (fire("limited", "docs/b.md"), fire("limited", "docs/c.md"));
     assert_eq!((b["run"]["status"].as_str(), c["run"]["status"].as_str()), (Some("queued"), Some("queued")), "{b} {c}");
     assert_ne!(b["run_ids"], c["run_ids"], "batches don't merge");
+}
+
+fn run_status(env: &Env, id: &Value) -> Value {
+    env.json(&["runs", "show", &id.to_string()]).1["run"]["status"].clone()
+}
+
+fn finish(env: &Env, id: &Value) {
+    let (code, out) = env.json(&["run", "finish", "--status", "succeeded", "--run", &id.to_string()]);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
+fn queued_file_triggers_merge_until_the_workflow_is_idle() {
+    let env = Env::new();
+    write_wf(
+        &env,
+        "specs",
+        "triggers:\n  - file: \"specs/*.md\"\n  - file: \"docs/*.md\"\n",
+        "## Go\nChanged: {{trigger.paths}} ({{trigger.event}})\n",
+    );
+    env.start_daemon();
+    let fire = |index: &str, path: &str, dry_run: bool| {
+        let mut args = vec!["triggers", "fire", "specs", "--index", index, "--path", path];
+        if dry_run {
+            args.push("--dry-run");
+        }
+        let (code, v) = env.json(&args);
+        assert_eq!(code, 0, "{v}");
+        v
+    };
+
+    let first = fire("0", "specs/a.md", false);
+    assert_eq!(first["outcome"], "started", "{first}");
+    let first = first["run_ids"][0].clone();
+    let manual = env.json(&["run", "specs", "--detach"]).1;
+    assert_eq!(manual["status"], "running", "no concurrency limit");
+
+    // A change during a run queues one, whatever the concurrency.
+    assert_eq!(fire("0", "specs/b.md", true)["message"], "would queue a new run of specs");
+    let queued = fire("0", "specs/b.md", false);
+    assert_eq!(queued["outcome"], "queued", "{queued}");
+    let queued = queued["run_ids"][0].clone();
+    assert_eq!(run_status(&env, &queued), "queued");
+
+    // Later batches from the same trigger merge into it; another trigger's don't.
+    let dry = fire("0", "specs/a.md", true);
+    assert_eq!((dry["outcome"].as_str(), dry["message"].as_str()), (Some("merged"), Some(&*format!("would merge into run {queued}"))));
+    let merged = fire("0", "specs/a.md", false);
+    assert_eq!((merged["outcome"].as_str(), &merged["run_ids"]), (Some("merged"), &serde_json::json!([queued])), "{merged}");
+    let other = fire("1", "docs/x.md", false);
+    assert_eq!(other["outcome"], "queued", "{other}");
+    assert_ne!(other["run_ids"][0], queued);
+    let listed = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
+    assert!(listed.contains(&format!("merged (merged into run {queued})")), "{listed}");
+
+    // A cancelled queued run takes no more merges: the next change queues anew.
+    let (code, v) = env.json(&["run", "cancel", &other["run_ids"][0].to_string()]);
+    assert_eq!(code, 0, "{v}");
+    let again = fire("1", "docs/y.md", false);
+    assert_eq!(again["outcome"], "queued", "{again}");
+    assert_ne!(again["run_ids"], other["run_ids"]);
+
+    // It waits for every running run, then sees every merged path.
+    finish(&env, &first);
+    assert_eq!(run_status(&env, &queued), "queued");
+    finish(&env, &manual["id"]);
+    assert_eq!(run_status(&env, &queued), "running");
+    assert_eq!(run_status(&env, &again["run_ids"][0]), "queued", "the next one waits its turn");
+    let (_, show) = env.json(&["runs", "show", &queued.to_string(), "--snapshot"]);
+    let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
+    assert!(snap.contains("Changed: specs/b.md (modified), specs/a.md (modified) (modified)"), "{snap}");
+    assert_eq!(show["run"]["trigger"]["event"]["paths"].as_array().map(Vec::len), Some(2));
+}
+
+#[test]
+fn file_changes_during_a_run_queue_a_follow_up() {
+    let env = Env::new();
+    write_wf(&env, "specs", "triggers:\n  - file: \"specs/*.md\"\n    debounce: 1\n", "## Go\nChanged: {{trigger.paths}}\n");
+    start_fast_daemon(&env);
+    ls(&env);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    fs::create_dir_all(env.project().join("specs")).unwrap();
+    fs::write(env.project().join("specs/a.md"), "a").unwrap();
+    common::eventually("a triggered run", || !runs(&env).is_empty());
+    let first = runs(&env)[0]["id"].clone();
+
+    // A run's own edit isn't dropped: it queues a follow-up.
+    fs::write(env.project().join("specs/a.md"), "edited by an agent").unwrap();
+    common::eventually("a queued run", || runs(&env).iter().any(|r| r["status"] == "queued"));
+    let queued = runs(&env).iter().find(|r| r["status"] == "queued").unwrap()["id"].clone();
+    finish(&env, &first);
+    assert_eq!(run_status(&env, &queued), "running");
+    let (_, show) = env.json(&["runs", "show", &queued.to_string(), "--snapshot"]);
+    let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
+    assert!(snap.contains("Changed: specs/a.md (modified)"), "{snap}");
 }

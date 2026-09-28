@@ -9,11 +9,16 @@ A rule in [[workflow]] frontmatter that makes the [[daemon]] react to an event, 
 - kinds (v1):
   - `manual`: documentation only; `tome run` always works
   - `file`: a glob, `on: [created, modified]`, `debounce`, `ignore`, `while_running`; changes are batched into one event
-  - `while_running:` what a file trigger does with changes while a run of its workflow is active (`to: new` only): `mute` (default; dropped) or `parallel` (each batch starts a run through `concurrency` / `on_conflict`)
+    - `while_running:` what a file trigger does with changes while a run of its workflow is active (`to: new` only):
+      - `queue` (default): queues one real run (listed in `tome runs`, cancellable) that starts once no run of the workflow is running or queued ahead of it, whatever `concurrency` says; later batches from the same trigger merge into it, each path listed once (`created` wins over `modified`); its placeholders are filled in when it starts
+      - `parallel`: each batch starts a run through `concurrency` / `on_conflict`
+      - `mute`: the changes are dropped (the default before 006; workflows that relied on it must now say `while_running: mute`)
+    - tome has no loop guard: a run that edits files its own trigger watches queues or starts another run. Avoid it with `ignore:`, `on: [created]`, or `while_running: mute`
   - `cron`: a 5-field expression in local time; missed times are skipped
 - `to:` `new` (default), `running`, or `running-or-new`, for cron and file triggers alike; a file trigger signalling runs passes its changed paths as event data
 - `params:` fills in workflow params
 - event data: `{{trigger.*}}` placeholders in the body
+- fire outcomes: `started`, `queued`, `merged` (names the run the paths went into), `signalled`, `no_target`, `muted`, `rejected`, `error`; shown in `tome triggers ls` and `tome triggers fire --dry-run`
 - deferred: webhooks, matching agent output, queue-message triggers
 
 ## Relationships

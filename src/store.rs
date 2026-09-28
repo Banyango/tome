@@ -625,6 +625,21 @@ impl Store {
         Ok(self.get_run(id, true).map_err(internal_any)?.expect("run exists"))
     }
 
+    /// Replace a queued run's trigger cause. False if the run isn't queued
+    /// (any more).
+    pub fn set_queued_trigger(&mut self, id: i64, cause: &Value) -> anyhow::Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE runs SET trigger_cause = ? WHERE id = ? AND status = 'queued'",
+            params![cause.to_string(), id],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn set_snapshot(&mut self, id: i64, snapshot: &str) -> anyhow::Result<()> {
+        self.conn.execute("UPDATE runs SET workflow_snapshot = ? WHERE id = ?", params![snapshot, id])?;
+        Ok(())
+    }
+
     // --- steps -------------------------------------------------------------
 
     /// The step a bare `tome step done|fail` refers to: the most recently
