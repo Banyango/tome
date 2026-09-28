@@ -31,3 +31,4 @@
 - [005 - File triggers via OS file events](features/005-os-file-events/feature.md)
 - [006 - File triggers while a run is active](features/006-file-trigger-while-running/feature.md)
 - [007 - Agent start handshake](features/007-agent-start-handshake/feature.md)
+- [008 - Session layout](features/008-session-layout/feature.md)
