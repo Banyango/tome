@@ -27,7 +27,13 @@ fn sessions(env: &Env, run: i64) -> Vec<Value> {
 
 /// Spawn a command worker as run `run`'s orchestrator.
 fn spawn(env: &Env, run: i64, name: &str, argv: &[&str]) -> Value {
-    let mut args = vec!["--json", "worker", "spawn", "--name", name, "--"];
+    spawn_with(env, run, name, &[], argv)
+}
+
+fn spawn_with(env: &Env, run: i64, name: &str, flags: &[&str], argv: &[&str]) -> Value {
+    let mut args = vec!["--json", "worker", "spawn", "--name", name];
+    args.extend_from_slice(flags);
+    args.push("--");
     args.extend_from_slice(argv);
     let out = env.cmd(&args).env("TOME_RUN_ID", run.to_string()).stdin(Stdio::null()).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -117,4 +123,98 @@ fn sessions_are_tracked_by_their_own_pane() {
     assert!(env.tmux(&["new-window", "-t", "=tome-1-build:"]).status.success());
     spawn(&env, 1, "w1", &["true"]);
     common::eventually("the nudge", || got(&env).contains("[tome] worker w1 done"));
+}
+
+fn lines(out: std::process::Output) -> Vec<String> {
+    String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+}
+
+/// The project's tome session's windows: `(pane, name)`.
+fn windows(env: &Env) -> Vec<(String, String)> {
+    let out = env.tmux(&["list-windows", "-t", "=p-orchestrator", "-F", "#{pane_id}\t#{window_name}"]);
+    lines(out).iter().filter_map(|l| l.split_once('\t')).map(|(p, n)| (p.to_string(), n.to_string())).collect()
+}
+
+fn named(all: &[(String, String)], name: &str) -> bool {
+    all.iter().any(|(_, n)| n == name)
+}
+
+/// `tome worker wait <name>` as run `run`'s orchestrator.
+fn wait(env: &Env, run: i64, name: &str) -> Value {
+    let out = env.cmd(&["--json", "worker", "wait", name]).env("TOME_RUN_ID", run.to_string()).output().unwrap();
+    serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap()
+}
+
+fn status(env: &Env, run: i64) -> Value {
+    env.json(&["runs", "show", &run.to_string()]).1["run"].clone()
+}
+
+#[test]
+fn tab_is_the_default_and_puts_sessions_in_windows_of_the_project_session() {
+    let env = env();
+    write_wf(&env, "build", "");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    let orch = &sessions(&env, 1)[0];
+    assert_eq!(orch["layout"], "tab", "{orch}");
+    assert!(env.has_session("p-orchestrator"));
+    assert!(!env.has_session("tome-1-build"), "no session of its own");
+    let pane = orch["pane"].as_str().unwrap();
+    let attach = orch["attach"].as_str().unwrap();
+    assert!(attach.contains(&format!(r"select-window -t {pane} \; select-pane -t {pane} \; attach -t")), "{attach}");
+    common::eventually("the orchestrator's window", || named(&windows(&env), "tome: build #1"));
+
+    // Workers, and a second run, share the one session.
+    spawn(&env, 1, "w1", &["sleep", "30"]);
+    env.json(&["run", "build", "--detach"]);
+    let all = windows(&env);
+    assert!(named(&all, "tome: build #1 / w1") && named(&all, "tome: build #2"), "{all:?}");
+    assert_eq!(all.len(), 4, "the shell and three sessions: {all:?}");
+
+    // A finished worker's window closes, unless it's kept open.
+    spawn(&env, 1, "w2", &["true"]);
+    spawn_with(&env, 1, "w3", &["--keep-open"], &["true"]);
+    assert_eq!(wait(&env, 1, "w2")["status"], "done");
+    assert_eq!(wait(&env, 1, "w3")["status"], "done");
+    common::eventually("w2's window closed", || !named(&windows(&env), "tome: build #1 / w2"));
+    assert!(named(&windows(&env), "tome: build #1 / w3"), "kept open");
+
+    // Closing one window ends just that session.
+    let (w1, _) = windows(&env).into_iter().find(|(_, n)| n == "tome: build #1 / w1").unwrap();
+    assert!(env.tmux(&["kill-window", "-t", &w1]).status.success());
+    let w = wait(&env, 1, "w1");
+    assert_eq!((w["status"].as_str(), w["reason"].as_str()), (Some("failed"), Some("worker_exited")), "{w}");
+    let (orch2, _) = windows(&env).into_iter().find(|(_, n)| n == "tome: build #2").unwrap();
+    assert!(env.tmux(&["kill-window", "-t", &orch2]).status.success());
+    common::eventually("run 2 failed", || status(&env, 2)["reason"] == "orchestrator_exited");
+    assert_eq!(status(&env, 1)["status"], "running");
+
+    // Cancelling the run closes its windows; the tome session stays.
+    assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
+    common::eventually("run 1's windows closed", || windows(&env).iter().all(|(_, n)| !n.starts_with("tome: build #1")));
+    assert_eq!(windows(&env).len(), 1, "{:?}", windows(&env));
+}
+
+#[test]
+fn a_restart_kills_the_sessions_but_leaves_the_tome_session() {
+    let env = env();
+    write_wf(&env, "build", "");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    spawn(&env, 1, "w1", &["sleep", "30"]);
+    assert_eq!(windows(&env).len(), 3);
+
+    let pid = env.rpc_ok("daemon.status", serde_json::json!({}))["pid"].as_i64().unwrap();
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    common::eventually("the daemon died", || unsafe { libc::kill(pid as i32, 0) } != 0);
+    env.start_daemon();
+    assert_eq!(status(&env, 1)["reason"], "daemon_restart");
+    common::eventually("the sessions are gone", || windows(&env).len() == 1);
+    assert!(env.has_session("p-orchestrator"));
+
+    // The next run finds it again.
+    env.json(&["run", "build", "--detach"]);
+    common::eventually("run 2's window", || named(&windows(&env), "tome: build #2"));
+    let out = env.tmux(&["list-sessions", "-F", "#{session_name}"]);
+    assert_eq!(lines(out), ["p-orchestrator"]);
 }

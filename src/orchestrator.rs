@@ -58,7 +58,12 @@ pub fn snapshot(run: &Run) -> CliResult<Workflow> {
 
 /// Where a run's sessions start: its project, else the user's home.
 pub fn run_cwd(run: &Run) -> PathBuf {
-    run.project_path.as_ref().map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(paths::user_home)
+    run_project(run).unwrap_or_else(paths::user_home)
+}
+
+/// A run's project directory, if it has one (and it's still there).
+pub fn run_project(run: &Run) -> Option<PathBuf> {
+    run.project_path.as_ref().map(PathBuf::from).filter(|p| p.is_dir())
 }
 
 pub fn plan(run: &Run) -> CliResult<Plan> {
@@ -128,6 +133,8 @@ pub fn launch(run: &Run, plan: &Plan) -> CliResult<Session> {
         env: &session_env(run.id),
         script: &dir.join("orchestrator.sh"),
         log: &dir.join(format!("{ROLE}.log")),
+        layout: plan.layout,
+        project: run_project(run).as_deref(),
     })?;
     Ok(Session {
         run_id: run.id,

@@ -329,6 +329,8 @@ impl Engine {
             env: &env,
             script: &dir.join(format!("worker-{name}.sh")),
             log: &log_file(run.id, name),
+            layout,
+            project: orchestrator::run_project(run).as_deref(),
         })?;
         Ok(store::Session { run_id: run.id, role: ROLE.to_string(), layout: Some(layout.as_str().to_string()), harness, ..s })
     }

@@ -201,6 +201,14 @@ impl Drop for Env {
             for id in self.cmux_workspaces() {
                 cmux(&["close-workspace", "--workspace", &id]);
             }
+            // And the tome workspaces the `tab` and `split` layouts opened.
+            let places = std::fs::read(self.home().join("workspaces.json")).unwrap_or_default();
+            let places: Value = serde_json::from_slice(&places).unwrap_or(Value::Null);
+            for p in places.as_array().into_iter().flatten().filter(|p| p["backend"] == "cmux") {
+                if let Some(id) = p["id"].as_str() {
+                    cmux(&["close-workspace", "--workspace", id]);
+                }
+            }
         }
         if self.socket().exists() {
             let _ = self.run(&["daemon", "stop"]);

@@ -22,10 +22,10 @@
 
 mod workspace;
 
-pub use workspace::Places;
 
 use crate::harness::{self, shell_quote};
 use crate::output::{CliError, CliResult};
+use crate::paths;
 use crate::store::Session;
 use serde_json::Value;
 use std::fs;
@@ -159,11 +159,25 @@ impl Backend {
     /// Start `launch` and return how to find it again: the session record
     /// minus the run, role, layout and harness, which the caller fills in.
     pub fn launch(&self, launch: &Launch) -> CliResult<Session> {
-        let (socket, handle, pane) = match self {
-            Backend::Tmux(t) => (t.socket.clone(), None, t.launch(launch)?),
-            Backend::Cmux(c) => {
+        let home = launch.project.map(Path::to_path_buf).unwrap_or_else(paths::user_home);
+        let (socket, handle, pane) = match (self, launch.layout) {
+            (Backend::Tmux(t), Layout::Workspace) => (t.socket.clone(), None, t.launch(launch)?),
+            (Backend::Cmux(c), Layout::Workspace) => {
                 let (workspace, surface) = c.launch(launch)?;
                 (None, Some(workspace), surface)
+            }
+            (Backend::Tmux(t), layout) => {
+                let _held = workspace::lock();
+                let id = workspace::Places::open().tmux(t, launch.project, &home)?;
+                let pane = t.launch_in(&id, layout, launch)?;
+                (t.socket.clone(), Some(id), pane)
+            }
+            (Backend::Cmux(c), layout) => {
+                let _held = workspace::lock();
+                let places = workspace::Places::open();
+                let record = places.cmux(c, launch.project, &home)?;
+                let surface = c.launch_in(&places, record.clone(), layout, launch)?;
+                (None, Some(record.id), surface)
             }
         };
         Ok(Session {
@@ -283,6 +297,10 @@ pub struct Launch<'a> {
     pub script: &'a Path,
     /// Where to append the session's output.
     pub log: &'a Path,
+    pub layout: Layout,
+    /// The run's project, whose tome workspace the `tab` and `split`
+    /// layouts use; `None` for runs outside a project.
+    pub project: Option<&'a Path>,
 }
 
 // --- tmux ------------------------------------------------------------------
@@ -350,6 +368,50 @@ impl Tmux {
         let pipe = format!("cat >> {}", shell_quote(&launch.log.to_string_lossy()));
         let _ = self.run(&["pipe-pane", "-t", &pane, "-o", &pipe]);
         // Let the command start now that its output is being captured.
+        fs::write(&ready, "")?;
+        Ok(pane)
+    }
+
+    /// Start `launch.argv` in the tome session `id`: in a new window under
+    /// the `tab` layout, in a new pane to the right under `split`. Returns
+    /// its pane's id.
+    pub fn launch_in(&self, id: &str, layout: Layout, launch: &Launch) -> CliResult<String> {
+        let ready = launch.script.with_extension("ready");
+        let _ = fs::remove_file(&ready);
+        fs::write(launch.script, script(launch, Capture::AfterStart(&ready)))?;
+
+        let cwd = launch.cwd.to_string_lossy();
+        let script = launch.script.to_string_lossy();
+        let target = format!("{id}:");
+        let out = match layout {
+            Layout::Split => {
+                // Right of the whole first window, whatever pane is active.
+                let first = format!("{id}:^");
+                self.run(&["split-window", "-d", "-h", "-f", "-t", &first, "-c", &cwd, "-P", "-F", "#{pane_id}", "sh", &script])?
+            }
+            _ => self.run(&["new-window", "-d", "-t", &target, "-n", launch.title, "-c", &cwd, "-P", "-F", "#{pane_id}", "sh", &script])?,
+        };
+        if !out.status.success() {
+            return Err(CliError::internal(format!(
+                "tmux couldn't start `{}` in {}: {}",
+                launch.name,
+                workspace::name(launch.project),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        let pane = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        match layout {
+            Layout::Split => {
+                let _ = self.run(&["select-layout", "-t", &pane, "even-horizontal"]);
+                let _ = self.run(&["select-pane", "-t", &pane, "-T", launch.title]);
+            }
+            _ => {
+                let _ = self.run(&["set-option", "-w", "-t", &pane, "automatic-rename", "off"]);
+                let _ = self.run(&["set-option", "-w", "-t", &pane, "allow-rename", "off"]);
+            }
+        }
+        let pipe = format!("cat >> {}", shell_quote(&launch.log.to_string_lossy()));
+        let _ = self.run(&["pipe-pane", "-t", &pane, "-o", &pipe]);
         fs::write(&ready, "")?;
         Ok(pane)
     }
@@ -511,6 +573,54 @@ impl Cmux {
         }
     }
 
+    /// Start `launch` in the tome workspace `record`: as a tab in its tab
+    /// split (made, to the right, if it's gone) under the `tab` layout, in a
+    /// new split to the right under `split`. Returns its surface id.
+    pub fn launch_in(&self, places: &workspace::Places, mut record: workspace::Record, layout: Layout, launch: &Launch) -> CliResult<String> {
+        fs::write(launch.script, script(launch, Capture::Script))?;
+        let failed = |what: &str, out: &Output| {
+            CliError::internal(format!(
+                "cmux couldn't open a {what} for `{}` in {}: {}",
+                launch.name,
+                workspace::name(launch.project),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        };
+        let here: Vec<Surface> =
+            self.surfaces().unwrap_or_default().into_iter().filter(|s| s.workspace == record.id && !s.id.is_empty()).collect();
+        let tabs = record.tabs.as_deref().filter(|p| here.iter().any(|s| s.pane.as_deref() == Some(*p)));
+        let surface = match (layout, tabs) {
+            (Layout::Tab, Some(pane)) => {
+                let out = self.run(&[
+                    "--id-format", "uuids", "new-surface", "--workspace", &record.id, "--pane", pane, "--focus", "false",
+                ])?;
+                first_id(&out).ok_or_else(|| failed("tab", &out))?
+            }
+            _ => {
+                // Split the rightmost pane (cmux lists them left to right).
+                let mut args = vec!["--id-format", "uuids", "new-split", "right", "--workspace", &record.id];
+                if let Some(last) = here.last() {
+                    args.extend(["--surface", last.id.as_str()]);
+                }
+                args.extend(["--focus", "false"]);
+                let out = self.run(&args)?;
+                let surface = first_id(&out).ok_or_else(|| failed("split", &out))?;
+                if layout == Layout::Tab {
+                    let pane = self.surfaces().and_then(|all| all.into_iter().find(|s| s.id == surface)?.pane);
+                    record.tabs = pane;
+                    places.put(&record)?;
+                }
+                surface
+            }
+        };
+        let _ = self.run(&["rename-tab", "--workspace", &record.id, "--surface", &surface, launch.title]);
+        if !self.send_line(&record.id, Some(&surface), &exec_command(launch)) {
+            self.close_surface(&record.id, &surface);
+            return Err(CliError::internal(format!("cmux couldn't start `{}` in its new terminal", launch.name)));
+        }
+        Ok(surface)
+    }
+
     /// Every terminal in every workspace of every window, as cmux's tree
     /// has them; `None` if cmux didn't answer.
     fn surfaces(&self) -> Option<Vec<Surface>> {
@@ -598,6 +708,12 @@ struct Surface {
     workspace_ref: String,
 }
 
+/// The first id in a cmux `OK <id> ...` answer.
+fn first_id(out: &Output) -> Option<String> {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout.trim().strip_prefix("OK ").filter(|_| out.status.success())?.split_whitespace().next().map(str::to_string)
+}
+
 /// What to type into a cmux terminal to run the launcher: the leading space
 /// keeps it out of shell history, and `exec` closes the terminal with it.
 fn exec_command(launch: &Launch) -> String {
@@ -618,6 +734,8 @@ enum Capture<'a> {
 /// become the command.
 fn script(launch: &Launch, capture: Capture) -> String {
     let mut s = String::from("#!/bin/sh\n");
+    // Terminals opened inside an existing workspace start in its directory.
+    s.push_str(&format!("cd {} || exit 1\n", shell_quote(&launch.cwd.to_string_lossy())));
     for (k, v) in launch.env {
         s.push_str(&format!("export {k}={}\n", shell_quote(v)));
     }
@@ -705,6 +823,8 @@ mod tests {
             env: &env,
             script: &dir.join(format!("{name}.sh")),
             log: &dir.join(format!("{name}.log")),
+            layout: Layout::Workspace,
+            project: None,
         })
         .unwrap();
     }

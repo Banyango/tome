@@ -150,3 +150,106 @@ fn workflow_backend_overrides_the_default() {
     assert_eq!(s["backend"], "tmux", "{s}");
     assert!(env.has_session("tome-1-cmuxtmux"));
 }
+
+/// A cmux env with no `TOME_LAYOUT`, so the config decides.
+fn layout_env(layout: &str) -> Option<Env> {
+    let mut env = Env::cmux()?;
+    env.vars.retain(|(k, _)| k != "TOME_LAYOUT");
+    // The orchestrator writes the first line typed into it to `got.txt`.
+    let script = env.home().join("reader.sh");
+    fs::write(&script, format!("read line; echo \"$line\" > {}; sleep 60\n", env.home().join("got.txt").display())).unwrap();
+    env.set_config(&format!("harnesses:\n  reader: [sh, \"{}\"]\nlayout: {layout}\n", script.display()));
+    write_wf(&env, "build", "defaults:\n  harness: reader\n");
+    Some(env)
+}
+
+/// A workspace's panes, left to right: `(pane, [(surface, title)])`.
+fn panes_of(workspace: &str) -> Vec<(String, Vec<(String, String)>)> {
+    let out = cmux(&["--id-format", "both", "tree", "--workspace", workspace, "--json"]);
+    let tree: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+    let ws = tree["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|w| w["workspaces"].as_array().into_iter().flatten())
+        .find(|w| w["id"] == workspace)
+        .cloned()
+        .unwrap_or(Value::Null);
+    ws["panes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|p| {
+            let surfaces = p["surfaces"].as_array().into_iter().flatten();
+            let surfaces = surfaces.map(|s| (s["id"].as_str().unwrap_or("").to_string(), s["title"].as_str().unwrap_or("").to_string()));
+            (p["id"].as_str().unwrap_or("").to_string(), surfaces.collect())
+        })
+        .collect()
+}
+
+fn titles(panes: &[(String, Vec<(String, String)>)]) -> Vec<Vec<String>> {
+    panes.iter().map(|(_, s)| s.iter().map(|(_, t)| t.clone()).collect()).collect()
+}
+
+/// Spawn a command worker as run 1's orchestrator.
+fn spawn(env: &Env, name: &str, argv: &[&str]) {
+    let mut args = vec!["--json", "worker", "spawn", "--name", name, "--"];
+    args.extend_from_slice(argv);
+    let out = env.cmd(&args).env("TOME_RUN_ID", "1").stdin(Stdio::null()).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+}
+
+fn got(env: &Env) -> String {
+    fs::read_to_string(env.home().join("got.txt")).unwrap_or_default()
+}
+
+#[test]
+fn tab_layout_opens_sessions_as_tabs_of_one_split_in_the_tome_workspace() {
+    let Some(env) = layout_env("tab") else { return };
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    let s = session(&env);
+    assert_eq!(s["layout"], "tab", "{s}");
+    let ws = workspace(&env);
+    let surface = s["pane"].as_str().unwrap().to_string();
+    assert_eq!(
+        s["attach"],
+        format!("cmux select-workspace --workspace {ws} && cmux focus-panel --panel {surface} --workspace {ws}")
+    );
+    let places: Value = serde_json::from_slice(&fs::read(env.home().join("workspaces.json")).unwrap()).unwrap();
+    assert_eq!(places[0]["id"], ws.as_str(), "{places}");
+
+    // The shell on the left, the tabs split on its right.
+    eventually("the orchestrator's tab", || titles(&panes_of(&ws)).get(1).is_some_and(|t| t == &["tome: build #1"]));
+    spawn(&env, "w1", &["sleep", "60"]);
+    let panes = panes_of(&ws);
+    assert_eq!(panes.len(), 2, "{panes:?}");
+    assert_eq!(titles(&panes)[1], ["tome: build #1", "tome: build #1 / w1"]);
+
+    // The orchestrator is on a terminal of its own, and nudges reach it.
+    spawn(&env, "w2", &["true"]);
+    eventually("the nudge", || got(&env).contains("[tome] worker w2 done"));
+    eventually("w2's tab closed", || titles(&panes_of(&ws))[1].len() == 2);
+
+    // Closing the tabs by hand ends just those sessions, and the split goes.
+    let (_, tabs) = panes_of(&ws)[1].clone();
+    for (id, _) in &tabs {
+        assert!(cmux(&["close-surface", "--workspace", &ws, "--surface", id]).status.success());
+    }
+    eventually("run to fail", || status(&env)["reason"] == "orchestrator_exited");
+    eventually("the split is gone", || panes_of(&ws).len() == 1);
+
+    // The next run brings the split back, in the same workspace.
+    env.json(&["run", "build", "--detach"]);
+    let (_, shown) = env.json(&["runs", "show", "2"]);
+    assert_eq!(shown["sessions"][0]["handle"], ws.as_str(), "{shown}");
+    eventually("run 2's tab", || titles(&panes_of(&ws)).get(1).is_some_and(|t| t == &["tome: build #2"]));
+
+    // A restart kills the sessions but leaves the workspace.
+    let (_, daemon) = env.json(&["daemon", "status"]);
+    unsafe { libc::kill(daemon["pid"].as_i64().unwrap() as i32, libc::SIGKILL) };
+    eventually("daemon to die", || env.json(&["daemon", "status"]).0 == 3);
+    env.start_daemon();
+    eventually("the split is gone again", || panes_of(&ws).len() == 1);
+    assert!(cmux_has_workspace(&ws));
+}
