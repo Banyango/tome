@@ -94,6 +94,7 @@ impl Engine {
             || workers::METHODS.contains(&method)
             || triggers::METHODS.contains(&method)
             || handshake::METHODS.contains(&method)
+            || crate::bus::METHODS.contains(&method)
     }
 
     pub fn dispatch(&self, method: &str, p: &Value) -> CliResult<Value> {
@@ -104,6 +105,7 @@ impl Engine {
             "step.report" => self.step(p),
             m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
             m if triggers::METHODS.contains(&m) => self.dispatch_triggers(m, p),
+            m if crate::bus::METHODS.contains(&m) => self.dispatch_bus(m, p),
             "agent.ready" => self.ready(p),
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
@@ -548,7 +550,8 @@ pub fn step_event(run_id: i64, h: &StepHistory) -> Value {
 /// (events: waiting, nudged, ready, no_start),
 /// for a group
 /// `{"type": "group", "run_id", "group", "event": "finished", "message", "time"}`,
-/// or for a trigger signal `{"type": "trigger", "run_id", "event": "trigger", "message", "time"}`.
+/// for a trigger signal `{"type": "trigger", "run_id", "event": "trigger", "message", "time"}`,
+/// or for a publish `{"type": "publish", "run_id", "event": "published", "message", "time"}`.
 pub fn worker_event(run_id: i64, h: &WorkerHistory) -> Value {
     if h.group.is_none() && handshake::state::ALL.contains(&h.event.as_str()) {
         return json!({
@@ -556,6 +559,15 @@ pub fn worker_event(run_id: i64, h: &WorkerHistory) -> Value {
             "run_id": run_id,
             "role": if h.worker.is_some() { workers::ROLE } else { orchestrator::ROLE },
             "worker": h.worker,
+            "event": h.event,
+            "message": h.message,
+            "time": h.occurred_at,
+        });
+    }
+    if h.worker.is_none() && h.group.is_none() && h.event == crate::bus::PUBLISHED {
+        return json!({
+            "type": "publish",
+            "run_id": run_id,
             "event": h.event,
             "message": h.message,
             "time": h.occurred_at,

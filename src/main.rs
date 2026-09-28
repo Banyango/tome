@@ -1,9 +1,11 @@
 mod api;
 mod arming;
+mod bus;
 mod cron;
 mod daemon;
 mod duration;
 mod engine;
+mod eventscmd;
 mod gc;
 mod glob;
 mod handshake;
@@ -117,6 +119,16 @@ enum Command {
     Triggers {
         #[command(subcommand)]
         command: TriggersCommand,
+    },
+    /// Publish an event to a topic on the project's message bus.
+    Publish {
+        /// Topic, e.g. review.requested.
+        topic: String,
+        /// The payload (`-` reads it from stdin).
+        text: String,
+        /// Show which workflows would get it, without publishing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Run a read-only SQL query against the run store.
     Query {
@@ -585,6 +597,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 triggerscmd::fire(&current_dir()?, &workflow, index, &paths, dry_run)
             }
         },
+        Command::Publish { topic, text, dry_run } => eventscmd::publish(&current_dir()?, &topic, text, dry_run),
         Command::Query { sql } => inspect::query(&sql),
         Command::Gc { older_than, dry_run } => gc::run(&older_than, dry_run),
     }

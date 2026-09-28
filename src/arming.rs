@@ -249,6 +249,7 @@ impl Engine {
                     still.insert(key, b.message.clone());
                 }
                 reported = still;
+                self.drop_unsubscribed(&next, &projects);
                 current = next;
                 eprintln!("tome daemon: {} trigger(s) armed", current.armed.len());
             }

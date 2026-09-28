@@ -156,6 +156,7 @@ fn event_line(ev: &Value) -> String {
         }
         // `[14:02:31] trigger: file specs/**/*.md fired (specs/a.md (modified))`
         Some("trigger") => format!("[{time}] trigger: {}", s(&ev["message"])),
+        Some("publish") => format!("[{time}] published {}", s(&ev["message"])),
         Some("group") => {
             let mut line = format!("[{time}] group {}: {}", s(&ev["group"]), s(&ev["event"]));
             if let Some(m) = ev["message"].as_str() {

@@ -16,10 +16,12 @@ use serde_json::{Map, Value};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+mod events;
 mod queues;
 mod triggers;
 mod workers;
 
+pub use events::{check_payload, state as delivery_state, BusEvent, Delivery, NewEvent, Subscriber};
 pub use queues::Pulled;
 pub use triggers::{Fire, NewFire, Project};
 pub use workers::{check_name, NewWorker, Worker, WorkerEnd, WorkerHistory, WorkerStatus};
@@ -184,6 +186,36 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE sessions ADD COLUMN layout VARCHAR;",
     // 7: the session's own pane or tab (a tmux pane id, a cmux surface id)
     "ALTER TABLE sessions ADD COLUMN pane VARCHAR;",
+    // 8: the project message bus: events, and one delivery per subscribing
+    // workflow; which lifecycle events a run has had published
+    "
+    CREATE SEQUENCE bus_event_seq START 1;
+    CREATE TABLE bus_events (
+        id            BIGINT PRIMARY KEY DEFAULT nextval('bus_event_seq'),
+        project_path  VARCHAR NOT NULL,
+        topic         VARCHAR NOT NULL,
+        payload       VARCHAR NOT NULL,
+        sender        VARCHAR NOT NULL,
+        sender_run_id BIGINT,
+        depth         INTEGER NOT NULL,
+        refused       VARCHAR,
+        published_at  TIMESTAMP NOT NULL
+    );
+    CREATE SEQUENCE delivery_seq START 1;
+    CREATE TABLE deliveries (
+        id            BIGINT PRIMARY KEY DEFAULT nextval('delivery_seq'),
+        event_id      BIGINT NOT NULL,
+        project_path  VARCHAR NOT NULL,
+        workflow_name VARCHAR NOT NULL,
+        workflow_path VARCHAR NOT NULL,
+        pattern       VARCHAR NOT NULL,
+        state         VARCHAR NOT NULL,
+        run_ids       VARCHAR NOT NULL,
+        updated_at    TIMESTAMP NOT NULL
+    );
+    ALTER TABLE runs ADD COLUMN announced VARCHAR;
+    UPDATE runs SET announced = 'ended' WHERE finished_at IS NOT NULL;
+    ",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
