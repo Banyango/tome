@@ -20,7 +20,10 @@
 //! agent's environment, captures its output to a log and `exec`s it, so the
 //! session ends when the agent does.
 
+mod split;
 mod workspace;
+
+pub use split::Split;
 
 
 use crate::config::Config;
@@ -137,9 +140,11 @@ impl Backend {
         }
     }
 
-    /// Start `launch` and return how to find it again: the session record
-    /// minus the run, role, layout and harness, which the caller fills in.
-    pub fn launch(&self, launch: &Launch) -> CliResult<Session> {
+    /// Start `launch` and return how to find it again (the session record
+    /// minus the run, role, layout, harness and placement, which the caller
+    /// fills in) and any placement warnings.
+    pub fn launch(&self, launch: &Launch) -> CliResult<(Session, Vec<String>)> {
+        let mut warnings = Vec::new();
         let home = launch.project.map(Path::to_path_buf).unwrap_or_else(paths::user_home);
         let (socket, handle, pane) = match (self, launch.layout) {
             (Backend::Tmux(t), Layout::Workspace) => (t.socket.clone(), None, t.launch(launch)?),
@@ -150,18 +155,18 @@ impl Backend {
             (Backend::Tmux(t), layout) => {
                 let _held = workspace::lock();
                 let id = workspace::Places::open().tmux(t, launch.project, &home)?;
-                let pane = t.launch_in(&id, layout, launch)?;
+                let pane = t.launch_in(&id, layout, launch, &mut warnings)?;
                 (t.socket.clone(), Some(id), pane)
             }
             (Backend::Cmux(c), layout) => {
                 let _held = workspace::lock();
                 let places = workspace::Places::open();
                 let record = places.cmux(c, launch.project, &home)?;
-                let surface = c.launch_in(&places, record.clone(), layout, launch)?;
+                let surface = c.launch_in(&places, record.clone(), layout, launch, &mut warnings)?;
                 (None, Some(record.id), surface)
             }
         };
-        Ok(Session {
+        let session = Session {
             run_id: 0,
             name: launch.name.to_string(),
             role: String::new(),
@@ -173,7 +178,8 @@ impl Backend {
             harness: None,
             placement: None,
             created_at: String::new(),
-        })
+        };
+        Ok((session, warnings))
     }
 }
 
@@ -280,6 +286,8 @@ pub struct Launch<'a> {
     /// Where to append the session's output.
     pub log: &'a Path,
     pub layout: Layout,
+    /// How a `split` (or cmux's tab split) opens.
+    pub split: &'a Split,
     /// The run's project, whose tome workspace the `tab` and `split`
     /// layouts use; `None` for runs outside a project.
     pub project: Option<&'a Path>,
@@ -355,9 +363,9 @@ impl Tmux {
     }
 
     /// Start `launch.argv` in the tome session `id`: in a new window under
-    /// the `tab` layout, in a new pane to the right under `split`. Returns
-    /// its pane's id.
-    pub fn launch_in(&self, id: &str, layout: Layout, launch: &Launch) -> CliResult<String> {
+    /// the `tab` layout (`from` doesn't apply to tmux windows), in a new pane
+    /// as `launch.split` says under `split`. Returns its pane's id.
+    pub fn launch_in(&self, id: &str, layout: Layout, launch: &Launch, warnings: &mut Vec<String>) -> CliResult<String> {
         let ready = launch.script.with_extension("ready");
         let _ = fs::remove_file(&ready);
         fs::write(launch.script, script(launch, Capture::AfterStart(&ready)))?;
@@ -365,11 +373,12 @@ impl Tmux {
         let cwd = launch.cwd.to_string_lossy();
         let script = launch.script.to_string_lossy();
         let target = format!("{id}:");
+        let mut anchored = false;
         let out = match layout {
             Layout::Split => {
-                // Right of the whole first window, whatever pane is active.
-                let first = format!("{id}:^");
-                self.run(&["split-window", "-d", "-h", "-f", "-t", &first, "-c", &cwd, "-P", "-F", "#{pane_id}", "sh", &script])?
+                let (out, from_anchor) = self.split_window(id, launch.split, &cwd, &["sh", &script], warnings)?;
+                anchored = from_anchor;
+                out
             }
             _ => self.run(&["new-window", "-d", "-t", &target, "-n", launch.title, "-c", &cwd, "-P", "-F", "#{pane_id}", "sh", &script])?,
         };
@@ -384,7 +393,7 @@ impl Tmux {
         let pane = String::from_utf8_lossy(&out.stdout).trim().to_string();
         match layout {
             Layout::Split => {
-                let _ = self.run(&["select-layout", "-t", &pane, "even-horizontal"]);
+                self.even_out(&pane, launch.split, anchored);
                 let _ = self.run(&["select-pane", "-t", &pane, "-T", launch.title]);
             }
             _ => {
@@ -555,10 +564,20 @@ impl Cmux {
         }
     }
 
-    /// Start `launch` in the tome workspace `record`: as a tab in its tab
-    /// split (made, to the right, if it's gone) under the `tab` layout, in a
-    /// new split to the right under `split`. Returns its surface id.
-    pub fn launch_in(&self, places: &workspace::Places, mut record: workspace::Record, layout: Layout, launch: &Launch) -> CliResult<String> {
+    /// Start `launch` in the tome workspace `record`, as `launch.split`
+    /// says: under the `tab` layout as a tab next to the anchor pane, else in
+    /// the workspace's tab split (made if it's gone); under `split` in a new
+    /// split off the anchor pane, else off the last one. Returns its surface
+    /// id.
+    pub fn launch_in(
+        &self,
+        places: &workspace::Places,
+        mut record: workspace::Record,
+        layout: Layout,
+        launch: &Launch,
+        warnings: &mut Vec<String>,
+    ) -> CliResult<String> {
+        let split = launch.split;
         fs::write(launch.script, script(launch, Capture::Script))?;
         let failed = |what: &str, out: &Output| {
             CliError::internal(format!(
@@ -570,23 +589,28 @@ impl Cmux {
         };
         let here: Vec<Surface> =
             self.surfaces().unwrap_or_default().into_iter().filter(|s| s.workspace == record.id && !s.id.is_empty()).collect();
-        let tabs = record.tabs.as_deref().filter(|p| here.iter().any(|s| s.pane.as_deref() == Some(*p)));
-        let surface = match (layout, tabs) {
+        let tabs = record.tabs.clone().filter(|p| here.iter().any(|s| s.pane.as_deref() == Some(p.as_str())));
+        let anchor = split.anchors.iter().find_map(|a| here.iter().find(|s| a.handle == record.id && s.id == a.pane));
+        split.missing_anchor(anchor.is_some(), warnings);
+        let join = anchor.and_then(|a| a.pane.clone()).filter(|_| layout == Layout::Tab);
+        let surface = match (layout, join.or(tabs)) {
             (Layout::Tab, Some(pane)) => {
                 let out = self.run(&[
-                    "--id-format", "uuids", "new-surface", "--workspace", &record.id, "--pane", pane, "--focus", "false",
+                    "--id-format", "uuids", "new-surface", "--workspace", &record.id, "--pane", &pane, "--focus", "false",
                 ])?;
                 first_id(&out).ok_or_else(|| failed("tab", &out))?
             }
             _ => {
-                // Split the rightmost pane (cmux lists them left to right).
-                let mut args = vec!["--id-format", "uuids", "new-split", "right", "--workspace", &record.id];
-                if let Some(last) = here.last() {
-                    args.extend(["--surface", last.id.as_str()]);
+                // Off the anchor, else the last pane (cmux lists them left
+                // to right).
+                let mut args = vec!["--id-format", "uuids", "new-split", split.direction.as_str(), "--workspace", &record.id];
+                if let Some(from) = anchor.or(here.last()) {
+                    args.extend(["--surface", from.id.as_str()]);
                 }
                 args.extend(["--focus", "false"]);
                 let out = self.run(&args)?;
                 let surface = first_id(&out).ok_or_else(|| failed("split", &out))?;
+                self.size_pane(&record.id, &surface, split, warnings);
                 if layout == Layout::Tab {
                     let pane = self.surfaces().and_then(|all| all.into_iter().find(|s| s.id == surface)?.pane);
                     record.tabs = pane;
@@ -806,6 +830,7 @@ mod tests {
             script: &dir.join(format!("{name}.sh")),
             log: &dir.join(format!("{name}.log")),
             layout: Layout::Workspace,
+            split: &Split::default(),
             project: None,
         })
         .unwrap();

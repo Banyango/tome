@@ -383,3 +383,80 @@ fn spawning_with_an_undefined_preset_fails_with_the_known_ones() {
     let (_, workers) = env.json(&["worker", "status", "--run", "1"]);
     assert_eq!(workers["workers"].as_array().map(Vec::len), Some(0), "{workers}");
 }
+
+/// `(pane id, left, top, width, height)` of each pane of the project session's first window.
+fn geometry(env: &Env) -> Vec<(String, i64, i64, i64, i64)> {
+    lines(env.tmux(&["list-panes", "-t", "=p-orchestrator:^", "-F", "#{pane_id} #{pane_left} #{pane_top} #{pane_width} #{pane_height}"]))
+        .iter()
+        .map(|l| {
+            let f: Vec<&str> = l.split(' ').collect();
+            let n = |i: usize| f[i].parse::<i64>().unwrap();
+            (f[0].to_string(), n(1), n(2), n(3), n(4))
+        })
+        .collect()
+}
+
+fn pane_of(env: &Env, name: &str) -> String {
+    let s = sessions(env, 1).into_iter().find(|s| s["name"] == name).unwrap_or_else(|| panic!("no session {name}"));
+    s["pane"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn a_split_follows_its_direction_and_size() {
+    let env = env();
+    env.set_config(&format!("{}layout: split\n", common::IDLE_CONFIG));
+    write_wf(&env, "build", "defaults:\n  layout:\n    workers:\n      split:\n        direction: down\n        size: 12\n");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    spawn(&env, 1, "w", &["sleep", "600"]);
+    let all = geometry(&env);
+    let orch = pane_of(&env, "tome-1-build");
+    let w = pane_of(&env, "tome-1-build-w");
+    let g = |id: &str| all.iter().find(|p| p.0 == id).cloned().unwrap_or_else(|| panic!("{id} in {all:?}"));
+    // Along the whole bottom edge, 12 rows high.
+    assert_eq!(g(&w).4, 12, "{all:?}");
+    assert!(g(&w).2 > g(&orch).2, "below: {all:?}");
+    assert_eq!(g(&w).3, 200, "full width: {all:?}");
+}
+
+#[test]
+fn from_opens_off_the_anchor_pane_and_a_too_big_size_is_clamped() {
+    let env = env();
+    env.set_config(&format!("{}layout: split\n", common::IDLE_CONFIG));
+    write_wf(&env, "build", "");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach", "--size", "30%"]);
+    spawn(&env, 1, "a", &["sleep", "600"]);
+    spawn_with(&env, 1, "b", &["--from", "orchestrator", "--direction", "down", "--size", "95%"], &["sleep", "600"]);
+    let all = geometry(&env);
+    let g = |id: &str| all.iter().find(|p| p.0 == id).cloned().unwrap_or_else(|| panic!("{id} in {all:?}"));
+    let (orch, b) = (g(&pane_of(&env, "tome-1-build")), g(&pane_of(&env, "tome-1-build-b")));
+    // b shares the orchestrator's column, under it.
+    assert_eq!((b.1, b.3), (orch.1, orch.3), "{all:?}");
+    assert!(b.2 > orch.2, "{all:?}");
+    let s = sessions(&env, 1).into_iter().find(|s| s["name"] == "tome-1-build-b").unwrap();
+    let warnings = s["placement"]["warnings"].to_string();
+    assert!(warnings.contains("clamped to 90%"), "{s}");
+    assert_eq!(s["placement"]["from"], "orchestrator", "{s}");
+}
+
+#[test]
+fn from_falls_back_to_the_last_pane_when_its_anchor_is_gone() {
+    let env = env();
+    env.set_config(&format!("{}layout: split\n", common::IDLE_CONFIG));
+    write_wf(&env, "build", "");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach", "--layout", "tab"]);
+    // The orchestrator is in a window of its own; `from: orchestrator`
+    // opens next to it there.
+    spawn_with(&env, 1, "a", &["--layout", "split", "--from", "orchestrator"], &["sleep", "600"]);
+    let orch = pane_of(&env, "tome-1-build");
+    let a = pane_of(&env, "tome-1-build-a");
+    let window = |p: &str| lines(env.tmux(&["display-message", "-p", "-t", p, "#{window_id}"]))[0].clone();
+    assert_eq!(window(&a), window(&orch));
+    // With the orchestrator's pane gone, the next opens off the last (a).
+    assert!(env.tmux(&["kill-pane", "-t", &orch]).status.success());
+    spawn_with(&env, 1, "b", &["--layout", "split", "--from", "orchestrator"], &["sleep", "600"]);
+    let b = pane_of(&env, "tome-1-build-b");
+    assert_eq!(window(&b), window(&a));
+}

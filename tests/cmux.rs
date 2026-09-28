@@ -276,3 +276,41 @@ fn split_layout_opens_each_session_in_its_own_split_to_the_right() {
     eventually("only the shell is left", || panes_of(&ws).len() == 1);
     assert!(cmux_has_workspace(&ws));
 }
+
+fn spawn_with(env: &Env, name: &str, flags: &[&str], argv: &[&str]) {
+    let mut args = vec!["--json", "worker", "spawn", "--name", name];
+    args.extend_from_slice(flags);
+    args.push("--");
+    args.extend_from_slice(argv);
+    let out = env.cmd(&args).env("TOME_RUN_ID", "1").stdin(Stdio::null()).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+}
+
+fn worker_session(env: &Env, name: &str) -> Value {
+    let (_, shown) = env.json(&["runs", "show", "1"]);
+    shown["sessions"].as_array().unwrap().iter().find(|s| s["name"] == format!("tome-1-build-{name}")).cloned().unwrap()
+}
+
+#[test]
+fn a_tab_with_from_joins_the_anchor_pane_and_size_is_best_effort() {
+    let Some(env) = layout_env("split") else { return };
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    let ws = workspace(&env);
+    let orch = session(&env)["pane"].as_str().unwrap().to_string();
+    // A tab next to the orchestrator: in its pane.
+    spawn_with(&env, "t", &["--layout", "tab", "--from", "orchestrator"], &["sleep", "60"]);
+    let panes = panes_of(&ws);
+    let with_orch = panes.iter().find(|(_, s)| s.iter().any(|(id, _)| *id == orch)).unwrap();
+    assert!(with_orch.1.iter().any(|(_, t)| t == "tome: build #1 / t"), "{panes:?}");
+
+    // A sized split below: sized, or skipped with a warning when cmux has
+    // no geometry for a workspace that hasn't been shown.
+    spawn_with(&env, "d", &["--direction", "down", "--size", "10"], &["sleep", "60"]);
+    let d = worker_session(&env, "d");
+    assert_eq!(d["placement"]["direction"], "down", "{d}");
+    assert_eq!(panes_of(&ws).len(), 3, "{:?}", panes_of(&ws));
+    let warnings = d["placement"]["warnings"].to_string();
+    assert!(d["placement"]["warnings"].is_null() || warnings.contains("split.size 10"), "{d}");
+    assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
+}

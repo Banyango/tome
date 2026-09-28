@@ -225,7 +225,7 @@ impl Engine {
         let result = orchestrator::plan(&run).and_then(|plan| {
             waited = plan.start_timeout.is_some();
             self.expect_start(agent.clone(), plan.start_timeout, orchestrator::prompt_file(run.id));
-            let session = orchestrator::launch(&run, &plan)?;
+            let session = orchestrator::launch(&run, &plan, &self.recorded_sessions(run.id))?;
             // Recorded before the monitor may look (it skips launching runs).
             self.with_store(|store| store.add_session(&session).map_err(internal)).inspect_err(|_| {
                 session::kill(&session);

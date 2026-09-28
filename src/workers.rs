@@ -15,7 +15,7 @@ use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::placement::{self, Inputs, Role, Settings};
-use crate::session::{self, Backend, Kind, Launch};
+use crate::session::{self, Backend, Kind, Launch, Split};
 use crate::store::{self, NewWorker, NewWorktree, Pulled, Run, RunStatus, Store, Worker, WorkerEnd, WorkerStatus};
 use crate::worktree;
 use serde_json::{json, Value};
@@ -303,8 +303,9 @@ impl Engine {
         let run_flags = orchestrator::run_flags(run)?;
         let inputs =
             Inputs { role: Role::Worker(name), flags, run_flags: run_flags.as_ref(), spec: wf.frontmatter.defaults.layout.as_ref() };
-        let placement = placement::resolve(&inputs, project.as_deref())?;
+        let mut placement = placement::resolve(&inputs, project.as_deref())?;
         let layout = placement.layout;
+        let split = Split::new(placement.direction, placement.size, placement.from, &recorded);
         let dir = run_dir(run.id);
         fs::create_dir_all(&dir)?;
         let exit = exit_file(run.id, name);
@@ -331,7 +332,7 @@ impl Engine {
         if let Some(wt) = worktree {
             env.push(("TOME_WORKTREE".to_string(), wt.to_string_lossy().into_owned()));
         }
-        let s = Backend::new(kind).launch(&Launch {
+        let (s, warnings) = Backend::new(kind).launch(&Launch {
             name: &session_name,
             title: &format!("tome: {} #{} / {name}", run.workflow_name, run.id),
             cwd,
@@ -340,8 +341,10 @@ impl Engine {
             script: &dir.join(format!("worker-{name}.sh")),
             log: &log_file(run.id, name),
             layout,
+            split: &split,
             project: orchestrator::run_project(run).as_deref(),
         })?;
+        placement.warnings = warnings;
         Ok(store::Session {
             run_id: run.id,
             role: ROLE.to_string(),

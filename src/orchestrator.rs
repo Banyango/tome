@@ -10,7 +10,7 @@ use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::recovery::RecoveryHooks;
 use crate::placement::{self, Inputs, Placement, Role, Settings};
-use crate::session::{self, Backend, Cmux, Kind, Launch, Tmux};
+use crate::session::{self, Backend, Cmux, Kind, Launch, Split, Tmux};
 use crate::store::{Run, Session, Worker};
 use crate::workflow::{self, Frontmatter, Workflow};
 use std::fs;
@@ -126,7 +126,7 @@ pub fn prompt_file(run_id: i64) -> PathBuf {
 /// Start the orchestrator's session and return its record. The launcher
 /// script, the bootstrap prompt and the session's output all go in the
 /// run's directory.
-pub fn launch(run: &Run, plan: &Plan) -> CliResult<Session> {
+pub fn launch(run: &Run, plan: &Plan, recorded: &[Session]) -> CliResult<Session> {
     let backend = Backend::new(plan.backend);
     let dir = paths::runs_dir().join(run.id.to_string());
     fs::create_dir_all(&dir)?;
@@ -139,7 +139,10 @@ pub fn launch(run: &Run, plan: &Plan) -> CliResult<Session> {
         session: &plan.session,
         cwd: &plan.cwd.to_string_lossy(),
     });
-    let session = backend.launch(&Launch {
+    // An orchestrator relaunched after a restart may open from what's left.
+    let p = &plan.placement;
+    let split = Split::new(p.direction, p.size, p.from, recorded);
+    let (session, warnings) = backend.launch(&Launch {
         name: &plan.session,
         title: &plan.title,
         cwd: &plan.cwd,
@@ -148,14 +151,17 @@ pub fn launch(run: &Run, plan: &Plan) -> CliResult<Session> {
         script: &dir.join("orchestrator.sh"),
         log: &dir.join(format!("{ROLE}.log")),
         layout: plan.placement.layout,
+        split: &split,
         project: run_project(run).as_deref(),
     })?;
+    let mut placement = plan.placement.clone();
+    placement.warnings = warnings;
     Ok(Session {
         run_id: run.id,
         role: ROLE.to_string(),
         layout: Some(plan.placement.layout.as_str().to_string()),
         harness: Some(plan.harness.name.clone()),
-        placement: Some(plan.placement.to_json()),
+        placement: Some(placement.to_json()),
         ..session
     })
 }
