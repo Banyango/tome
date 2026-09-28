@@ -79,7 +79,8 @@ pub fn run_foreground() -> anyhow::Result<()> {
 
     let lock = acquire_lock()?;
     let mut store = Store::open(&paths::db_path(), &paths::runs_dir())?;
-    // Before accepting requests: no run survives its daemon.
+    // Before accepting requests: no running run survives its daemon (queued
+    // ones do, and start below).
     for run in recovery::recover(&mut store, &orchestrator::Hooks).context("recovering interrupted runs")? {
         eprintln!("tome daemon: run {} ({}) marked failed: {}", run.id, run.workflow_name, recovery::REASON);
     }
@@ -99,6 +100,8 @@ pub fn run_foreground() -> anyhow::Result<()> {
         _lock: lock,
     });
     eprintln!("tome daemon: listening on {} (pid {})", socket.display(), std::process::id());
+    let engine = Arc::clone(&daemon.engine);
+    std::thread::spawn(move || engine.resume_queued());
     let engine = Arc::clone(&daemon.engine);
     std::thread::spawn(move || engine.monitor());
     let engine = Arc::clone(&daemon.engine);

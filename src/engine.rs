@@ -162,6 +162,18 @@ impl Engine {
         }
     }
 
+    /// Start the queued runs that survived a daemon restart, as far as each
+    /// workflow has room. Call once at startup, after recovery.
+    pub fn resume_queued(&self) {
+        let Ok(runs) = self.with_store(|store| store.in_progress_runs().map_err(internal)) else { return };
+        let mut workflows: Vec<String> = runs.into_iter().filter(|r| r.status == RunStatus::Queued).map(|r| r.workflow_name).collect();
+        workflows.sort();
+        workflows.dedup();
+        for workflow in workflows {
+            self.promote(&workflow);
+        }
+    }
+
     /// Start a running run's orchestrator. If that fails the run is marked
     /// failed (`launch_failed`) and the error returned.
     fn launch(&self, run: Run) -> CliResult<Run> {
