@@ -113,6 +113,7 @@ pub fn fields(kind: &TriggerKind, event: &Event, now: DateTime<Local>) -> Map<St
         TriggerKind::Manual => ("manual", String::new()),
         TriggerKind::Cron { .. } => ("cron", "scheduled".to_string()),
         TriggerKind::File(_) => ("file", event_names(event.paths.iter().map(|(_, e)| e.as_str()))),
+        TriggerKind::Topic { .. } => ("topic", "published".to_string()),
     };
     let paths: Vec<Value> = event.paths.iter().map(|(p, e)| json!({ "path": p, "event": e.as_str() })).collect();
     let mut m = Map::new();
@@ -121,6 +122,9 @@ pub fn fields(kind: &TriggerKind, event: &Event, now: DateTime<Local>) -> Map<St
     m.insert("paths".into(), Value::Array(paths));
     m.insert("time".into(), json!(local_time(now)));
     m.insert("scheduled".into(), json!(event.scheduled.map(local_time).unwrap_or_default()));
+    for field in ["topic", "payload", "event_id", "sender"] {
+        m.insert(field.into(), json!(""));
+    }
     m
 }
 

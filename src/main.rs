@@ -22,6 +22,7 @@ mod scaffold;
 mod service;
 mod session;
 mod store;
+mod topic;
 mod triggers;
 mod triggerscmd;
 mod validate;

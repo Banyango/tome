@@ -123,3 +123,30 @@ fn trigger_validation() {
     let lines: Vec<i64> = v["workflows"][0]["errors"].as_array().unwrap().iter().map(|e| e["line"].as_i64().unwrap()).collect();
     assert_eq!(lines, vec![4, 5], "{v}");
 }
+
+#[test]
+fn topic_triggers_validate_with_warnings_and_need_a_project() {
+    let env = Env::new();
+    write(
+        &env.project().join(".tome/workflows"),
+        "impl.md",
+        "---\nname: impl\ntriggers:\n  - on: feature.*\n  - on: feature.requested\n  - on: tome.run.*.succeeded\n---\n{{trigger.payload}} from {{trigger.sender}}\n",
+    );
+    let (code, v) = env.json(&["validate", "impl"]);
+    assert_eq!(code, 0, "warnings don't fail validation: {v}");
+    let warnings = v["workflows"][0]["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 2, "{v}");
+    assert_eq!(warnings[0]["line"], 5);
+    let out = env.run(&["validate", "impl"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("warning: line 6:") && text.contains("tome.run.impl.*"), "{text}");
+
+    write(&env.home().join("workflows"), "g.md", "---\nname: g\ntriggers:\n  - on: review.requested\n---\n");
+    let (code, v) = env.json(&["validate", "g"]);
+    assert_eq!(code, 2, "{v}");
+    assert!(v["workflows"][0]["errors"][0]["message"].as_str().unwrap().contains("no project bus"), "{v}");
+
+    write(&env.project().join(".tome/workflows"), "bad.md", "---\nname: bad\ntriggers:\n  - on: Bad.Topic\n---\n");
+    let (code, _) = env.json(&["validate", "bad"]);
+    assert_eq!(code, 2);
+}

@@ -4,7 +4,7 @@
 //! daemon. Exits `2` if anything is invalid.
 
 use crate::output::{exit, CliResult, Report};
-use crate::workflow::{self, Entry, Invalid, Library, Scope};
+use crate::workflow::{self, Entry, Invalid, Library, Scope, Workflow};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
@@ -19,7 +19,9 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
             match library.locate(target)? {
                 Ok(wf) => {
                     let check = wf.resolve_params(&overrides, !overrides.is_empty()).err();
-                    results.push(result_json(wf.name(), &wf.path, None, check.as_ref(), None));
+                    let mut r = result_json(wf.name(), &wf.path, None, check.as_ref(), None);
+                    r["warnings"] = warnings_json(&wf);
+                    results.push(r);
                 }
                 Err(inv) => {
                     results.push(result_json(inv.name.as_deref().unwrap_or(""), &inv.path, None, Some(&inv), None))
@@ -51,13 +53,17 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
                         }
                     }
                 }
-                results.push(result_json(
+                let mut r = result_json(
                     entry.name().unwrap_or(""),
                     &entry.path,
                     Some(entry.scope),
                     invalid.as_ref(),
                     overridden_by.map(|p| p.as_path()),
-                ));
+                );
+                if let Ok(wf) = &entry.result {
+                    r["warnings"] = warnings_json(wf);
+                }
+                results.push(r);
             }
         }
     }
@@ -85,6 +91,7 @@ fn result_json(name: &str, path: &Path, scope: Option<Scope>, invalid: Option<&I
         "path": path,
         "valid": invalid.is_none(),
         "errors": invalid.map(Invalid::errors_json).unwrap_or_else(|| json!([])),
+        "warnings": [],
     });
     if let Some(scope) = scope {
         v["scope"] = json!(scope);
@@ -93,6 +100,10 @@ fn result_json(name: &str, path: &Path, scope: Option<Scope>, invalid: Option<&I
         v["overridden_by"] = json!(p);
     }
     v
+}
+
+fn warnings_json(wf: &Workflow) -> Value {
+    json!(wf.warnings().iter().map(|d| json!({ "line": d.line, "message": d.message })).collect::<Vec<_>>())
 }
 
 fn render_human(results: &[Value], listing: bool) -> String {
@@ -112,6 +123,9 @@ fn render_human(results: &[Value], listing: bool) -> String {
         // The path is on the header line; errors only need the line number.
         for e in r["errors"].as_array().into_iter().flatten() {
             out.push_str(&format!("        line {}: {}\n", e["line"], e["message"].as_str().unwrap_or("")));
+        }
+        for w in r["warnings"].as_array().into_iter().flatten() {
+            out.push_str(&format!("        warning: line {}: {}\n", w["line"], w["message"].as_str().unwrap_or("")));
         }
     }
     if listing {

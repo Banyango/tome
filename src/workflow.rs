@@ -399,6 +399,10 @@ pub enum TriggerKind {
         #[serde(skip)]
         schedule: crate::cron::Cron,
     },
+    /// `on: <pattern>`: events published to a matching topic.
+    Topic {
+        on: crate::topic::Pattern,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -485,6 +489,7 @@ impl Trigger {
             TriggerKind::Manual => "manual",
             TriggerKind::File(_) => "file",
             TriggerKind::Cron { .. } => "cron",
+            TriggerKind::Topic { .. } => "topic",
         }
     }
 
@@ -494,6 +499,7 @@ impl Trigger {
             TriggerKind::Manual => "manual".into(),
             TriggerKind::File(f) => format!("file {}", f.file),
             TriggerKind::Cron { cron, .. } => format!("cron {cron}"),
+            TriggerKind::Topic { on } => format!("on {on}"),
         }
     }
 
@@ -505,7 +511,8 @@ impl Trigger {
 }
 
 pub const TRIGGER_KEYS: &[&str] = &["file", "cron", "on", "debounce", "ignore", "while_running", "to", "params"];
-pub const TRIGGER_FIELDS: &[&str] = &["kind", "paths", "event", "time", "scheduled"];
+pub const TRIGGER_FIELDS: &[&str] =
+    &["kind", "paths", "event", "time", "scheduled", "topic", "payload", "event_id", "sender"];
 const DEFAULT_DEBOUNCE: Duration = Duration::from_secs(2);
 
 fn parse_triggers(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> Vec<Trigger> {
@@ -539,12 +546,12 @@ fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Opti
             return Some(Trigger { kind: TriggerKind::Manual, to: Target::New, params: Map::new(), line })
         }
         Yaml::String(s) => {
-            n(errors, format!("unknown trigger `{s}` (expected `manual`, or a mapping with `file:` or `cron:`)"));
+            n(errors, format!("unknown trigger `{s}` (expected `manual`, or a mapping with `file:`, `cron:` or `on:`)"));
             return None;
         }
         Yaml::Mapping(m) => m,
         _ => {
-            n(errors, "each trigger must be `manual` or a mapping with `file:` or `cron:`".into());
+            n(errors, "each trigger must be `manual` or a mapping with `file:`, `cron:` or `on:`".into());
             return None;
         }
     };
@@ -593,8 +600,26 @@ fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Opti
             return None;
         }
         (None, None) => {
-            n(errors, "a trigger mapping needs `file:` or `cron:`".into());
-            return None;
+            let Some(on) = get("on") else {
+                n(errors, "a trigger mapping needs `file:`, `cron:` or `on:`".into());
+                return None;
+            };
+            for k in ["debounce", "ignore", "while_running"] {
+                if get(k).is_some() {
+                    n(errors, format!("`{k}` only applies to file triggers"));
+                }
+            }
+            let Some(pattern) = on.as_str() else {
+                n(errors, "`on` must be a topic pattern like `review.requested`".into());
+                return None;
+            };
+            match crate::topic::Pattern::parse(pattern) {
+                Ok(on) => TriggerKind::Topic { on },
+                Err(e) => {
+                    n(errors, e);
+                    return None;
+                }
+            }
         }
         (None, Some(cron)) => {
             for k in ["on", "debounce", "ignore", "while_running"] {
@@ -742,7 +767,8 @@ fn check_trigger_params(fm: &mut Frontmatter, errors: &mut Vec<Diagnostic>) {
 }
 
 /// Checks that depend on where the workflow lives: a global workflow has no
-/// project root, so its file triggers need absolute or `~/` globs.
+/// project root, so its file triggers need absolute or `~/` globs, and no
+/// project bus, so it can't have topic triggers.
 pub fn check_scope(wf: Workflow, scope: Scope) -> Result<Workflow, Invalid> {
     if scope == Scope::Project {
         return Ok(wf);
@@ -755,6 +781,10 @@ pub fn check_scope(wf: Workflow, scope: Scope) -> Result<Workflow, Invalid> {
             TriggerKind::File(f) if !crate::glob::Glob::is_absolute(&f.file) => Some(Diagnostic::new(
                 t.line,
                 format!("file trigger `{}` in a global workflow must use an absolute or `~/` path", f.file),
+            )),
+            TriggerKind::Topic { on } => Some(Diagnostic::new(
+                t.line,
+                format!("topic trigger `on: {on}` needs a project; a global workflow has no project bus"),
             )),
             _ => None,
         })
@@ -1083,6 +1113,37 @@ pub fn parse_param_args(args: &[String]) -> CliResult<Vec<(String, String)>> {
 impl Workflow {
     pub fn name(&self) -> &str {
         &self.frontmatter.name
+    }
+
+    /// Things `tome validate` warns about without failing: topic triggers
+    /// that can match the same topic (an event is delivered once, for the
+    /// first), and patterns that match the workflow's own lifecycle events.
+    pub fn warnings(&self) -> Vec<Diagnostic> {
+        let topics: Vec<(&Trigger, &crate::topic::Pattern)> = self
+            .frontmatter
+            .triggers
+            .iter()
+            .filter_map(|t| match &t.kind {
+                TriggerKind::Topic { on } => Some((t, on)),
+                _ => None,
+            })
+            .collect();
+        let mut out = Vec::new();
+        for (i, (t, on)) in topics.iter().enumerate() {
+            if let Some((_, first)) = topics[..i].iter().find(|(_, earlier)| earlier.overlaps(on)) {
+                out.push(Diagnostic::new(
+                    t.line,
+                    format!("`on: {on}` and `on: {first}` can match the same topic; such an event is delivered once, for `on: {first}`"),
+                ));
+            }
+            if crate::topic::lifecycle_topics(self.name()).iter().any(|topic| on.matches(topic)) {
+                out.push(Diagnostic::new(
+                    t.line,
+                    format!("`on: {on}` matches this workflow's own `tome.run.{}.*` events, so its runs can start more of its runs", self.name()),
+                ));
+            }
+        }
+        out
     }
 
     /// Combine declared defaults with `--param` overrides. Unknown params,
@@ -1576,6 +1637,52 @@ triggers:
         assert!(check_scope(p(&src("specs/*.md")).unwrap(), Scope::Project).is_ok());
         assert!(check_scope(p(&src("~/notes/*.md")).unwrap(), Scope::Global).is_ok());
         assert!(check_scope(p(&src("/srv/in/**")).unwrap(), Scope::Global).is_ok());
+    }
+
+    #[test]
+    fn topic_triggers() {
+        let wf = p("---\nname: review\nparams:\n  base: {}\ntriggers:\n  - on: review.requested\n    params: {base: main}\n  - on: \"feature.**\"\n    to: running-or-new\n    params: {base: dev}\n---\n{{trigger.topic}}|{{trigger.payload}}|{{trigger.event_id}}|{{trigger.sender}}\n").unwrap();
+        let t = &wf.frontmatter.triggers;
+        let TriggerKind::Topic { on } = &t[0].kind else { panic!("{:?}", t[0]) };
+        assert!(on.matches("review.requested"));
+        assert_eq!((t[0].to, t[0].describe(), t[0].kind_name()), (Target::New, "on review.requested".to_string(), "topic"));
+        assert_eq!(t[1].to, Target::RunningOrNew);
+        let v = serde_json::to_value(&t[1]).unwrap();
+        assert_eq!((v["kind"].as_str(), v["on"].as_str()), (Some("topic"), Some("feature.**")));
+        let params = wf.resolve_params(&[("base".into(), "x".into())], true).unwrap();
+        assert_eq!(wf.render_body(&params, "1", &Map::new()), "|||", "empty on manual runs");
+        let ev = json!({"topic": "review.requested", "payload": "p", "event_id": 4, "sender": "user"});
+        assert_eq!(wf.render_body(&params, "1", ev.as_object().unwrap()), "review.requested|p|4|user");
+        assert!(wf.warnings().is_empty());
+
+        let e = |t: &str| errs(&format!("---\nname: x\ntriggers:\n{t}---\n"));
+        for (t, expect) in [
+            ("  - on: Review\n", "invalid topic pattern `Review`"),
+            ("  - on: \"a.**.b\"\n", "`**` may only be the last segment"),
+            ("  - on: [a, b]\n", "`on` must be a topic pattern"),
+            ("  - on: a.b\n    debounce: 1s\n", "`debounce` only applies to file triggers"),
+            ("  - on: a.b\n    to: later\n", "trigger `to` must be"),
+            ("  - to: new\n", "needs `file:`, `cron:` or `on:`"),
+        ] {
+            assert!(e(t).iter().any(|d| d.message.contains(expect) && d.line == 4), "{t}: {:?}", e(t));
+        }
+        // A file trigger's `on:` is still its events.
+        assert!(p("---\nname: x\ntriggers:\n  - file: \"*.md\"\n    on: created\n---\n").is_ok());
+
+        let global = p("---\nname: x\ntriggers:\n  - on: a.b\n---\n").unwrap();
+        let e = check_scope(global, Scope::Global).unwrap_err();
+        assert!(e.errors[0].message.contains("global workflow has no project bus"), "{e:?}");
+    }
+
+    #[test]
+    fn topic_trigger_warnings() {
+        let wf = p("---\nname: impl\ntriggers:\n  - on: a.*\n  - on: a.b\n  - on: \"tome.run.*.succeeded\"\n  - on: tome.run.other.failed\n---\n").unwrap();
+        let w = wf.warnings();
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert_eq!(w[0].line, 5);
+        assert!(w[0].message.contains("`on: a.b` and `on: a.*` can match the same topic"));
+        assert_eq!(w[1].line, 6);
+        assert!(w[1].message.contains("own `tome.run.impl.*` events"));
     }
 
     #[test]
