@@ -8,6 +8,8 @@ A tome [[primitive]] for a single terminal multiplexer session, pane or window t
 
 - backend: cmux, tmux or herdr (via [[backend]])
 - output: can be pattern-matched to fire a message-received [[trigger]]
+- layout: `tab` (default), `split` or `workspace`. It decides where in the backend the session opens; `tab` and `split` use the project's tome workspace `<project>-orchestrator` _(source: [008](../features/008-session-layout/feature.md))_
+- handle: the session's own pane or tab (tmux pane, cmux surface). Liveness checks, kill, nudges and crash recovery go by this handle _(source: [008](../features/008-session-layout/feature.md))_
 
 ## Relationships
 

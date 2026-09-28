@@ -15,3 +15,4 @@
 - 2026-09-27 20:50 — update — 005-os-file-events and 006-file-trigger-while-running implemented — pages touched: features/005-os-file-events/tasks.md, features/006-file-trigger-while-running/tasks.md
 - 2026-09-27 21:02 — update — 007-agent-start-handshake implemented — pages touched: features/007-agent-start-handshake/tasks.md
 - 2026-09-27 21:27 — update — 008-session-layout implemented — pages touched: features/008-session-layout/tasks.md
+- 2026-09-28 08:06 — update — 008-session-layout: what changed and potential follow-ups — pages touched: features/008-session-layout/tasks.md, entities/session.md
