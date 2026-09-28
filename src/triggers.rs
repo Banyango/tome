@@ -487,7 +487,10 @@ impl Engine {
                 Err(e) => errors.push(format!("run {}: {}", run.id, e.message)),
             }
             if run.status == RunStatus::Running {
-                let nudge = format!("[tome] trigger {} fired. Details: tome queue pull {QUEUE}", trigger.kind_name());
+                let nudge = match &req.event.bus {
+                    Some((e, _)) => format!("[tome] event {} on {}. Details: tome queue pull {QUEUE}", e.id, e.topic),
+                    None => format!("[tome] trigger {} fired. Details: tome queue pull {QUEUE}", trigger.kind_name()),
+                };
                 for s in self.recorded_sessions(run.id).iter().filter(|s| s.role == orchestrator::ROLE) {
                     session::send_line(s, &nudge);
                 }
@@ -495,6 +498,12 @@ impl Engine {
         }
         if signalled.is_empty() {
             return Fired { outcome: outcome::ERROR, message: Some(errors.join("; ")), runs: Vec::new(), data: json!({}) };
+        }
+        // A topic event is held by the runs it went to until one ends.
+        if let Some((_, delivery)) = &req.event.bus {
+            if let Err(e) = self.with_store(|store| store.set_delivery_runs(*delivery, &signalled)) {
+                errors.push(format!("delivery {delivery}: {}", e.message));
+            }
         }
         let mut message = format!("signalled run {}", join_ids(&signalled));
         if !errors.is_empty() {
@@ -566,6 +575,9 @@ impl Engine {
 
 /// `file specs/**/*.md fired (specs/a.md (modified))`, for event streams.
 fn describe_event(trigger: &workflow::Trigger, fields: &Map<String, Value>) -> String {
+    if let Some(topic) = fields.get("topic").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+        return format!("{} fired (event {} on {topic})", trigger.describe(), text(&fields["event_id"]));
+    }
     let paths = workflow::trigger_text(fields.get("paths").unwrap_or(&Value::Null));
     if paths.is_empty() {
         format!("{} fired", trigger.describe())

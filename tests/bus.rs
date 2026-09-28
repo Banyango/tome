@@ -391,3 +391,48 @@ fn firing_a_topic_trigger_takes_its_next_event_or_a_test_one() {
     let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
     assert!(human.contains("review: on review.* has 0 pending; last took event 2 (run 2)"), "{human}");
 }
+
+#[test]
+fn running_targets_signal_their_runs_and_settle_when_one_ends() {
+    let env = Env::new();
+    let script = env.home().join("listener.sh");
+    fs::write(&script, "while read line; do echo \"$line\" >> \"$TOME_HOME/typed.txt\"; done\n").unwrap();
+    env.set_config(&format!("{}  listener: [sh, \"{}\", \"{{{{prompt_file}}}}\"]\n", common::IDLE_CONFIG, script.display()));
+    write_wf(&env, "watch", "defaults:\n  orchestrator_harness: listener\ntriggers:\n  - on: review\n    to: running\n  - on: ping\n    to: running-or-new\n", "## Watch\nGo.\n");
+    start_fast_daemon(&env);
+    let (_, v) = env.json(&["publish", "review", "x", "--dry-run"]);
+    assert_eq!(v["matches"][0]["would"], "would be dropped: no run to signal", "{v}");
+    // Nothing to signal: the event is done with, and no run starts.
+    assert_eq!(env.json(&["publish", "review", "early"]).0, 0);
+    common::eventually("the delivery done", || deliveries(&env) == [("watch".to_string(), "done".to_string())]);
+    assert!(runs(&env).is_empty());
+
+    // running-or-new starts one when nothing runs.
+    assert_eq!(env.json(&["publish", "ping", "start"]).0, 0);
+    common::eventually("a run", || runs(&env).len() == 1);
+    let run = runs(&env)[0]["id"].clone();
+    common::eventually("orchestrator up", || env.has_session(&format!("tome-{run}-watch")));
+
+    let (_, v) = env.json(&["publish", "review", "x", "--dry-run"]);
+    assert_eq!(v["matches"][0]["would"], format!("would signal run {run}"), "{v}");
+    assert_eq!(env.json(&["publish", "review", "look"]).0, 0);
+    assert_eq!(env.json(&["publish", "ping", "again"]).0, 0);
+    common::eventually("both signalled", || deliveries(&env).iter().filter(|d| d.1 == "claimed").count() == 3);
+    assert_eq!(runs(&env).len(), 1);
+    assert_eq!(query(&env, "SELECT run_ids FROM deliveries WHERE id = 3")[0][0], format!("[{run}]"));
+
+    let typed = env.home().join("typed.txt");
+    common::eventually("nudge typed", || fs::read_to_string(&typed).is_ok_and(|t| t.contains("[tome] event 3 on review.")));
+    let pull = || {
+        let out = env.cmd(&["--json", "queue", "pull", "events"]).env("TOME_RUN_ID", run.to_string()).output().unwrap();
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["message"].clone()
+    };
+    let body: Value = serde_json::from_str(pull()["body"].as_str().unwrap()).unwrap();
+    assert_eq!((body["kind"].as_str(), body["topic"].as_str(), body["payload"].as_str()), (Some("topic"), Some("review"), Some("look")), "{body}");
+    assert_eq!(body["event_id"], "3");
+
+    finish(&env, &run);
+    common::eventually("all settled", || deliveries(&env).iter().all(|d| d.1 == "done"));
+    let outcomes: Vec<Value> = query(&env, "SELECT outcome FROM trigger_fires WHERE trigger_index >= 0 ORDER BY id").into_iter().map(|r| r[0].clone()).collect();
+    assert_eq!(outcomes, ["no_target", "started", "signalled", "signalled"]);
+}

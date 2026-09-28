@@ -261,9 +261,17 @@ impl Engine {
             Ok(wf) => wf,
             Err(inv) => return format!("would wait: {}", triggers::first_errors(&inv)),
         };
+        let active = self.active_runs(&a.name, &a.workflow_path).unwrap_or_default();
+        if a.trigger.to != Target::New && !active.is_empty() {
+            let ids: Vec<i64> = active.iter().map(|r| r.id).collect();
+            return format!("would signal run {}", triggers::join_ids(&ids));
+        }
+        if a.trigger.to == Target::Running {
+            return "would be dropped: no run to signal".into();
+        }
         let start = format!("would start a run of {}", a.name);
         let Some(limit) = wf.frontmatter.concurrency.map(|n| n as usize) else { return start };
-        let active = self.active_runs(&a.name, &a.workflow_path).map(|r| r.len()).unwrap_or(0);
+        let active = active.len();
         let ahead = self.pending_of(a).len();
         if active + ahead < limit {
             start
@@ -272,39 +280,50 @@ impl Engine {
         }
     }
 
-    /// Settle what finished runs held, once per run: each claimed delivery
-    /// naming the run becomes `done` if it succeeded, else `failed`
-    /// (notified). Called every trigger-loop tick, so runs ended by recovery
-    /// before the daemon was up are settled too.
+    /// Settle the claimed deliveries whose run has ended (with several
+    /// runs, the first to end): `done` if it succeeded, else `failed`
+    /// (notified). Then mark finished runs' ends handled. Called every
+    /// trigger-loop tick, so runs ended by recovery before the daemon was up
+    /// are settled too.
     pub(crate) fn settle_ended(&self) {
+        let settled = self.with_store(|store| {
+            let mut failed = Vec::new();
+            for d in store.deliveries_in(state::CLAIMED)? {
+                let mut ended = Vec::new();
+                for id in &d.run_ids {
+                    if let Some(run) = store.get_run(*id, false).map_err(crate::api::internal)? {
+                        if run.finished_at.is_some() {
+                            ended.push(run);
+                        }
+                    }
+                }
+                let Some(run) = ended.into_iter().min_by(|a, b| a.finished_at.cmp(&b.finished_at)) else { continue };
+                let to = if run.status == RunStatus::Succeeded { state::DONE } else { state::FAILED };
+                if store.move_delivery(d.id, state::CLAIMED, to, None)? && to == state::FAILED {
+                    let event = store.bus_event(d.event_id)?;
+                    failed.push((d, event, run));
+                }
+            }
+            Ok(failed)
+        });
+        match settled {
+            Ok(failed) => {
+                for (d, event, run) in failed {
+                    let (topic, payload) = event.map(|e| (e.topic, e.payload)).unwrap_or_default();
+                    let first = payload.lines().next().unwrap_or("").trim();
+                    let why = run.reason.as_ref().or(run.summary.as_ref()).map(|r| format!(" ({r})")).unwrap_or_default();
+                    crate::orchestrator::notify_delivery(
+                        &format!("{} didn't handle {topic}", d.workflow),
+                        &format!("run {} {}{why}; event {} \"{first}\" is parked: `tome events retry {}`", run.id, run.status.as_str(), d.event_id, d.event_id),
+                    );
+                }
+            }
+            Err(e) => eprintln!("tome daemon: settling deliveries failed: {}", e.message),
+        }
         let Ok(ids) = self.with_store(|store| store.unannounced_ends()) else { return };
         for id in ids {
-            let settled = self.with_store(|store| {
-                let run = store.require_run(id)?;
-                let to = if run.status == RunStatus::Succeeded { state::DONE } else { state::FAILED };
-                let mut failed = Vec::new();
-                for d in store.deliveries_in(state::CLAIMED)?.into_iter().filter(|d| d.run_ids.contains(&id)) {
-                    if store.move_delivery(d.id, state::CLAIMED, to, None)? && to == state::FAILED {
-                        let event = store.bus_event(d.event_id)?;
-                        failed.push((d, event));
-                    }
-                }
-                store.set_announced(id, ENDED)?;
-                Ok((run, failed))
-            });
-            match settled {
-                Ok((run, failed)) => {
-                    for (d, event) in failed {
-                        let (topic, payload) = event.map(|e| (e.topic, e.payload)).unwrap_or_default();
-                        let first = payload.lines().next().unwrap_or("").trim();
-                        let why = run.reason.as_ref().or(run.summary.as_ref()).map(|r| format!(" ({r})")).unwrap_or_default();
-                        crate::orchestrator::notify_delivery(
-                            &format!("{} didn't handle {topic}", d.workflow),
-                            &format!("run {} {}{why}; event {} \"{first}\" is parked: `tome events retry {}`", run.id, run.status.as_str(), d.event_id, d.event_id),
-                        );
-                    }
-                }
-                Err(e) => eprintln!("tome daemon: settling deliveries of run {id} failed: {}", e.message),
+            if let Err(e) = self.with_store(|store| store.set_announced(id, ENDED)) {
+                eprintln!("tome daemon: marking the end of run {id} failed: {}", e.message);
             }
         }
     }
@@ -338,8 +357,10 @@ impl Engine {
     /// Hand out one subscription's pending deliveries in publish order.
     /// With `to: new`, each is claimed for a new run before it starts,
     /// while the workflow's concurrency has room; the rest stay pending.
+    /// With `to: running` it's claimed by the running runs it's signalled
+    /// to, or `done` if there are none; `running-or-new` starts a run then.
     fn drain(&self, a: &Armed) {
-        if a.trigger.to != Target::New || self.stalled.lock().unwrap_or_else(|p| p.into_inner()).contains_key(&a.key()) {
+        if self.stalled.lock().unwrap_or_else(|p| p.into_inner()).contains_key(&a.key()) {
             return;
         }
         let pending = self.pending_of(a);
@@ -348,7 +369,8 @@ impl Engine {
         }
         // An invalid workflow claims nothing; re-arming records why.
         let Ok(wf) = triggers::load(&a.workflow_path, a.project.as_deref()) else { return };
-        let limit = wf.frontmatter.concurrency.map(|n| n as usize);
+        // Signalling running runs isn't held to the limit; starting them is.
+        let limit = wf.frontmatter.concurrency.map(|n| n as usize).filter(|_| a.trigger.to == Target::New);
         for d in pending {
             if let Some(limit) = limit {
                 let active = self.active_runs(&a.name, &a.workflow_path).map_or(usize::MAX, |r| r.len());
@@ -369,9 +391,10 @@ impl Engine {
     }
 
     /// Claim a pending delivery for `a` and fire the trigger with it. Returns
-    /// the fire and whether a run holds the delivery now (a run that was
-    /// recorded does, even if it failed to launch); if none does it's
-    /// pending again. `None` if it was taken meanwhile.
+    /// the fire and whether the delivery is dealt with: held by a run (one
+    /// that was recorded does, even if it failed to launch), or `done` for
+    /// want of a run to signal. Otherwise it's pending again. `None` if it
+    /// was taken meanwhile.
     pub(crate) fn take(&self, a: &Armed, d: &Delivery, synthetic: bool) -> Option<(Fired, bool)> {
         let event = self.with_store(|store| store.bus_event(d.event_id)).ok().flatten()?;
         if !self.with_store(|store| store.move_delivery(d.id, state::PENDING, state::CLAIMED, Some(&[]))).unwrap_or(false) {
@@ -386,7 +409,10 @@ impl Engine {
         });
         let held = self.with_store(|store| store.delivery(d.id)).ok().flatten().is_some_and(|d| !d.run_ids.is_empty());
         if !held {
-            let _ = self.with_store(|store| store.move_delivery(d.id, state::CLAIMED, state::PENDING, Some(&[])));
+            // No run to signal: nothing more to do with it.
+            let to = if fired.outcome == outcome::NO_TARGET { state::DONE } else { state::PENDING };
+            let _ = self.with_store(|store| store.move_delivery(d.id, state::CLAIMED, to, Some(&[])));
+            return Some((fired, to == state::DONE));
         }
         Some((fired, held))
     }
