@@ -2,6 +2,8 @@
 
 Source feature: [feature.md](./feature.md)
 
+> All tasks are done: implemented as 008-1 to 008-5 directly on main (e35f2f4, ac41290, 754a335, 0d709a9, 9b9ed69).
+
 ## Tasks
 
 ### 008-1. Layout setting and resolution
