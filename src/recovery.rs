@@ -1,11 +1,15 @@
 //! Crash recovery, run once at daemon startup.
 //!
 //! A run is only driven while the daemon that started it is alive, so any
-//! run still queued or running when a daemon starts was orphaned by a crash,
-//! a kill or a reboot. Those runs are marked failed with reason
-//! `daemon_restart`, as are their running workers. Their worktrees are left in place for inspection
-//! (`tome gc` removes them later), and the hooks give later features a place
-//! to kill leftover agent sessions and tell the user.
+//! run still running when a daemon starts was orphaned by a crash, a kill or
+//! a reboot. Those runs are marked failed with reason `daemon_restart`, as
+//! are their running workers. Their worktrees are left in place for
+//! inspection (`tome gc` removes them later), and the hooks give later
+//! features a place to kill leftover agent sessions and tell the user.
+//!
+//! Queued runs haven't started anything yet, so they survive: they keep
+//! their workflow snapshot, and the daemon starts them once their workflow
+//! is idle.
 
 use crate::store::{Run, RunStatus, Session, StepEvent, Store, Worker, WorkerStatus};
 
@@ -21,11 +25,11 @@ pub trait RecoveryHooks {
     fn notify(&self, _run: &Run, _sessions: &[Session], _cut: &[Worker]) {}
 }
 
-/// Fail every in-progress run. Returns the recovered runs (in their final
-/// state).
+/// Fail every running run; queued runs stay queued. Returns the recovered
+/// runs (in their final state).
 pub fn recover(store: &mut Store, hooks: &dyn RecoveryHooks) -> anyhow::Result<Vec<Run>> {
     let mut recovered = Vec::new();
-    for run in store.in_progress_runs()? {
+    for run in store.in_progress_runs()?.into_iter().filter(|r| r.status == RunStatus::Running) {
         let sessions = store.sessions(run.id)?;
         hooks.kill_sessions(&run, &sessions);
         let cut = store.end_active_workers(run.id, WorkerStatus::Failed, REASON)?;
@@ -65,11 +69,11 @@ mod tests {
     }
 
     #[test]
-    fn fails_in_progress_runs_and_calls_hooks() {
+    fn fails_running_runs_and_calls_hooks() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open_in_memory(dir.path()).unwrap();
         let params = Map::new();
-        let mut new = || {
+        let mut new = |status| {
             store
                 .create_run(
                     NewRun {
@@ -77,15 +81,15 @@ mod tests {
                         workflow_path: None,
                         project_path: None,
                         params: &params,
-                        status: RunStatus::Running,
+                        status,
                         trigger: None,
                     },
-                    |_| String::new(),
+                    |id| format!("snapshot {id}"),
                 )
                 .unwrap()
                 .id
         };
-        let (done, live) = (new(), new());
+        let (done, live, queued) = (new(RunStatus::Running), new(RunStatus::Running), new(RunStatus::Queued));
         store.finish_run(done, RunStatus::Succeeded, None, None).unwrap();
         store.report_step(live, "Build", StepEvent::Start, None).unwrap();
         store
@@ -117,6 +121,9 @@ mod tests {
         assert_eq!(store.steps(live).unwrap()[0].status, "failed");
         assert_eq!(store.worktrees(live).unwrap().len(), 1, "worktrees are kept");
         assert_eq!(store.get_run(done, false).unwrap().unwrap().status, RunStatus::Succeeded);
+        let queued = store.get_run(queued, true).unwrap().unwrap();
+        assert_eq!(queued.status, RunStatus::Queued, "queued runs survive");
+        assert_eq!(queued.workflow_snapshot, Some(format!("snapshot {}", queued.id)));
         // Nothing left to recover.
         assert!(recover(&mut store, &hooks).unwrap().is_empty());
     }

@@ -117,7 +117,7 @@ fn trigger_validation() {
     assert_eq!(err["line"], 4);
     assert!(err["message"].as_str().unwrap().contains("absolute or `~/`"), "{err}");
 
-    write(&project, "bad.md", &wf("bad", "  - cron: \"0 25 * * *\"\n  - file: \"*.md\"\n    to: running\n"));
+    write(&project, "bad.md", &wf("bad", "  - cron: \"0 25 * * *\"\n  - file: \"*.md\"\n    to: running\n    while_running: mute\n"));
     let (code, v) = env.json(&["validate", "bad"]);
     assert_eq!(code, 2);
     let lines: Vec<i64> = v["workflows"][0]["errors"].as_array().unwrap().iter().map(|e| e["line"].as_i64().unwrap()).collect();

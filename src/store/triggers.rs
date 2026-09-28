@@ -16,7 +16,8 @@ pub struct Fire {
     pub project_path: Option<String>,
     pub trigger_index: i64,
     pub trigger: String,
-    /// `started`, `signalled`, `no_target`, `muted`, `rejected` or `error`.
+    /// `started`, `queued`, `merged`, `signalled`, `no_target`, `muted`,
+    /// `rejected` or `error`.
     pub outcome: String,
     pub message: Option<String>,
     pub run_ids: Vec<i64>,

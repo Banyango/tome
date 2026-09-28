@@ -374,6 +374,7 @@ pub struct FileTrigger {
     #[serde(serialize_with = "ser_secs")]
     pub debounce: Duration,
     pub ignore: Vec<String>,
+    pub while_running: WhileRunning,
     #[serde(skip)]
     pub glob: crate::glob::Glob,
     #[serde(skip)]
@@ -396,6 +397,31 @@ impl FileEvent {
         match self {
             FileEvent::Created => "created",
             FileEvent::Modified => "modified",
+        }
+    }
+}
+
+/// What a file trigger does with changes made while a run of its workflow
+/// is active (`while_running:`). Only applies to `to: new`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WhileRunning {
+    /// Queue one run that starts once the workflow is idle; later batches
+    /// merge into it.
+    #[default]
+    Queue,
+    /// Start a run for each batch, through `concurrency` / `on_conflict`.
+    Parallel,
+    /// Drop the changes.
+    Mute,
+}
+
+impl WhileRunning {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WhileRunning::Queue => "queue",
+            WhileRunning::Parallel => "parallel",
+            WhileRunning::Mute => "mute",
         }
     }
 }
@@ -437,17 +463,14 @@ impl Trigger {
         }
     }
 
-    /// Where a fire actually goes: file triggers never signal (their
-    /// workflow is muted while it runs).
-    pub fn effective_target(&self) -> Target {
-        match (&self.kind, self.to) {
-            (TriggerKind::File(_), Target::RunningOrNew) => Target::New,
-            (_, to) => to,
-        }
+    /// Whether this trigger drops events while a run of its workflow is
+    /// active (a `to: new` file trigger with `while_running: mute`).
+    pub fn mutes_while_running(&self) -> bool {
+        self.to == Target::New && matches!(&self.kind, TriggerKind::File(f) if f.while_running == WhileRunning::Mute)
     }
 }
 
-pub const TRIGGER_KEYS: &[&str] = &["file", "cron", "on", "debounce", "ignore", "to", "params"];
+pub const TRIGGER_KEYS: &[&str] = &["file", "cron", "on", "debounce", "ignore", "while_running", "to", "params"];
 pub const TRIGGER_FIELDS: &[&str] = &["kind", "paths", "event", "time", "scheduled"];
 const DEFAULT_DEBOUNCE: Duration = Duration::from_secs(2);
 
@@ -540,7 +563,7 @@ fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Opti
             return None;
         }
         (None, Some(cron)) => {
-            for k in ["on", "debounce", "ignore"] {
+            for k in ["on", "debounce", "ignore", "while_running"] {
                 if get(k).is_some() {
                     n(errors, format!("`{k}` only applies to file triggers"));
                 }
@@ -626,10 +649,24 @@ fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Opti
                     Err(e) => n(errors, format!("`ignore`: {e}")),
                 }
             }
-            if to == Target::Running {
-                n(errors, "`to: running` can't be used on a file trigger: file triggers are muted while their workflow runs".into());
-            }
-            TriggerKind::File(FileTrigger { file: pattern.to_string(), on, debounce, ignore, glob: glob?, ignore_globs })
+            let while_running = match get("while_running") {
+                None => WhileRunning::default(),
+                Some(v) => {
+                    if to != Target::New {
+                        n(errors, format!("`while_running` only applies to `to: new`, not `to: {}`", to.as_str()));
+                    }
+                    match v.as_str() {
+                        Some("queue") => WhileRunning::Queue,
+                        Some("parallel") => WhileRunning::Parallel,
+                        Some("mute") => WhileRunning::Mute,
+                        _ => {
+                            n(errors, "`while_running` must be `queue`, `parallel` or `mute`".into());
+                            WhileRunning::default()
+                        }
+                    }
+                }
+            };
+            TriggerKind::File(FileTrigger { file: pattern.to_string(), on, debounce, ignore, while_running, glob: glob?, ignore_globs })
         }
     };
     Some(Trigger { kind, to, params, line })
@@ -1063,6 +1100,13 @@ impl Workflow {
         out
     }
 
+    /// The workflow as saved with a run whose placeholders are filled in
+    /// when it starts: [`render_snapshot`](Self::render_snapshot) without the
+    /// substitution. [`parse`] reads it back.
+    pub fn template_snapshot(&self) -> String {
+        format!("---\n{}\n---\n{}", self.frontmatter_text, self.body)
+    }
+
     /// The resolved workflow as saved with a run: the original frontmatter
     /// followed by the substituted body.
     pub fn render_snapshot(&self, params: &Map<String, Value>, run_id: &str, trigger: &Map<String, Value>) -> String {
@@ -1378,10 +1422,28 @@ triggers:
         assert_eq!((f.file.as_str(), f.on.as_slice(), f.debounce), ("specs/**/*.md", &[FileEvent::Created][..], Duration::from_secs(5)));
         assert!(f.glob.matches("specs/a/b.md") && f.ignore_globs[0].matches("specs/drafts/x.md"));
         assert_eq!((t[1].to, t[1].line), (Target::New, 8));
+        assert_eq!(f.while_running, WhileRunning::Queue, "the default");
+        let parallel = p("---\nname: t\ntriggers:\n  - file: \"*.md\"\n    while_running: parallel\n---\n").unwrap();
+        let TriggerKind::File(f) = &parallel.frontmatter.triggers[0].kind else { panic!() };
+        assert_eq!(f.while_running, WhileRunning::Parallel);
+        let running = p("---\nname: t\ntriggers:\n  - file: \"*.md\"\n    to: running\n---\n").unwrap();
+        assert_eq!(running.frontmatter.triggers[0].to, Target::Running, "file triggers take any `to:`");
         assert!(matches!(t[2].kind, TriggerKind::Cron { .. }));
         assert_eq!((t[2].to, t[2].line, t[2].params["base"].clone()), (Target::RunningOrNew, 13, json!("dev")));
         let v = serde_json::to_value(&t[2]).unwrap();
         assert_eq!((v["kind"].as_str(), v["cron"].as_str(), v["to"].as_str()), (Some("cron"), Some("0 9 * * 1-5"), Some("running-or-new")));
+    }
+
+    #[test]
+    fn template_snapshots_render_like_the_workflow() {
+        let wf = p(TRIGGERS).unwrap();
+        let params = wf.resolve_params(&[("spec".into(), "s".into())], true).unwrap();
+        let ev = json!({"kind": "file", "paths": [{"path": "specs/a.md", "event": "created"}]});
+        let ev = ev.as_object().unwrap();
+        let template = wf.template_snapshot();
+        assert!(template.contains("{{trigger.paths}}"));
+        let back = parse(Path::new("t.md"), &template).unwrap();
+        assert_eq!(back.render_snapshot(&params, "7", ev), wf.render_snapshot(&params, "7", ev));
     }
 
     #[test]
@@ -1401,7 +1463,9 @@ triggers:
         let cases = [
             ("  - cron: \"61 * * * *\"\n    params: {need: a}\n", "minute `61` is out of range"),
             ("  - file: \"a[b\"\n    params: {need: a}\n", "unclosed `[`"),
-            ("  - file: \"*.md\"\n    to: running\n    params: {need: a}\n", "`to: running` can't be used on a file trigger"),
+            ("  - file: \"*.md\"\n    while_running: later\n    params: {need: a}\n", "`while_running` must be"),
+            ("  - cron: \"* * * * *\"\n    while_running: mute\n    params: {need: a}\n", "`while_running` only applies to file triggers"),
+            ("  - file: \"*.md\"\n    to: running-or-new\n    while_running: mute\n    params: {need: a}\n", "`while_running` only applies to `to: new`"),
             ("  - cron: \"* * * * *\"\n", "leaves required param `need` unfilled"),
             ("  - cron: \"* * * * *\"\n    params: {need: a, n: lots}\n", "`lots` is not a valid int"),
             ("  - cron: \"* * * * *\"\n    params: {need: a, other: 1}\n", "unknown param `other`"),

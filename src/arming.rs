@@ -256,8 +256,10 @@ impl Engine {
                 let event = Event { scheduled: Some(at), ..Default::default() };
                 self.fire_armed(&armed, event);
             }
-            let active = |a: &Armed| self.active_runs(&a.name, &a.workflow_path).is_ok_and(|r| !r.is_empty());
-            for (armed, event) in files.poll(&current, std::time::Instant::now(), active) {
+            let muted = |a: &Armed| {
+                a.trigger.mutes_while_running() && self.active_runs(&a.name, &a.workflow_path).is_ok_and(|r| !r.is_empty())
+            };
+            for (armed, event) in files.poll(&current, std::time::Instant::now(), muted) {
                 self.fire_armed(&armed, event);
             }
             *self.file_polling.lock().unwrap_or_else(|p| p.into_inner()) = files.polling();
