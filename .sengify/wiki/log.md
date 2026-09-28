@@ -16,3 +16,4 @@
 - 2026-09-27 21:02 — update — 007-agent-start-handshake implemented — pages touched: features/007-agent-start-handshake/tasks.md
 - 2026-09-27 21:27 — update — 008-session-layout implemented — pages touched: features/008-session-layout/tasks.md
 - 2026-09-28 08:06 — update — 008-session-layout: what changed and potential follow-ups — pages touched: features/008-session-layout/tasks.md, entities/session.md
+- 2026-09-28 09:43 — feature — 009 re-scoped from project queues to a project message bus (topics, fan-out deliveries, `on:` triggers, run lifecycle events); directory renamed to 009-message-bus — pages touched: features/009-message-bus/feature.md, features/009-message-bus/tasks.md, entities/event.md (new), entities/trigger.md, entities/queue.md, index.md

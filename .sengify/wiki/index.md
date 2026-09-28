@@ -9,6 +9,7 @@
 - [Action](entities/action.md)
 - [Backend](entities/backend.md)
 - [Daemon](entities/daemon.md)
+- [Event](entities/event.md)
 - [Group](entities/group.md)
 - [Harness Adapter](entities/harness-adapter.md)
 - [Notification](entities/notification.md)
@@ -32,4 +33,4 @@
 - [006 - File triggers while a run is active](features/006-file-trigger-while-running/feature.md)
 - [007 - Agent start handshake](features/007-agent-start-handshake/feature.md)
 - [008 - Session layout](features/008-session-layout/feature.md)
-- [009 - Project queues and queue triggers](features/009-project-queues/feature.md)
+- [009 - Project message bus and topic triggers](features/009-message-bus/feature.md)

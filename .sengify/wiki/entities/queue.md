@@ -7,18 +7,18 @@ A named tome [[primitive]] that agents push messages or tasks onto and pull them
 ## Attributes
 
 - name
-- scope: a [[run]] (feature 003), or a project (feature 009); project queues outlive runs and are created by their first push
+- scope: a [[run]] (feature 003); project-wide messaging is the message bus instead (see [[event]], feature 009)
 - messages: text up to ~1 MiB with id, sender and timestamp; delivered by claim and ack
-- message states (project queues): `pending`, `claimed`, `done`, `failed` (parked when the claiming run fails; `tome queue retry` requeues it)
 
 ## Relationships
 
-- [[trigger]]: a message on a project queue fires `queue:` triggers, which start one run per message
+- [[trigger]]: signals to running runs go onto the run's `events` queue
+- [[event]]: bus events signalled to a run with `to: running` arrive on its `events` queue
 - [[action]]: the send-message action pushes to a queue
 
 ## Planned Features
 
-- Project queues and queue triggers _(feature 009)_
+- _(feature 009 was re-scoped from project queues to a project message bus; see [[event]])_
 
 ## Sources
 
@@ -26,4 +26,4 @@ A named tome [[primitive]] that agents push messages or tasks onto and pull them
 - .sengify/sources/interview-2026-09-26.md
 - .sengify/sources/feature-set-2026-09-26.md
 - features/003-primitives/feature.md
-- features/009-project-queues/feature.md
+- features/009-message-bus/feature.md
