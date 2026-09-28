@@ -12,6 +12,10 @@
 //! else `backend:` in `~/.tome/config.yaml`, else cmux when the daemon runs
 //! inside cmux and tmux otherwise.
 //!
+//! Its [`Layout`] decides where in that backend its sessions go, and
+//! resolves the same way (`defaults.layout`, `TOME_LAYOUT`, `layout:`), else
+//! `tab`.
+//!
 //! Either way the session's command is a launcher script that sets the
 //! agent's environment, captures its output to a log and `exec`s it, so the
 //! session ends when the agent does.
@@ -69,6 +73,64 @@ impl Kind {
     }
 }
 
+/// Where a run's sessions go in their backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// A tab in one split of the project's tome workspace (tmux: a window
+    /// in its session).
+    Tab,
+    /// Its own split in the project's tome workspace (tmux: a pane in its
+    /// session).
+    Split,
+    /// Its own workspace (tmux: its own session).
+    Workspace,
+}
+
+impl Layout {
+    pub const NAMES: &'static [&'static str] = &["tab", "split", "workspace"];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Layout::Tab => "tab",
+            Layout::Split => "split",
+            Layout::Workspace => "workspace",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Layout> {
+        match s {
+            "tab" => Some(Layout::Tab),
+            "split" => Some(Layout::Split),
+            "workspace" => Some(Layout::Workspace),
+            _ => None,
+        }
+    }
+
+    /// The layout for a run whose workflow asks for `requested` (see the
+    /// module docs for the order).
+    pub fn choose(requested: Option<&str>) -> CliResult<Layout> {
+        let env = std::env::var("TOME_LAYOUT").ok().filter(|s| !s.is_empty());
+        let (name, source) = match (requested, env) {
+            (Some(r), _) => (r.to_string(), "the workflow's `defaults.layout`"),
+            (None, Some(e)) => (e, "TOME_LAYOUT"),
+            (None, None) => match harness::config_str("layout")? {
+                Some(c) => (c, "`layout` in the tome config"),
+                None => return Ok(Layout::Tab),
+            },
+        };
+        Layout::parse(&name).ok_or_else(|| {
+            CliError::invalid(format!("unknown session layout `{name}` (from {source})"))
+                .with_hint(format!("use {}", Layout::NAMES.join(", ")))
+        })
+    }
+
+    /// A recorded session's layout; sessions from before layouts had their
+    /// own workspace.
+    pub fn of(s: &Session) -> Layout {
+        s.layout.as_deref().and_then(Layout::parse).unwrap_or(Layout::Workspace)
+    }
+}
+
 /// A backend to start sessions on.
 pub enum Backend {
     Tmux(Tmux),
@@ -107,6 +169,7 @@ impl Backend {
             backend: self.kind().as_str().to_string(),
             socket,
             handle,
+            layout: None,
             harness: None,
             created_at: String::new(),
         })

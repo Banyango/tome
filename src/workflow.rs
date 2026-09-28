@@ -26,7 +26,7 @@ use std::time::Duration;
 
 pub const TOP_LEVEL_KEYS: &[&str] =
     &["name", "description", "triggers", "params", "defaults", "concurrency", "on_conflict", "orchestrator"];
-pub const DEFAULTS_KEYS: &[&str] = &["backend", "harness", "orchestrator_harness", "timeout", "on_failure", "start_timeout"];
+pub const DEFAULTS_KEYS: &[&str] = &["backend", "layout", "harness", "orchestrator_harness", "timeout", "on_failure", "start_timeout"];
 pub const PARAM_KEYS: &[&str] = &["type", "default", "description"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -118,6 +118,9 @@ pub struct ParamSpec {
 pub struct Defaults {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    /// `tab`, `split` or `workspace`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -889,6 +892,13 @@ fn parse_defaults(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> 
         };
         match key {
             "backend" => d.backend = as_string(errors),
+            "layout" => match as_string(errors) {
+                Some(l) if crate::session::Layout::parse(&l).is_none() => errors.push(Diagnostic::new(
+                    line,
+                    format!("unknown `defaults.layout` `{l}` (expected one of: {})", crate::session::Layout::NAMES.join(", ")),
+                )),
+                l => d.layout = l,
+            },
             "harness" => d.harness = as_string(errors),
             "orchestrator_harness" => d.orchestrator_harness = as_string(errors),
             "on_failure" => d.on_failure = as_string(errors),
@@ -1370,6 +1380,18 @@ Retry up to {{params.retries}} times on {{params.ticket}}.
         assert_eq!(wf.frontmatter.on_conflict, Some(OnConflict::Queue));
         assert_eq!(wf.body_line, 18);
         assert!(wf.body.starts_with("## Implement"));
+    }
+
+    #[test]
+    fn layout_is_tab_split_or_workspace() {
+        let with = |v: &str| p(&format!("---\nname: x\ndefaults:\n  layout: {v}\n---\n## A\n"));
+        for ok in ["tab", "split", "workspace"] {
+            assert_eq!(with(ok).unwrap().frontmatter.defaults.layout.as_deref(), Some(ok));
+        }
+        for bad in ["tabs", "[tab]"] {
+            let err = with(bad).unwrap_err();
+            assert!(err.errors[0].message.contains("defaults.layout"), "{bad}: {:?}", err.errors);
+        }
     }
 
     #[test]

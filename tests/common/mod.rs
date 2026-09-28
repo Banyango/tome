@@ -13,6 +13,8 @@ use std::process::{Command, Output};
 /// app the tests run in; either way desktop notifications are off unless a
 /// test sets `TOME_NOTIFY` in `vars`. The start handshake is off too (the
 /// idle harness never calls tome) unless a test sets `TOME_START_TIMEOUT`.
+/// Sessions get their own tmux session or cmux workspace (`TOME_LAYOUT=
+/// workspace`), so tests can find them by name, unless a test changes it.
 pub struct Env {
     pub dir: tempfile::TempDir,
     /// `TOME_BACKEND` for tome commands; empty leaves it unset (auto).
@@ -43,7 +45,11 @@ impl Env {
     fn with_backend(backend: &'static str) -> Env {
         // Keep paths short: Unix socket paths are limited to ~104 bytes.
         let dir = tempfile::Builder::new().prefix("tm").tempdir_in("/tmp").unwrap();
-        let vars = vec![("TOME_NOTIFY".into(), "off".into()), ("TOME_START_TIMEOUT".into(), "off".into())];
+        let vars = vec![
+            ("TOME_NOTIFY".into(), "off".into()),
+            ("TOME_START_TIMEOUT".into(), "off".into()),
+            ("TOME_LAYOUT".into(), "workspace".into()),
+        ];
         let env = Env { dir, backend, vars };
         std::fs::create_dir_all(env.project()).unwrap();
         std::fs::create_dir_all(env.home()).unwrap();
@@ -120,6 +126,7 @@ impl Env {
             .env_remove("TMUX")
             .env("TOME_TMUX_SOCKET", self.tmux_socket())
             .env_remove("TOME_BACKEND")
+            .env_remove("TOME_LAYOUT")
             .envs(Some(("TOME_BACKEND", self.backend)).filter(|(_, b)| !b.is_empty()))
             .envs(self.vars.iter().map(|(k, v)| (k, v)))
             .current_dir(self.project());

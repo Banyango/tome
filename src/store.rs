@@ -180,6 +180,8 @@ const MIGRATIONS: &[&str] = &[
         registered_at TIMESTAMP NOT NULL
     );
     ",
+    // 6: where in its backend a session went (tab, split or workspace)
+    "ALTER TABLE sessions ADD COLUMN layout VARCHAR;",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -337,6 +339,9 @@ pub struct Session {
     pub socket: Option<String>,
     /// The backend's id for the session, when names aren't enough (cmux).
     pub handle: Option<String>,
+    /// `tab`, `split` or `workspace`; `None` for sessions from before
+    /// layouts (which had their own workspace).
+    pub layout: Option<String>,
     pub harness: Option<String>,
     pub created_at: String,
 }
@@ -820,8 +825,8 @@ impl Store {
     /// Record a session (its `created_at` is set to now).
     pub fn add_session(&mut self, s: &Session) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO sessions (run_id, name, role, backend, socket, handle, harness, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            params![s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.harness, now()],
+            "INSERT OR REPLACE INTO sessions (run_id, name, role, backend, socket, handle, layout, harness, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.layout, s.harness, now()],
         )?;
         Ok(())
     }
@@ -841,7 +846,7 @@ impl Store {
     fn query_sessions(&self, rest: &str, args: &[&dyn duckdb::ToSql]) -> anyhow::Result<Vec<Session>> {
         let mut stmt = self
             .conn
-            .prepare(&format!("SELECT s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.harness, s.created_at FROM sessions s {rest}"))?;
+            .prepare(&format!("SELECT s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.layout, s.harness, s.created_at FROM sessions s {rest}"))?;
         let rows = stmt.query_map(args, |r| {
             Ok(Session {
                 run_id: r.get(0)?,
@@ -850,8 +855,9 @@ impl Store {
                 backend: r.get(3)?,
                 socket: r.get(4)?,
                 handle: r.get(5)?,
-                harness: r.get(6)?,
-                created_at: fmt_ts(r.get(7)?),
+                layout: r.get(6)?,
+                harness: r.get(7)?,
+                created_at: fmt_ts(r.get(8)?),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)

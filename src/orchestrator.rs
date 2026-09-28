@@ -9,7 +9,7 @@ use crate::harness::{self, Harness, Vars};
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::recovery::RecoveryHooks;
-use crate::session::{self, Backend, Cmux, Kind, Launch, Tmux};
+use crate::session::{self, Backend, Cmux, Kind, Launch, Layout, Tmux};
 use crate::store::{Run, Session, Worker};
 use crate::workflow::{self, Frontmatter, Workflow};
 use std::fs;
@@ -36,6 +36,7 @@ pub fn harness_for(fm: &Frontmatter) -> CliResult<Harness> {
 pub struct Plan {
     pub harness: Harness,
     pub backend: Kind,
+    pub layout: Layout,
     pub session: String,
     pub title: String,
     pub cwd: PathBuf,
@@ -66,6 +67,7 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
     Ok(Plan {
         harness: harness_for(&wf.frontmatter)?,
         backend: Kind::choose(wf.frontmatter.defaults.backend.as_deref())?,
+        layout: Layout::choose(wf.frontmatter.defaults.layout.as_deref())?,
         session: session::run_session_name(run.id, &run.workflow_name, ROLE),
         title: format!("tome: {} #{}", run.workflow_name, run.id),
         cwd,
@@ -127,7 +129,13 @@ pub fn launch(run: &Run, plan: &Plan) -> CliResult<Session> {
         script: &dir.join("orchestrator.sh"),
         log: &dir.join(format!("{ROLE}.log")),
     })?;
-    Ok(Session { run_id: run.id, role: ROLE.to_string(), harness: Some(plan.harness.name.clone()), ..session })
+    Ok(Session {
+        run_id: run.id,
+        role: ROLE.to_string(),
+        layout: Some(plan.layout.as_str().to_string()),
+        harness: Some(plan.harness.name.clone()),
+        ..session
+    })
 }
 
 /// What a run's agents need to call back into tome.
@@ -138,7 +146,7 @@ pub fn session_env(run_id: i64) -> Vec<(String, String)> {
         ("TOME_HOME".to_string(), paths::tome_home().to_string_lossy().into_owned()),
     ];
     // So that the agent's tome commands reach the same daemon and servers.
-    for key in ["TOME_TMUX_SOCKET", "TOME_BACKEND"] {
+    for key in ["TOME_TMUX_SOCKET", "TOME_BACKEND", "TOME_LAYOUT"] {
         if let Some(v) = std::env::var(key).ok().filter(|v| !v.is_empty()) {
             env.push((key.to_string(), v));
         }

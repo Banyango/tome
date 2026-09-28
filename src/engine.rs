@@ -118,10 +118,11 @@ impl Engine {
     pub(crate) fn start(&self, p: &Value) -> CliResult<Run> {
         let wf = api::load_workflow(p)?;
         let fm = &wf.frontmatter;
-        // An unknown harness or backend is a bad request: refuse before
-        // recording a run.
+        // An unknown harness, backend or layout is a bad request: refuse
+        // before recording a run.
         orchestrator::harness_for(fm)?;
         session::Kind::choose(fm.defaults.backend.as_deref())?;
+        session::Layout::choose(fm.defaults.layout.as_deref())?;
         let run = self.with_store(|store| {
             let status = match fm.concurrency {
                 _ if triggers::waits_for_idle(p.get("cause")) => RunStatus::Queued,

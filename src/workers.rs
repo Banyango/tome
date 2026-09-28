@@ -14,7 +14,7 @@ use crate::harness::{self, shell_quote, Vars};
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::paths;
-use crate::session::{self, Backend, Kind, Launch};
+use crate::session::{self, Backend, Kind, Launch, Layout};
 use crate::store::{self, NewWorker, NewWorktree, Pulled, Run, RunStatus, Store, Worker, WorkerEnd, WorkerStatus};
 use crate::worktree;
 use serde_json::{json, Value};
@@ -287,9 +287,13 @@ impl Engine {
         keep_open: bool,
     ) -> CliResult<store::Session> {
         let recorded = self.recorded_sessions(run.id);
-        let kind = match recorded.iter().find(|s| s.role == orchestrator::ROLE).and_then(|s| Kind::parse(&s.backend)) {
-            Some(kind) => kind,
-            None => Kind::choose(orchestrator::snapshot(run)?.frontmatter.defaults.backend.as_deref())?,
+        let orch = recorded.iter().find(|s| s.role == orchestrator::ROLE);
+        let (kind, layout) = match orch.and_then(|s| Kind::parse(&s.backend)) {
+            Some(kind) => (kind, Layout::of(orch.expect("found above"))),
+            None => {
+                let defaults = orchestrator::snapshot(run)?.frontmatter.defaults;
+                (Kind::choose(defaults.backend.as_deref())?, Layout::choose(defaults.layout.as_deref())?)
+            }
         };
         let dir = run_dir(run.id);
         fs::create_dir_all(&dir)?;
@@ -326,7 +330,7 @@ impl Engine {
             script: &dir.join(format!("worker-{name}.sh")),
             log: &log_file(run.id, name),
         })?;
-        Ok(store::Session { run_id: run.id, role: ROLE.to_string(), harness, ..s })
+        Ok(store::Session { run_id: run.id, role: ROLE.to_string(), layout: Some(layout.as_str().to_string()), harness, ..s })
     }
 
     /// `worker.report {run_id, name, event: done|fail, summary?}`
