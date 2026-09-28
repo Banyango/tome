@@ -459,19 +459,10 @@ impl Trigger {
         }
     }
 
-    /// Where a fire actually goes: file triggers never signal (their
-    /// workflow is muted while it runs).
-    pub fn effective_target(&self) -> Target {
-        match (&self.kind, self.to) {
-            (TriggerKind::File(_), Target::RunningOrNew) => Target::New,
-            (_, to) => to,
-        }
-    }
-
     /// Whether this trigger drops events while a run of its workflow is
-    /// active (a file trigger with `while_running: mute`).
+    /// active (a `to: new` file trigger with `while_running: mute`).
     pub fn mutes_while_running(&self) -> bool {
-        matches!(&self.kind, TriggerKind::File(f) if f.while_running == WhileRunning::Mute)
+        self.to == Target::New && matches!(&self.kind, TriggerKind::File(f) if f.while_running == WhileRunning::Mute)
     }
 }
 
@@ -670,9 +661,6 @@ fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Opti
                     }
                 }
             };
-            if to == Target::Running {
-                n(errors, "`to: running` can't be used on a file trigger: file triggers are muted while their workflow runs".into());
-            }
             TriggerKind::File(FileTrigger { file: pattern.to_string(), on, debounce, ignore, while_running, glob: glob?, ignore_globs })
         }
     };
@@ -1426,6 +1414,8 @@ triggers:
         let parallel = p("---\nname: t\ntriggers:\n  - file: \"*.md\"\n    while_running: parallel\n---\n").unwrap();
         let TriggerKind::File(f) = &parallel.frontmatter.triggers[0].kind else { panic!() };
         assert_eq!(f.while_running, WhileRunning::Parallel);
+        let running = p("---\nname: t\ntriggers:\n  - file: \"*.md\"\n    to: running\n---\n").unwrap();
+        assert_eq!(running.frontmatter.triggers[0].to, Target::Running, "file triggers take any `to:`");
         assert!(matches!(t[2].kind, TriggerKind::Cron { .. }));
         assert_eq!((t[2].to, t[2].line, t[2].params["base"].clone()), (Target::RunningOrNew, 13, json!("dev")));
         let v = serde_json::to_value(&t[2]).unwrap();
@@ -1449,7 +1439,6 @@ triggers:
         let cases = [
             ("  - cron: \"61 * * * *\"\n    params: {need: a}\n", "minute `61` is out of range"),
             ("  - file: \"a[b\"\n    params: {need: a}\n", "unclosed `[`"),
-            ("  - file: \"*.md\"\n    to: running\n    params: {need: a}\n", "`to: running` can't be used on a file trigger"),
             ("  - file: \"*.md\"\n    while_running: later\n    params: {need: a}\n", "`while_running` must be"),
             ("  - cron: \"* * * * *\"\n    while_running: mute\n    params: {need: a}\n", "`while_running` only applies to file triggers"),
             ("  - file: \"*.md\"\n    to: running-or-new\n    while_running: mute\n    params: {need: a}\n", "`while_running` only applies to `to: new`"),

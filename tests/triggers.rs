@@ -143,6 +143,7 @@ fn running_targets_are_signalled_through_the_events_queue() {
             "  - cron: \"*/5 * * * *\"\n    to: running\n",
             "  - cron: \"0 * * * *\"\n    to: running-or-new\n",
             "  - file: \"docs/*.md\"\n    to: running-or-new\n",
+            "  - file: \"docs/*.md\"\n    to: running\n",
         ),
         "## Watch\nWatch.\n",
     );
@@ -152,6 +153,7 @@ fn running_targets_are_signalled_through_the_events_queue() {
     let (code, v) = env.json(&["triggers", "fire", "watch", "--index", "0"]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["outcome"], "no_target");
+    assert_eq!(env.json(&["triggers", "fire", "watch", "--index", "3"]).1["outcome"], "no_target");
 
     // running-or-new with nothing running starts one.
     let (_, v) = env.json(&["triggers", "fire", "watch", "--index", "1"]);
@@ -169,8 +171,11 @@ fn running_targets_are_signalled_through_the_events_queue() {
         assert_eq!(v["outcome"], "signalled", "{v}");
         assert_eq!(v["run_ids"], serde_json::json!([run]));
     }
-    // A file trigger's running-or-new is `new`, so it's muted.
-    assert_eq!(env.json(&["triggers", "fire", "watch", "--index", "2"]).1["outcome"], "muted");
+    // File triggers signal too, with the changed paths.
+    for index in ["2", "3"] {
+        let (_, v) = env.json(&["triggers", "fire", "watch", "--index", index, "--path", "docs/new.md"]);
+        assert_eq!((v["outcome"].as_str(), &v["run_ids"]), (Some("signalled"), &serde_json::json!([run])), "{v}");
+    }
 
     let typed = env.home().join("typed.txt");
     common::eventually("nudge typed", || {
@@ -188,10 +193,15 @@ fn running_targets_are_signalled_through_the_events_queue() {
     assert_eq!(body["trigger"], "cron */5 * * * *");
     assert_eq!(body["event"], "scheduled");
     assert_eq!(msg["sender"], "trigger");
+    pull(&env);
+    let msg = pull(&env);
+    let body: Value = serde_json::from_str(msg["body"].as_str().unwrap()).unwrap();
+    assert_eq!((body["kind"].as_str(), body["trigger"].as_str()), (Some("file"), Some("file docs/*.md")));
+    assert_eq!(body["paths"], serde_json::json!([{ "path": "docs/new.md", "event": "modified" }]));
 
     let (_, v) = env.json(&["query", "SELECT count(*) FROM worker_events WHERE event = 'trigger'"]);
-    assert_eq!(v["rows"][0][0], 2, "{v}");
-    assert_eq!(outcomes(&env), ["no_target", "started", "signalled", "signalled", "muted"]);
+    assert_eq!(v["rows"][0][0], 4, "{v}");
+    assert_eq!(outcomes(&env), ["no_target", "no_target", "started", "signalled", "signalled", "signalled", "signalled"]);
 }
 
 fn ls(env: &Env) -> Value {

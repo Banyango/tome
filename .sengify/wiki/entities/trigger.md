@@ -11,7 +11,7 @@ A rule in [[workflow]] frontmatter that makes the [[daemon]] react to an event, 
   - `file`: a glob, `on: [created, modified]`, `debounce`, `ignore`, `while_running`; changes are batched into one event
   - `while_running:` what a file trigger does with changes while a run of its workflow is active (`to: new` only): `mute` (default; dropped) or `parallel` (each batch starts a run through `concurrency` / `on_conflict`)
   - `cron`: a 5-field expression in local time; missed times are skipped
-- `to:` `new` (default), `running`, or `running-or-new`
+- `to:` `new` (default), `running`, or `running-or-new`, for cron and file triggers alike; a file trigger signalling runs passes its changed paths as event data
 - `params:` fills in workflow params
 - event data: `{{trigger.*}}` placeholders in the body
 - deferred: webhooks, matching agent output, queue-message triggers

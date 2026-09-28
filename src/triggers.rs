@@ -165,7 +165,7 @@ impl Engine {
                         "index": a.index,
                         "kind": a.trigger.kind_name(),
                         "trigger": a.trigger.describe(),
-                        "to": a.trigger.effective_target().as_str(),
+                        "to": a.trigger.to.as_str(),
                         "last": last(&a.workflow_path, project, a.index as i64),
                     })
                 })
@@ -322,7 +322,7 @@ impl Engine {
                 data: json!({ "active": active_ids }),
             };
         }
-        match trigger.effective_target() {
+        match trigger.to {
             Target::Running if active.is_empty() => {
                 Fired { outcome: outcome::NO_TARGET, message: Some("no active run to signal".into()), runs: Vec::new(), data: json!({}) }
             }
