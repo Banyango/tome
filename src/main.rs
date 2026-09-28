@@ -1,6 +1,7 @@
 mod api;
 mod arming;
 mod bus;
+mod config;
 mod cron;
 mod daemon;
 mod duration;

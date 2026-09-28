@@ -172,7 +172,7 @@ impl Engine {
         let task = match (prompt, command) {
             (Some(prompt), None) => {
                 let name = opt_str(p, "harness").or(wf.frontmatter.defaults.harness.as_deref()).unwrap_or(harness::DEFAULT);
-                Task::Agent { harness: harness::resolve(name)?, prompt: prompt.to_string() }
+                Task::Agent { harness: harness::resolve(name, orchestrator::run_project(&run).as_deref())?, prompt: prompt.to_string() }
             }
             (None, Some(cmd)) => {
                 if opt_str(p, "harness").is_some() {
@@ -292,7 +292,11 @@ impl Engine {
             Some(kind) => (kind, Layout::of(orch.expect("found above"))),
             None => {
                 let defaults = orchestrator::snapshot(run)?.frontmatter.defaults;
-                (Kind::choose(defaults.backend.as_deref())?, Layout::choose(defaults.layout.as_deref())?)
+                let project = orchestrator::run_project(run);
+                (
+                    Kind::choose(defaults.backend.as_deref(), project.as_deref())?,
+                    Layout::choose(defaults.layout.as_deref(), project.as_deref())?,
+                )
             }
         };
         let dir = run_dir(run.id);

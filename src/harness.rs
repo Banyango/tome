@@ -1,7 +1,8 @@
 //! The harness adapter: how to launch an agent CLI, as a command template.
 //!
 //! Harnesses are named in workflows (`defaults.harness`) and defined in
-//! `~/.tome/config.yaml`; `claude` (Claude Code) is built in:
+//! `~/.tome/config.yaml` or the project's `.tome/config.yaml` (see
+//! [`crate::config`]); `claude` (Claude Code) is built in:
 //!
 //! ```yaml
 //! harnesses:
@@ -16,11 +17,11 @@
 //! `{{cwd}}`. In the argv form each element is substituted as is; in the
 //! string form values are shell-quoted first.
 
+use crate::config::{self, Config};
 use crate::output::{CliError, CliResult};
-use crate::paths;
 use serde_yaml::Value as Yaml;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Used when a workflow names no harness.
 pub const DEFAULT: &str = "claude";
@@ -47,99 +48,65 @@ fn presets() -> BTreeMap<String, Template> {
     BTreeMap::from([("claude".to_string(), Template::Argv(claude.iter().map(|s| s.to_string()).collect()))])
 }
 
-pub fn config_path() -> PathBuf {
-    paths::tome_home().join("config.yaml")
-}
-
-/// The config file's text, if there is one.
-fn read_config() -> CliResult<Option<String>> {
-    let path = config_path();
-    match std::fs::read_to_string(&path) {
-        Ok(text) => Ok(Some(text)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(CliError::internal(format!("reading {}: {e}", path.display()))),
-    }
-}
-
-fn config_error(e: impl std::fmt::Display) -> CliError {
-    CliError::invalid(format!("{}: {e}", config_path().display())).with_hint("see `harnesses:` in the tome docs")
-}
-
-/// Every known harness: the presets, overridden or extended by the config.
-pub fn all() -> CliResult<BTreeMap<String, Template>> {
+/// Every known harness for a project: the presets, overridden or extended
+/// by the global config and then the project's.
+pub fn all(project: Option<&Path>) -> CliResult<BTreeMap<String, Template>> {
+    let cfg = Config::load(project)?;
     let mut out = presets();
-    if let Some(text) = read_config()? {
-        out.extend(parse_config(&text).map_err(config_error)?);
+    for (name, (spec, file)) in cfg.entries("harnesses").map_err(hinted)? {
+        out.insert(name.clone(), parse_harness(&name, &spec).map_err(|e| hinted(file.error(e)))?);
     }
     Ok(out)
 }
 
-/// A top-level string setting in the config, e.g. `backend: cmux`.
-pub fn config_str(key: &str) -> CliResult<Option<String>> {
-    let Some(text) = read_config()? else { return Ok(None) };
-    let doc: Yaml = serde_yaml::from_str(&text).map_err(config_error)?;
-    match doc.get(key) {
-        None | Some(Yaml::Null) => Ok(None),
-        Some(Yaml::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(config_error(format!("`{key}` must be a string"))),
+fn hinted(e: CliError) -> CliError {
+    if e.hint.is_some() {
+        return e;
     }
+    e.with_hint("see `harnesses:` in the tome docs")
 }
 
-/// Look a harness up by name.
-pub fn resolve(name: &str) -> CliResult<Harness> {
-    let mut all = all()?;
+/// Look a harness up by name, in the config that applies to `project`.
+pub fn resolve(name: &str, project: Option<&Path>) -> CliResult<Harness> {
+    let mut all = all(project)?;
     match all.remove(name) {
         Some(template) => Ok(Harness { name: name.to_string(), template }),
         None => Err(CliError::invalid(format!("unknown harness `{name}`")).with_hint(format!(
-            "known harnesses: {}; define others under `harnesses:` in {}",
+            "known harnesses: {}; define others under `harnesses:` in {} or the project's .tome/config.yaml",
             all.keys().cloned().collect::<Vec<_>>().join(", "),
-            config_path().display()
+            config::global_path().display()
         ))),
     }
 }
 
-fn parse_config(text: &str) -> Result<BTreeMap<String, Template>, String> {
-    let doc: Yaml = serde_yaml::from_str(text).map_err(|e| e.to_string())?;
-    let mut out = BTreeMap::new();
-    let harnesses = match &doc {
-        Yaml::Null => return Ok(out),
-        Yaml::Mapping(m) => match m.get("harnesses") {
-            None | Some(Yaml::Null) => return Ok(out),
-            Some(Yaml::Mapping(h)) => h,
-            Some(_) => return Err("`harnesses` must be a mapping of name to harness".into()),
-        },
-        _ => return Err("expected a mapping at the top level".into()),
-    };
-    for (name, spec) in harnesses {
-        let name = name.as_str().ok_or("harness names must be strings")?;
-        // `name: {command: ...}` or the shorthand `name: <command>`.
-        let command = match spec {
-            Yaml::Mapping(m) => {
-                if let Some(other) = m.keys().filter_map(Yaml::as_str).find(|k| *k != "command") {
-                    return Err(format!("harness `{name}`: unknown key `{other}` (expected `command`)"));
-                }
-                m.get("command").ok_or(format!("harness `{name}`: missing `command`"))?
+/// One `harnesses:` entry: `name: {command: ...}` or the shorthand
+/// `name: <command>`.
+fn parse_harness(name: &str, spec: &Yaml) -> Result<Template, String> {
+    let command = match spec {
+        Yaml::Mapping(m) => {
+            if let Some(other) = m.keys().filter_map(Yaml::as_str).find(|k| *k != "command") {
+                return Err(format!("harness `{name}`: unknown key `{other}` (expected `command`)"));
             }
-            other => other,
-        };
-        let template = match command {
-            Yaml::String(s) if !s.trim().is_empty() => Template::Shell(s.clone()),
-            Yaml::Sequence(items) if !items.is_empty() => Template::Argv(
-                items
-                    .iter()
-                    .map(|i| match i {
-                        Yaml::String(s) => Ok(s.clone()),
-                        Yaml::Number(n) => Ok(n.to_string()),
-                        _ => Err(format!("harness `{name}`: command arguments must be strings")),
-                    })
-                    .collect::<Result<_, _>>()?,
-            ),
-            _ => return Err(format!("harness `{name}`: `command` must be a non-empty list or string")),
-        };
-        check_vars(name, &template)?;
-        out.insert(name.to_string(), template);
-    }
-    Ok(out)
+            m.get("command").ok_or(format!("harness `{name}`: missing `command`"))?
+        }
+        other => other,
+    };
+    let template = match command {
+        Yaml::String(s) if !s.trim().is_empty() => Template::Shell(s.clone()),
+        Yaml::Sequence(items) if !items.is_empty() => Template::Argv(
+            items
+                .iter()
+                .map(|i| match i {
+                    Yaml::String(s) => Ok(s.clone()),
+                    Yaml::Number(n) => Ok(n.to_string()),
+                    _ => Err(format!("harness `{name}`: command arguments must be strings")),
+                })
+                .collect::<Result<_, _>>()?,
+        ),
+        _ => return Err(format!("harness `{name}`: `command` must be a non-empty list or string")),
+    };
+    check_vars(name, &template)?;
+    Ok(template)
 }
 
 fn check_vars(name: &str, template: &Template) -> Result<(), String> {
@@ -219,6 +186,15 @@ mod tests {
     fn claude_preset_passes_the_prompt_as_one_argument() {
         let h = Harness { name: "claude".into(), template: presets().remove("claude").unwrap() };
         assert_eq!(h.command(&vars()), ["claude", "--allowedTools", "Bash(tome:*)", "--", "do it's thing"]);
+    }
+
+    fn parse_config(text: &str) -> Result<BTreeMap<String, Template>, String> {
+        let cfg = Config::parse(config::Scope::Global, text).map_err(|e| e.message)?;
+        let mut out = BTreeMap::new();
+        for (name, (spec, _)) in cfg.entries("harnesses").map_err(|e| e.message)? {
+            out.insert(name.clone(), parse_harness(&name, &spec)?);
+        }
+        Ok(out)
     }
 
     #[test]

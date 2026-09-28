@@ -9,7 +9,8 @@
 //!   own processes in), which a daemon started from one inherits.
 //!
 //! A run's backend is the workflow's `defaults.backend`, else `TOME_BACKEND`,
-//! else `backend:` in `~/.tome/config.yaml`, else cmux when the daemon runs
+//! else `backend:` in the project's `.tome/config.yaml` or the global
+//! `~/.tome/config.yaml`, else cmux when the daemon runs
 //! inside cmux and tmux otherwise.
 //!
 //! Its [`Layout`] decides where in that backend its sessions go, and
@@ -23,7 +24,8 @@
 mod workspace;
 
 
-use crate::harness::{self, shell_quote};
+use crate::config::Config;
+use crate::harness::shell_quote;
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::store::Session;
@@ -61,13 +63,13 @@ impl Kind {
 
     /// The backend for a run whose workflow asks for `requested` (see the
     /// module docs for the order).
-    pub fn choose(requested: Option<&str>) -> CliResult<Kind> {
+    pub fn choose(requested: Option<&str>, project: Option<&Path>) -> CliResult<Kind> {
         let env = std::env::var("TOME_BACKEND").ok().filter(|s| !s.is_empty());
         let (name, source) = match (requested, env) {
-            (Some(r), _) => (r.to_string(), "the workflow's `defaults.backend`"),
-            (None, Some(e)) => (e, "TOME_BACKEND"),
-            (None, None) => match harness::config_str("backend")? {
-                Some(c) => (c, "`backend` in the tome config"),
+            (Some(r), _) => (r.to_string(), "the workflow's `defaults.backend`".to_string()),
+            (None, Some(e)) => (e, "TOME_BACKEND".to_string()),
+            (None, None) => match Config::load(project)?.str("backend")? {
+                Some((c, file)) => (c, format!("`backend` in {}", file.label())),
                 None => return Ok(if Cmux::inside() { Kind::Cmux } else { Kind::Tmux }),
             },
         };
@@ -112,13 +114,13 @@ impl Layout {
 
     /// The layout for a run whose workflow asks for `requested` (see the
     /// module docs for the order).
-    pub fn choose(requested: Option<&str>) -> CliResult<Layout> {
+    pub fn choose(requested: Option<&str>, project: Option<&Path>) -> CliResult<Layout> {
         let env = std::env::var("TOME_LAYOUT").ok().filter(|s| !s.is_empty());
         let (name, source) = match (requested, env) {
-            (Some(r), _) => (r.to_string(), "the workflow's `defaults.layout`"),
-            (None, Some(e)) => (e, "TOME_LAYOUT"),
-            (None, None) => match harness::config_str("layout")? {
-                Some(c) => (c, "`layout` in the tome config"),
+            (Some(r), _) => (r.to_string(), "the workflow's `defaults.layout`".to_string()),
+            (None, Some(e)) => (e, "TOME_LAYOUT".to_string()),
+            (None, None) => match Config::load(project)?.str("layout")? {
+                Some((c, file)) => (c, format!("`layout` in {}", file.label())),
                 None => return Ok(Layout::Tab),
             },
         };

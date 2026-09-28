@@ -27,9 +27,9 @@ pub const LAUNCH_FAILED: &str = "launch_failed";
 
 /// The harness a workflow's orchestrator runs in:
 /// `defaults.orchestrator_harness`, else `defaults.harness`, else `claude`.
-pub fn harness_for(fm: &Frontmatter) -> CliResult<Harness> {
+pub fn harness_for(fm: &Frontmatter, project: Option<&Path>) -> CliResult<Harness> {
     let d = &fm.defaults;
-    harness::resolve(d.orchestrator_harness.as_deref().or(d.harness.as_deref()).unwrap_or(harness::DEFAULT))
+    harness::resolve(d.orchestrator_harness.as_deref().or(d.harness.as_deref()).unwrap_or(harness::DEFAULT), project)
 }
 
 /// A run's orchestrator, ready to launch.
@@ -69,10 +69,12 @@ pub fn run_project(run: &Run) -> Option<PathBuf> {
 pub fn plan(run: &Run) -> CliResult<Plan> {
     let wf = snapshot(run)?;
     let cwd = run_cwd(run);
+    let project = run_project(run);
+    let project = project.as_deref();
     Ok(Plan {
-        harness: harness_for(&wf.frontmatter)?,
-        backend: Kind::choose(wf.frontmatter.defaults.backend.as_deref())?,
-        layout: Layout::choose(wf.frontmatter.defaults.layout.as_deref())?,
+        harness: harness_for(&wf.frontmatter, project)?,
+        backend: Kind::choose(wf.frontmatter.defaults.backend.as_deref(), project)?,
+        layout: Layout::choose(wf.frontmatter.defaults.layout.as_deref(), project)?,
         session: session::run_session_name(run.id, &run.workflow_name, ROLE),
         title: format!("tome: {} #{}", run.workflow_name, run.id),
         cwd,

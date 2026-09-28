@@ -129,9 +129,10 @@ impl Engine {
         let fm = &wf.frontmatter;
         // An unknown harness, backend or layout is a bad request: refuse
         // before recording a run.
-        orchestrator::harness_for(fm)?;
-        session::Kind::choose(fm.defaults.backend.as_deref())?;
-        session::Layout::choose(fm.defaults.layout.as_deref())?;
+        let project = opt_str(p, "project_path").map(std::path::Path::new);
+        orchestrator::harness_for(fm, project)?;
+        session::Kind::choose(fm.defaults.backend.as_deref(), project)?;
+        session::Layout::choose(fm.defaults.layout.as_deref(), project)?;
         let run = self.with_store(|store| {
             let status = match fm.concurrency {
                 _ if triggers::waits_for_idle(p.get("cause")) => RunStatus::Queued,
