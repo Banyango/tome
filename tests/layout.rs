@@ -460,3 +460,76 @@ fn from_falls_back_to_the_last_pane_when_its_anchor_is_gone() {
     let b = pane_of(&env, "tome-1-build-b");
     assert_eq!(window(&b), window(&a));
 }
+
+#[test]
+fn a_named_workspace_is_a_tome_session_of_its_own() {
+    let env = env();
+    write_wf(&env, "build", "defaults:\n  layout:\n    workers:\n      workspace: reviews\n");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    spawn(&env, 1, "a", &["sleep", "600"]);
+    spawn(&env, 1, "b", &["sleep", "600"]);
+    assert!(env.has_session("p-reviews") && env.has_session("p-orchestrator"));
+    let all = sessions(&env, 1);
+    let handle = |name: &str| all.iter().find(|s| s["name"] == name).unwrap()["handle"].clone();
+    assert_eq!(handle("tome-1-build-a"), handle("tome-1-build-b"));
+    assert_ne!(handle("tome-1-build-a"), handle("tome-1-build"));
+    let a = all.iter().find(|s| s["name"] == "tome-1-build-a").unwrap();
+    assert_eq!((a["placement"]["workspace"].as_str(), a["layout"].as_str()), (Some("reviews"), Some("tab")), "{a}");
+    // Left open with its shell when the run's sessions are gone.
+    assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
+    let left = || lines(env.tmux(&["list-windows", "-t", "=p-reviews", "-F", "#{window_name}"]));
+    common::eventually("the workers' windows closed", || left().len() == 1);
+    assert!(env.has_session("p-reviews"));
+}
+
+/// A client attached to `session` (as if the user were looking at it),
+/// until the returned child is killed.
+fn attach(env: &Env, session: &str) -> std::process::Child {
+    let child = std::process::Command::new("script")
+        .args(["-q", "/dev/null", "tmux", "-L", &env.tmux_socket(), "attach", "-t", session])
+        .env_remove("TMUX")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    common::eventually("the client attached", || !lines(env.tmux(&["list-clients"])).is_empty());
+    child
+}
+
+#[test]
+fn focused_is_the_attached_session_when_the_run_starts_or_else_the_project() {
+    let env = env();
+    write_wf(&env, "build", "");
+    assert!(env.tmux(&["new-session", "-d", "-s", "mine", "-x", "120", "-y", "40"]).status.success());
+    let mine = lines(env.tmux(&["list-sessions", "-F", "#{session_name} #{session_id}"]))
+        .iter()
+        .find_map(|l| l.strip_prefix("mine ").map(str::to_string))
+        .unwrap();
+    env.start_daemon();
+    let mut client = attach(&env, "mine");
+    env.json(&["run", "build", "--detach", "--workspace", "focused"]);
+    let _ = client.kill();
+    let _ = client.wait();
+    common::eventually("the client detached", || lines(env.tmux(&["list-clients"])).is_empty());
+
+    let orch = &sessions(&env, 1)[0];
+    assert_eq!(orch["handle"].as_str(), Some(mine.as_str()), "{orch}");
+    let (_, shown) = env.json(&["runs", "show", "1"]);
+    assert_eq!(shown["run"]["placement"]["focused"]["id"].as_str(), Some(mine.as_str()), "{shown}");
+    // Kept for the whole run, though nothing is focused now.
+    spawn_with(&env, 1, "w", &["--workspace", "focused"], &["sleep", "600"]);
+    let w = sessions(&env, 1).into_iter().find(|s| s["name"] == "tome-1-build-w").unwrap();
+    assert_eq!(w["handle"].as_str(), Some(mine.as_str()), "{w}");
+    assert!(shown["run"]["placement"].get("notes").is_none(), "{shown}");
+
+    // No client attached: the project workspace, with a note on the run.
+    env.json(&["run", "build", "--detach", "--workspace", "focused"]);
+    let orch = &sessions(&env, 2)[0];
+    assert!(env.has_session("p-orchestrator"));
+    assert_ne!(orch["handle"].as_str(), Some(mine.as_str()), "{orch}");
+    let (_, shown) = env.json(&["runs", "show", "2"]);
+    let notes = shown["run"]["placement"]["notes"].to_string();
+    assert!(notes.contains("workspace: focused: no tmux client is attached; used the project workspace"), "{shown}");
+}

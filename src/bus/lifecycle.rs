@@ -113,6 +113,7 @@ mod tests {
             finished_at: Some("2026-01-02T03:05:10.500Z".into()),
             trigger: None,
             workflow_snapshot: None,
+            placement: None,
         }
     }
 

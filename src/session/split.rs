@@ -34,11 +34,14 @@ pub struct Split {
     /// names, then the last, then the first. The first one still open in
     /// the target workspace is used.
     pub anchors: Vec<Anchor>,
+    /// All the run's panes, newest first (for a tab in a workspace tome
+    /// doesn't keep a tab split in).
+    pub recent: Vec<Anchor>,
 }
 
 impl Default for Split {
     fn default() -> Split {
-        Split { direction: Direction::Right, size: None, from: None, anchors: Vec::new() }
+        Split { direction: Direction::Right, size: None, from: None, anchors: Vec::new(), recent: Vec::new() }
     }
 }
 
@@ -62,7 +65,8 @@ impl Split {
                 }
             }
         }
-        Split { direction, size, from, anchors }
+        let recent = placed.iter().rev().map(anchor).collect();
+        Split { direction, size, from, anchors, recent }
     }
 
     fn horizontal(&self) -> bool {

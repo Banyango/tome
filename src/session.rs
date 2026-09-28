@@ -154,15 +154,28 @@ impl Backend {
             }
             (Backend::Tmux(t), layout) => {
                 let _held = workspace::lock();
-                let id = workspace::Places::open().tmux(t, launch.project, &home)?;
+                let places = workspace::Places::open();
+                let id = match &launch.target {
+                    Target::Focused(id) if t.session_exists(id) => id.clone(),
+                    target => {
+                        gone(target, &mut warnings);
+                        places.tmux(t, launch.project, target.name(), &home)?
+                    }
+                };
                 let pane = t.launch_in(&id, layout, launch, &mut warnings)?;
                 (t.socket.clone(), Some(id), pane)
             }
             (Backend::Cmux(c), layout) => {
                 let _held = workspace::lock();
                 let places = workspace::Places::open();
-                let record = places.cmux(c, launch.project, &home)?;
-                let surface = c.launch_in(&places, record.clone(), layout, launch, &mut warnings)?;
+                let (record, keep) = match &launch.target {
+                    Target::Focused(id) if c.is_alive(id) == Some(true) => (workspace::Record::unkept("cmux", id), None),
+                    target => {
+                        gone(target, &mut warnings);
+                        (places.cmux(c, launch.project, target.name(), &home)?, Some(&places))
+                    }
+                };
+                let surface = c.launch_in(keep, record.clone(), layout, launch, &mut warnings)?;
                 (None, Some(record.id), surface)
             }
         };
@@ -180,6 +193,77 @@ impl Backend {
             created_at: String::new(),
         };
         Ok((session, warnings))
+    }
+}
+
+/// Which workspace a `tab` or `split` session goes in.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Target {
+    /// The project's `<project>-orchestrator`.
+    #[default]
+    Project,
+    /// `<project>-<name>`.
+    Named(String),
+    /// A workspace (tmux session) of the user's, by id: the one focused
+    /// when the run started.
+    Focused(String),
+}
+
+impl Target {
+    /// The tome workspace's name, for [`workspace::Places`]; `None` for the
+    /// project's (and a focused one, which isn't tome's).
+    fn name(&self) -> Option<&str> {
+        match self {
+            Target::Named(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// How messages name it.
+    fn label(&self, project: Option<&Path>) -> String {
+        match self {
+            Target::Focused(id) => format!("the focused workspace ({id})"),
+            t => workspace::name(project, t.name()),
+        }
+    }
+}
+
+/// Note that the focused workspace `target` names is gone, so the session
+/// goes in the project's instead.
+fn gone(target: &Target, warnings: &mut Vec<String>) {
+    if let Target::Focused(id) = target {
+        warnings.push(format!("workspace: focused: {id} is gone; opened in the project workspace"));
+    }
+}
+
+/// The workspace (cmux) or tmux session the user has focused on `kind`,
+/// or why that can't be told.
+pub fn focused(kind: Kind) -> Result<String, String> {
+    match kind {
+        Kind::Tmux => {
+            let tmux = Tmux::from_env();
+            let out = tmux
+                .run(&["list-clients", "-F", "#{client_activity} #{session_id}"])
+                .ok()
+                .filter(|o| o.status.success())
+                .ok_or("no tmux client is attached")?;
+            let text = String::from_utf8_lossy(&out.stdout).into_owned();
+            text.lines()
+                .filter_map(|l| l.split_once(' '))
+                .filter_map(|(at, id)| Some((at.parse::<u64>().ok()?, id.to_string())))
+                .max_by_key(|(at, _)| *at)
+                .map(|(_, id)| id)
+                .ok_or_else(|| "no tmux client is attached".to_string())
+        }
+        Kind::Cmux => {
+            let cmux = Cmux;
+            if !Cmux::inside() || !cmux.available() {
+                return Err("cmux isn't answering".into());
+            }
+            let out = cmux.run(&["--id-format", "uuids", "identify", "--json"]).ok().filter(|o| o.status.success());
+            let v: Value = out.and_then(|o| serde_json::from_slice(&o.stdout).ok()).unwrap_or_default();
+            v["focused"]["workspace_id"].as_str().map(str::to_string).ok_or_else(|| "cmux has no focused workspace".into())
+        }
     }
 }
 
@@ -288,7 +372,9 @@ pub struct Launch<'a> {
     pub layout: Layout,
     /// How a `split` (or cmux's tab split) opens.
     pub split: &'a Split,
-    /// The run's project, whose tome workspace the `tab` and `split`
+    /// Which workspace the `tab` and `split` layouts use.
+    pub target: &'a Target,
+    /// The run's project, whose tome workspaces the `tab` and `split`
     /// layouts use; `None` for runs outside a project.
     pub project: Option<&'a Path>,
 }
@@ -386,7 +472,7 @@ impl Tmux {
             return Err(CliError::internal(format!(
                 "tmux couldn't start `{}` in {}: {}",
                 launch.name,
-                workspace::name(launch.project),
+                launch.target.label(launch.project),
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
@@ -405,6 +491,14 @@ impl Tmux {
         let _ = self.run(&["pipe-pane", "-t", &pane, "-o", &pipe]);
         fs::write(&ready, "")?;
         Ok(pane)
+    }
+
+    /// Whether the session (by id, `$<n>`) exists.
+    fn session_exists(&self, id: &str) -> bool {
+        match self.run(&["list-sessions", "-F", "#{session_id}"]) {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).lines().any(|l| l.trim() == id),
+            _ => false,
+        }
     }
 
     /// Whether the pane (`%<n>`) exists and its command is still running.
@@ -564,14 +658,15 @@ impl Cmux {
         }
     }
 
-    /// Start `launch` in the tome workspace `record`, as `launch.split`
-    /// says: under the `tab` layout as a tab next to the anchor pane, else in
-    /// the workspace's tab split (made if it's gone); under `split` in a new
-    /// split off the anchor pane, else off the last one. Returns its surface
-    /// id.
+    /// Start `launch` in the workspace `record`, as `launch.split` says:
+    /// under the `tab` layout as a tab next to the anchor pane, else in the
+    /// workspace's tab split (made if it's gone; in a workspace tome doesn't
+    /// keep in `places`, the run's latest pane there); under `split` in a
+    /// new split off the anchor pane, else off the last one. Returns its
+    /// surface id.
     pub fn launch_in(
         &self,
-        places: &workspace::Places,
+        places: Option<&workspace::Places>,
         mut record: workspace::Record,
         layout: Layout,
         launch: &Launch,
@@ -583,13 +678,16 @@ impl Cmux {
             CliError::internal(format!(
                 "cmux couldn't open a {what} for `{}` in {}: {}",
                 launch.name,
-                workspace::name(launch.project),
+                launch.target.label(launch.project),
                 String::from_utf8_lossy(&out.stderr).trim()
             ))
         };
         let here: Vec<Surface> =
             self.surfaces().unwrap_or_default().into_iter().filter(|s| s.workspace == record.id && !s.id.is_empty()).collect();
-        let tabs = record.tabs.clone().filter(|p| here.iter().any(|s| s.pane.as_deref() == Some(p.as_str())));
+        let tabs = match places {
+            Some(_) => record.tabs.clone().filter(|p| here.iter().any(|s| s.pane.as_deref() == Some(p.as_str()))),
+            None => split.recent.iter().find_map(|a| here.iter().find(|s| s.id == a.pane)?.pane.clone()),
+        };
         let anchor = split.anchors.iter().find_map(|a| here.iter().find(|s| a.handle == record.id && s.id == a.pane));
         split.missing_anchor(anchor.is_some(), warnings);
         let join = anchor.and_then(|a| a.pane.clone()).filter(|_| layout == Layout::Tab);
@@ -611,7 +709,7 @@ impl Cmux {
                 let out = self.run(&args)?;
                 let surface = first_id(&out).ok_or_else(|| failed("split", &out))?;
                 self.size_pane(&record.id, &surface, split, warnings);
-                if layout == Layout::Tab {
+                if let (Layout::Tab, Some(places)) = (layout, places) {
                     let pane = self.surfaces().and_then(|all| all.into_iter().find(|s| s.id == surface)?.pane);
                     record.tabs = pane;
                     places.put(&record)?;
@@ -831,6 +929,7 @@ mod tests {
             log: &dir.join(format!("{name}.log")),
             layout: Layout::Workspace,
             split: &Split::default(),
+            target: &Target::Project,
             project: None,
         })
         .unwrap();

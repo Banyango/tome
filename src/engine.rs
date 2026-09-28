@@ -132,13 +132,24 @@ impl Engine {
         // request: refuse before recording a run.
         let project = opt_str(p, "project_path").map(std::path::Path::new);
         orchestrator::harness_for(fm, project)?;
-        session::Kind::choose(fm.defaults.backend.as_deref(), project)?;
+        let kind = session::Kind::choose(fm.defaults.backend.as_deref(), project)?;
         let flags = p.get("placement").filter(|v| !v.is_null()).map(placement::Settings::from_json).transpose()?;
         if let Some(flags) = &flags {
             placement::check_flag_preset(flags, "`tome run` flags", project)?;
         }
         orchestrator::placement(fm, flags.as_ref(), project)?;
         placement::check_presets(fm.defaults.layout.as_ref(), project)?;
+        // What's focused now, for `workspace: focused`.
+        let focused = match p.get("cause").filter(|c| c.is_object()) {
+            Some(_) => Err("the run was started by a trigger".to_string()),
+            None => session::focused(kind),
+        };
+        let mut p = p.clone();
+        p["focused"] = match focused {
+            Ok(id) => json!({ "id": id }),
+            Err(why) => json!({ "unknown": why }),
+        };
+        let p = &p;
         let run = self.with_store(|store| {
             let status = match fm.concurrency {
                 _ if triggers::waits_for_idle(p.get("cause")) => RunStatus::Queued,
@@ -225,9 +236,16 @@ impl Engine {
         let result = orchestrator::plan(&run).and_then(|plan| {
             waited = plan.start_timeout.is_some();
             self.expect_start(agent.clone(), plan.start_timeout, orchestrator::prompt_file(run.id));
-            let session = orchestrator::launch(&run, &plan, &self.recorded_sessions(run.id))?;
+            let (session, note) = orchestrator::launch(&run, &plan, &self.recorded_sessions(run.id))?;
             // Recorded before the monitor may look (it skips launching runs).
-            self.with_store(|store| store.add_session(&session).map_err(internal)).inspect_err(|_| {
+            self.with_store(|store| {
+                store.add_session(&session).map_err(internal)?;
+                match &note {
+                    Some(note) => store.add_run_note(run.id, note).map_err(internal),
+                    None => Ok(()),
+                }
+            })
+            .inspect_err(|_| {
                 session::kill(&session);
             })
         });

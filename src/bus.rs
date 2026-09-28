@@ -497,6 +497,7 @@ mod tests {
             finished_at: None,
             trigger: cause,
             workflow_snapshot: None,
+            placement: None,
         };
         assert_eq!(depth_from(&run(None)), 0);
         assert_eq!(depth_from(&run(Some(json!({ "kind": "cron" })))), 0);

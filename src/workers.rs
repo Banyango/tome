@@ -251,9 +251,12 @@ impl Engine {
             self.expect_start(agent.clone(), handshake::timeout(&wf.frontmatter), prompt_file(run_id, &name));
         }
         match self.launch_worker(&run, &name, &task, &cwd, created.as_ref().map(|c| c.path.as_path()), worker.keep_open, flags.as_ref()) {
-            Ok(s) => {
+            Ok((s, note)) => {
                 let started = self.with_store(|store| {
                     store.add_session(&s).map_err(internal)?;
+                    if let Some(note) = &note {
+                        store.add_run_note(run_id, note).map_err(internal)?;
+                    }
                     let started = store.start_worker(run_id, &name, &s.name)?;
                     self.sync(store, run_id);
                     Ok(started)
@@ -291,7 +294,7 @@ impl Engine {
         worktree: Option<&Path>,
         keep_open: bool,
         flags: Option<&Settings>,
-    ) -> CliResult<store::Session> {
+    ) -> CliResult<(store::Session, Option<String>)> {
         let recorded = self.recorded_sessions(run.id);
         let orch = recorded.iter().find(|s| s.role == orchestrator::ROLE);
         let wf = orchestrator::snapshot(run)?;
@@ -306,6 +309,7 @@ impl Engine {
         let mut placement = placement::resolve(&inputs, project.as_deref())?;
         let layout = placement.layout;
         let split = Split::new(placement.direction, placement.size, placement.from, &recorded);
+        let (target, note) = orchestrator::target(run, &placement);
         let dir = run_dir(run.id);
         fs::create_dir_all(&dir)?;
         let exit = exit_file(run.id, name);
@@ -342,17 +346,19 @@ impl Engine {
             log: &log_file(run.id, name),
             layout,
             split: &split,
+            target: &target,
             project: orchestrator::run_project(run).as_deref(),
         })?;
         placement.warnings = warnings;
-        Ok(store::Session {
+        let session = store::Session {
             run_id: run.id,
             role: ROLE.to_string(),
             layout: Some(layout.as_str().to_string()),
             harness,
             placement: Some(placement.to_json()),
             ..s
-        })
+        };
+        Ok((session, note))
     }
 
     /// `worker.report {run_id, name, event: done|fail, summary?}`

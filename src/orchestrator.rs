@@ -9,8 +9,8 @@ use crate::harness::{self, Harness, Vars};
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::recovery::RecoveryHooks;
-use crate::placement::{self, Inputs, Placement, Role, Settings};
-use crate::session::{self, Backend, Cmux, Kind, Launch, Split, Tmux};
+use crate::placement::{self, Inputs, Placement, Role, Settings, Workspace};
+use crate::session::{self, Backend, Cmux, Kind, Launch, Split, Target, Tmux};
 use crate::store::{Run, Session, Worker};
 use crate::workflow::{self, Frontmatter, Workflow};
 use std::fs;
@@ -37,6 +37,27 @@ pub fn harness_for(fm: &Frontmatter, project: Option<&Path>) -> CliResult<Harnes
 pub fn placement(fm: &Frontmatter, flags: Option<&Settings>, project: Option<&Path>) -> CliResult<Placement> {
     let inputs = Inputs { role: Role::Orchestrator, flags, run_flags: None, spec: fm.defaults.layout.as_ref() };
     placement::resolve(&inputs, project)
+}
+
+/// Where a session placed as `placement` goes: the workspace it names,
+/// with `focused` the one recorded when the run started. When that couldn't
+/// be told, it's the project workspace, and the note to record on the run
+/// says why.
+pub fn target(run: &Run, placement: &Placement) -> (Target, Option<String>) {
+    match &placement.workspace {
+        Workspace::Named(name) => (Target::Named(name.clone()), None),
+        Workspace::Focused => {
+            let focused = run.placement.as_ref().map(|p| &p["focused"]);
+            match focused.and_then(|f| f["id"].as_str()) {
+                Some(id) => (Target::Focused(id.to_string()), None),
+                None => {
+                    let why = focused.and_then(|f| f["unknown"].as_str()).unwrap_or("it wasn't recorded");
+                    (Target::Project, Some(format!("workspace: focused: {why}; used the project workspace")))
+                }
+            }
+        }
+        Workspace::Project | Workspace::Own => (Target::Project, None),
+    }
 }
 
 /// The placement flags `tome run` was given for this run, if any.
@@ -125,8 +146,8 @@ pub fn prompt_file(run_id: i64) -> PathBuf {
 
 /// Start the orchestrator's session and return its record. The launcher
 /// script, the bootstrap prompt and the session's output all go in the
-/// run's directory.
-pub fn launch(run: &Run, plan: &Plan, recorded: &[Session]) -> CliResult<Session> {
+/// run's directory. Also returns a note to record on the run, if any.
+pub fn launch(run: &Run, plan: &Plan, recorded: &[Session]) -> CliResult<(Session, Option<String>)> {
     let backend = Backend::new(plan.backend);
     let dir = paths::runs_dir().join(run.id.to_string());
     fs::create_dir_all(&dir)?;
@@ -142,6 +163,7 @@ pub fn launch(run: &Run, plan: &Plan, recorded: &[Session]) -> CliResult<Session
     // An orchestrator relaunched after a restart may open from what's left.
     let p = &plan.placement;
     let split = Split::new(p.direction, p.size, p.from, recorded);
+    let (target, note) = target(run, p);
     let (session, warnings) = backend.launch(&Launch {
         name: &plan.session,
         title: &plan.title,
@@ -152,18 +174,20 @@ pub fn launch(run: &Run, plan: &Plan, recorded: &[Session]) -> CliResult<Session
         log: &dir.join(format!("{ROLE}.log")),
         layout: plan.placement.layout,
         split: &split,
+        target: &target,
         project: run_project(run).as_deref(),
     })?;
     let mut placement = plan.placement.clone();
     placement.warnings = warnings;
-    Ok(Session {
+    let session = Session {
         run_id: run.id,
         role: ROLE.to_string(),
         layout: Some(plan.placement.layout.as_str().to_string()),
         harness: Some(plan.harness.name.clone()),
         placement: Some(placement.to_json()),
         ..session
-    })
+    };
+    Ok((session, note))
 }
 
 /// What a run's agents need to call back into tome.

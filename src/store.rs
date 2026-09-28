@@ -694,6 +694,22 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Add a note to a run's placement state (once).
+    pub fn add_run_note(&mut self, id: i64, note: &str) -> anyhow::Result<()> {
+        let current: Option<String> =
+            self.conn.query_row("SELECT placement FROM runs WHERE id = ?", params![id], |r| r.get(0)).optional()?.flatten();
+        let mut placement: Value = current.and_then(|p| serde_json::from_str(&p).ok()).unwrap_or_else(|| serde_json::json!({}));
+        let notes = placement["notes"].as_array().cloned().unwrap_or_default();
+        if notes.iter().any(|n| n.as_str() == Some(note)) {
+            return Ok(());
+        }
+        let mut notes = notes;
+        notes.push(Value::from(note));
+        placement["notes"] = Value::Array(notes);
+        self.conn.execute("UPDATE runs SET placement = ? WHERE id = ?", params![placement.to_string(), id])?;
+        Ok(())
+    }
+
     pub fn set_snapshot(&mut self, id: i64, snapshot: &str) -> anyhow::Result<()> {
         self.conn.execute("UPDATE runs SET workflow_snapshot = ? WHERE id = ?", params![snapshot, id])?;
         Ok(())

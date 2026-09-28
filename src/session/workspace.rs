@@ -1,6 +1,8 @@
-//! The project's tome workspace: one cmux workspace (or tmux session) per
-//! project, named `<project>-orchestrator` (`global-orchestrator` for runs
-//! outside a project), that the `tab` and `split` layouts put sessions in.
+//! The project's tome workspaces: cmux workspaces (or tmux sessions) that
+//! the `tab` and `split` layouts put sessions in. Each project has its own
+//! `<project>-orchestrator` (`global-orchestrator` for runs outside a
+//! project), for `workspace: project`, and `<project>-<name>` for each
+//! `workspace: <name>` it uses.
 //!
 //! It's created on first use with a plain shell in the project directory,
 //! which keeps it open, and in its place in the sidebar, when no sessions
@@ -41,6 +43,9 @@ pub struct Record {
     /// The project directory; `None` for runs outside a project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The `workspace: <name>` it's for; `None` is the project workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// The cmux workspace id, or the tmux session id (`$<n>`).
     pub id: String,
     /// cmux: the pane that holds the `tab` layout's tabs, once there is one.
@@ -49,10 +54,17 @@ pub struct Record {
 }
 
 impl Record {
-    fn is_for(&self, backend: &str, socket: Option<&str>, project: Option<&Path>) -> bool {
+    /// A workspace of the user's that tome uses but doesn't keep (the
+    /// focused one).
+    pub fn unkept(backend: &str, id: &str) -> Record {
+        Record { backend: backend.into(), socket: None, project: None, name: None, id: id.into(), tabs: None }
+    }
+
+    fn is_for(&self, backend: &str, socket: Option<&str>, project: Option<&Path>, name: Option<&str>) -> bool {
         self.backend == backend
             && self.socket.as_deref() == socket
             && self.project.as_deref() == project.map(|p| p.to_string_lossy()).as_deref()
+            && self.name.as_deref() == name
     }
 }
 
@@ -71,14 +83,17 @@ impl Places {
         fs::read(&self.file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
     }
 
-    fn find(&self, backend: &str, socket: Option<&str>, project: Option<&Path>) -> Option<Record> {
-        self.load().into_iter().find(|r| r.is_for(backend, socket, project))
+    fn find(&self, backend: &str, socket: Option<&str>, project: Option<&Path>, name: Option<&str>) -> Option<Record> {
+        self.load().into_iter().find(|r| r.is_for(backend, socket, project, name))
     }
 
-    /// Record `record`, replacing the one for the same backend and project.
+    /// Record `record`, replacing the one for the same backend, project and
+    /// name.
     pub fn put(&self, record: &Record) -> CliResult<()> {
         let mut all = self.load();
-        all.retain(|r| !r.is_for(&record.backend, record.socket.as_deref(), record.project.as_deref().map(Path::new)));
+        all.retain(|r| {
+            !r.is_for(&record.backend, record.socket.as_deref(), record.project.as_deref().map(Path::new), record.name.as_deref())
+        });
         all.push(record.clone());
         if let Some(dir) = self.file.parent() {
             fs::create_dir_all(dir)?;
@@ -89,27 +104,33 @@ impl Places {
         Ok(())
     }
 
-    /// What marks a tmux session as this tome home's workspace for `project`.
-    fn tag(&self, project: Option<&Path>) -> String {
+    /// What marks a tmux session as this tome home's workspace `name` for
+    /// `project`.
+    fn tag(&self, project: Option<&Path>, name: Option<&str>) -> String {
         let project = project.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-        format!("{}:{project}", self.file.display())
+        match name {
+            None => format!("{}:{project}", self.file.display()),
+            Some(n) => format!("{}:{project}:{n}", self.file.display()),
+        }
     }
 
-    /// The tome session for `project` on `tmux`, created (with a plain shell
-    /// in `cwd`) if it's gone. Returns its id.
-    pub fn tmux(&self, tmux: &Tmux, project: Option<&Path>, cwd: &Path) -> CliResult<String> {
-        let tag = self.tag(project);
+    /// The tome session for `project` (`name`d, or its project one) on
+    /// `tmux`, created (with a plain shell in `cwd`) if it's gone. Returns
+    /// its id.
+    pub fn tmux(&self, tmux: &Tmux, project: Option<&Path>, name: Option<&str>, cwd: &Path) -> CliResult<String> {
+        let tag = self.tag(project, name);
         let socket = tmux.socket.as_deref();
-        if let Some(r) = self.find("tmux", socket, project) {
+        if let Some(r) = self.find("tmux", socket, project, name) {
             if tmux.tagged_sessions().iter().any(|(id, t)| *id == r.id && *t == tag) {
                 return Ok(r.id);
             }
         }
-        let id = tmux.new_tome_session(&name(project), cwd, &tag)?;
+        let id = tmux.new_tome_session(&self::name(project, name), cwd, &tag)?;
         let record = Record {
             backend: "tmux".into(),
             socket: socket.map(str::to_string),
             project: project.map(|p| p.to_string_lossy().into_owned()),
+            name: name.map(str::to_string),
             id: id.clone(),
             tabs: None,
         };
@@ -117,10 +138,10 @@ impl Places {
         Ok(id)
     }
 
-    /// The tome workspace for `project` in cmux, opened (unfocused, with a
-    /// plain shell in `cwd`) if it's gone.
-    pub fn cmux(&self, cmux: &Cmux, project: Option<&Path>, cwd: &Path) -> CliResult<Record> {
-        if let Some(r) = self.find("cmux", None, project) {
+    /// The tome workspace for `project` (`name`d, or its project one) in
+    /// cmux, opened (unfocused, with a plain shell in `cwd`) if it's gone.
+    pub fn cmux(&self, cmux: &Cmux, project: Option<&Path>, name: Option<&str>, cwd: &Path) -> CliResult<Record> {
+        if let Some(r) = self.find("cmux", None, project, name) {
             if cmux.is_alive(&r.id) == Some(true) {
                 return Ok(r);
             }
@@ -129,7 +150,8 @@ impl Places {
             backend: "cmux".into(),
             socket: None,
             project: project.map(|p| p.to_string_lossy().into_owned()),
-            id: cmux.new_tome_workspace(&name(project), cwd)?,
+            name: name.map(str::to_string),
+            id: cmux.new_tome_workspace(&self::name(project, name), cwd)?,
             tabs: None,
         };
         self.put(&record)?;
@@ -137,13 +159,13 @@ impl Places {
     }
 }
 
-/// `<project>-orchestrator`, or `global-orchestrator` outside a project.
-/// tmux doesn't allow `.` or `:` in names, so anything but letters, digits,
-/// `_` and `-` becomes `-`.
-pub fn name(project: Option<&Path>) -> String {
+/// `<project>-orchestrator` (or `<project>-<name>`), with `global` for the
+/// project outside one. tmux doesn't allow `.` or `:` in names, so anything
+/// but letters, digits, `_` and `-` becomes `-`.
+pub fn name(project: Option<&Path>, name: Option<&str>) -> String {
     let base = project.and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "global".into());
     let slug: String = base.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' }).collect();
-    format!("{slug}-orchestrator")
+    format!("{slug}-{}", name.unwrap_or("orchestrator"))
 }
 
 impl Tmux {
@@ -220,9 +242,10 @@ mod tests {
 
     #[test]
     fn names_come_from_the_project_directory() {
-        assert_eq!(name(Some(Path::new("/src/tome-cli"))), "tome-cli-orchestrator");
-        assert_eq!(name(Some(Path::new("/src/my.app"))), "my-app-orchestrator");
-        assert_eq!(name(None), "global-orchestrator");
+        assert_eq!(name(Some(Path::new("/src/tome-cli")), None), "tome-cli-orchestrator");
+        assert_eq!(name(Some(Path::new("/src/my.app")), None), "my-app-orchestrator");
+        assert_eq!(name(Some(Path::new("/src/my.app")), Some("reviews")), "my-app-reviews");
+        assert_eq!(name(None, None), "global-orchestrator");
     }
 
     #[test]
@@ -234,23 +257,46 @@ mod tests {
         let project = dir.path().join("my.proj");
         fs::create_dir_all(&project).unwrap();
 
-        let id = places.tmux(tmux, Some(&project), &project).unwrap();
+        let id = places.tmux(tmux, Some(&project), None, &project).unwrap();
         assert!(tmux.list().contains(&"my-proj-orchestrator".to_string()), "{:?}", tmux.list());
-        assert_eq!(places.tmux(tmux, Some(&project), &project).unwrap(), id);
+        assert_eq!(places.tmux(tmux, Some(&project), None, &project).unwrap(), id);
 
         // A rename doesn't lose it.
         assert!(tmux.run(&["rename-session", "-t", &id, "mine-now"]).unwrap().status.success());
-        assert_eq!(places.tmux(tmux, Some(&project), &project).unwrap(), id);
+        assert_eq!(places.tmux(tmux, Some(&project), None, &project).unwrap(), id);
         // Other projects (and runs outside one) get their own.
-        let global = places.tmux(tmux, None, dir.path()).unwrap();
+        let global = places.tmux(tmux, None, None, dir.path()).unwrap();
         assert_ne!(global, id);
         assert!(tmux.list().contains(&"global-orchestrator".to_string()));
 
         // Closed by the user: a new one is made.
         assert!(tmux.run(&["kill-session", "-t", &id]).unwrap().status.success());
-        let again = places.tmux(tmux, Some(&project), &project).unwrap();
+        let again = places.tmux(tmux, Some(&project), None, &project).unwrap();
         assert_ne!(again, id);
         assert!(tmux.list().contains(&"my-proj-orchestrator".to_string()));
+        assert_eq!(places.load().len(), 2);
+    }
+
+    #[test]
+    fn a_named_workspace_is_its_own_and_found_by_id() {
+        let Some(server) = Server::new("named") else { return };
+        let tmux = &server.0;
+        let dir = tempfile::tempdir().unwrap();
+        let places = Places { file: dir.path().join("workspaces.json") };
+        let project = dir.path().join("proj");
+        fs::create_dir_all(&project).unwrap();
+
+        let main = places.tmux(tmux, Some(&project), None, &project).unwrap();
+        let reviews = places.tmux(tmux, Some(&project), Some("reviews"), &project).unwrap();
+        assert_ne!(main, reviews);
+        assert!(tmux.list().contains(&"proj-reviews".to_string()), "{:?}", tmux.list());
+        assert!(tmux.run(&["rename-session", "-t", &reviews, "renamed"]).unwrap().status.success());
+        assert_eq!(places.tmux(tmux, Some(&project), Some("reviews"), &project).unwrap(), reviews);
+        assert_eq!(places.tmux(tmux, Some(&project), None, &project).unwrap(), main);
+
+        assert!(tmux.run(&["kill-session", "-t", &reviews]).unwrap().status.success());
+        let again = places.tmux(tmux, Some(&project), Some("reviews"), &project).unwrap();
+        assert_ne!(again, reviews);
         assert_eq!(places.load().len(), 2);
     }
 
@@ -260,11 +306,11 @@ mod tests {
         let tmux = &server.0;
         let dir = tempfile::tempdir().unwrap();
         let places = Places { file: dir.path().join("workspaces.json") };
-        let id = places.tmux(tmux, None, dir.path()).unwrap();
+        let id = places.tmux(tmux, None, None, dir.path()).unwrap();
         // As if the server restarted and the user made a session that got
         // the same id.
         tmux.run(&["set-option", "-u", "-t", &id, TMUX_OPTION]).unwrap();
-        let again = places.tmux(tmux, None, dir.path()).unwrap();
+        let again = places.tmux(tmux, None, None, dir.path()).unwrap();
         assert_ne!(again, id);
         assert_eq!(tmux.list().len(), 2);
     }
@@ -278,7 +324,7 @@ mod tests {
         // A project whose name looks like run 7's sessions.
         let project = dir.path().join("tome-7-x");
         fs::create_dir_all(&project).unwrap();
-        let id = places.tmux(tmux, Some(&project), &project).unwrap();
+        let id = places.tmux(tmux, Some(&project), None, &project).unwrap();
         assert!(tmux.kill_prefix(&super::super::run_prefix(7)).is_empty());
         assert!(tmux.tagged_sessions().iter().any(|(i, _)| *i == id));
     }
