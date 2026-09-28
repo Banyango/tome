@@ -45,3 +45,5 @@ With `to: running`, a delivery is claimed by each running run of the workflow an
 **Blocked by:** 009-4
 
 Tome publishes `tome.run.<workflow>.started` (after the start handshake), `.succeeded`, `.failed` (including `orchestrator_exited`, and `daemon_restart` for runs recovered on daemon start) and `.cancelled`, with sender `tome` and a JSON payload: run id, workflow, and params/cause, summary/duration, or reason as fits. They go through the same delivery path as user events. Every event records its depth: `0` from the user, and one more than the event that started the publishing run, including that run's lifecycle events. An event deeper than `8` isn't delivered. Its publish is refused (exit `2` for `tome publish`), recorded and notified.
+
+> All tasks are done: implemented as 009-1 to 009-7 directly on main (1f87309, 66a8fa9, 7eafd9e, 85b1930, 7353f81, 14eaffa, 9bf55b9).
