@@ -138,3 +138,88 @@ fn removed_subscriptions_drop_their_pending_deliveries() {
     });
     assert!(deliveries(&env).contains(&("audit".to_string(), "pending".to_string())));
 }
+
+fn runs(env: &Env) -> Vec<Value> {
+    let mut runs = env.json(&["runs", "list"]).1["runs"].as_array().cloned().unwrap_or_default();
+    runs.sort_by_key(|r| r["id"].as_i64());
+    runs
+}
+
+fn finish(env: &Env, id: &Value) {
+    let (code, out) = env.json(&["run", "finish", "--status", "succeeded", "--run", &id.to_string()]);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
+fn topic_triggers_start_a_run_per_event_within_their_concurrency() {
+    let env = Env::new();
+    write_wf(
+        &env,
+        "review",
+        "concurrency: 1\non_conflict: reject\ntriggers:\n  - on: review.*\n",
+        "## Review\nGot {{trigger.payload}} on {{trigger.topic}} (event {{trigger.event_id}} from {{trigger.sender}})\n",
+    );
+    start_fast_daemon(&env);
+    let (_, v) = env.json(&["publish", "review.requested", "x", "--dry-run"]);
+    assert_eq!(v["matches"][0]["would"], "would start a run of review", "{v}");
+
+    assert_eq!(env.json(&["publish", "review.requested", "first"]).0, 0);
+    assert_eq!(env.json(&["publish", "review.requested", "second"]).0, 0);
+    common::eventually("a run for the first event", || runs(&env).len() == 1);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(runs(&env).len(), 1, "the second waits for the limit, as a pending delivery rather than a queued run");
+    assert_eq!(deliveries(&env), [("review", "claimed"), ("review", "pending")].map(|(a, b)| (a.to_string(), b.to_string())));
+    let first = runs(&env)[0]["id"].clone();
+    assert_eq!(query(&env, "SELECT run_ids FROM deliveries WHERE id = 1")[0][0], format!("[{first}]"));
+
+    let (_, show) = env.json(&["runs", "show", &first.to_string(), "--snapshot"]);
+    let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
+    assert!(snap.contains("Got first on review.requested (event 1 from user)"), "{snap}");
+    assert_eq!(show["run"]["trigger"]["topic"], "review.requested");
+    assert_eq!(show["run"]["trigger"]["depth"], 0);
+    let human = String::from_utf8_lossy(&env.run(&["runs", "show", &first.to_string()]).stdout).to_string();
+    assert!(human.contains("event     1 on review.requested from user"), "{human}");
+
+    let (_, v) = env.json(&["publish", "review.done", "x", "--dry-run"]);
+    let would = v["matches"][0]["would"].as_str().unwrap();
+    assert!(would.starts_with("would wait: review at its concurrency limit"), "{would}");
+
+    // A run ending makes room for the next event.
+    finish(&env, &first);
+    common::eventually("a run for the second event", || runs(&env).len() == 2);
+    let second = runs(&env)[1]["id"].clone();
+    let (_, show) = env.json(&["runs", "show", &second.to_string(), "--snapshot"]);
+    assert!(show["run"]["workflow_snapshot"].as_str().unwrap().contains("Got second"));
+    let outcomes: Vec<Value> = query(&env, "SELECT outcome FROM trigger_fires WHERE trigger_index >= 0 ORDER BY id").into_iter().map(|r| r[0].clone()).collect();
+    assert_eq!(outcomes, ["started", "started"]);
+}
+
+#[test]
+fn backlogs_wait_for_triggers_to_be_enabled_and_workflows_to_be_valid() {
+    let env = Env::new();
+    write_wf(&env, "deploy", "triggers:\n  - on: deploy\n", "## Deploy\n{{trigger.payload}}\n");
+    start_fast_daemon(&env);
+    assert_eq!(env.json(&["triggers", "disable"]).0, 0);
+    let (_, v) = env.json(&["publish", "deploy", "x", "--dry-run"]);
+    assert_eq!(v["matches"][0]["would"], "would wait: the project's triggers are disabled");
+    assert_eq!(env.json(&["publish", "deploy", "a"]).0, 0);
+    assert_eq!(env.json(&["publish", "deploy", "b"]).0, 0);
+
+    // Invalid when enabled: nothing is claimed, and the error is recorded.
+    let dir = env.project().join(".tome/workflows");
+    fs::write(dir.join("deploy.md"), "---\nname: deploy\nconcurrency: nope\ntriggers:\n  - on: deploy\n---\n## Deploy\nGo.\n").unwrap();
+    assert_eq!(env.json(&["triggers", "enable"]).0, 0);
+    common::eventually("the invalid workflow recorded", || {
+        !query(&env, "SELECT id FROM trigger_fires WHERE workflow_name = 'deploy' AND outcome = 'error'").is_empty()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(runs(&env).is_empty());
+    assert_eq!(deliveries(&env), [("deploy", "pending"), ("deploy", "pending")].map(|(a, b)| (a.to_string(), b.to_string())));
+
+    // Fixed: the backlog is taken in publish order.
+    write_wf(&env, "deploy", "triggers:\n  - on: deploy\n", "## Deploy\n{{trigger.payload}}\n");
+    common::eventually("a run per event", || runs(&env).len() == 2);
+    let causes: Vec<Value> = runs(&env).iter().map(|r| env.json(&["runs", "show", &r["id"].to_string()]).1["run"]["trigger"]["event_id"].clone()).collect();
+    assert_eq!(causes, [1, 2]);
+    assert_eq!(deliveries(&env), [("deploy", "claimed"), ("deploy", "claimed")].map(|(a, b)| (a.to_string(), b.to_string())));
+}

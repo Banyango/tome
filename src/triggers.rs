@@ -11,7 +11,7 @@ use crate::api::{opt_str, req_str};
 use crate::arming;
 use crate::engine::Engine;
 use crate::output::{CliError, CliResult, ErrorKind};
-use crate::store::{NewFire, Run, RunStatus};
+use crate::store::{BusEvent, NewFire, Run, RunStatus};
 use crate::{orchestrator, session};
 use crate::workflow::{self, FileEvent, Scope, Target, TriggerKind, WhileRunning, Workflow};
 use chrono::{DateTime, Local, SecondsFormat};
@@ -48,6 +48,8 @@ pub struct Event {
     pub scheduled: Option<DateTime<Local>>,
     /// Sent by `tome triggers fire` rather than a real source.
     pub synthetic: bool,
+    /// The bus event (topic triggers), and the delivery claimed for it.
+    pub bus: Option<(BusEvent, i64)>,
 }
 
 /// One trigger of one workflow, where it's armed.
@@ -122,8 +124,18 @@ pub fn fields(kind: &TriggerKind, event: &Event, now: DateTime<Local>) -> Map<St
     m.insert("paths".into(), Value::Array(paths));
     m.insert("time".into(), json!(local_time(now)));
     m.insert("scheduled".into(), json!(event.scheduled.map(local_time).unwrap_or_default()));
-    for field in ["topic", "payload", "event_id", "sender"] {
-        m.insert(field.into(), json!(""));
+    match &event.bus {
+        Some((e, _)) => {
+            m.insert("topic".into(), json!(e.topic));
+            m.insert("payload".into(), json!(e.payload));
+            m.insert("event_id".into(), json!(e.id.to_string()));
+            m.insert("sender".into(), json!(e.sender));
+        }
+        None => {
+            for field in ["topic", "payload", "event_id", "sender"] {
+                m.insert(field.into(), json!(""));
+            }
+        }
     }
     m
 }
@@ -268,6 +280,7 @@ impl Engine {
                 paths: paths.iter().map(|p| (p.clone(), on)).collect(),
                 scheduled: matches!(kind, Some(TriggerKind::Cron { .. })).then(Local::now),
                 synthetic: true,
+                bus: None,
             }
         };
         let kind = load(&workflow_path, project.as_deref()).ok().and_then(|wf| wf.frontmatter.triggers.get(index).map(|t| t.kind.clone()));
@@ -495,6 +508,13 @@ impl Engine {
         if queue {
             cause["while_running"] = json!(WhileRunning::Queue.as_str());
         }
+        if let Some((e, delivery)) = &req.event.bus {
+            cause["event_id"] = json!(e.id);
+            cause["topic"] = json!(e.topic);
+            cause["depth"] = json!(e.depth);
+            cause["sender"] = json!(e.sender);
+            cause["delivery"] = json!(delivery);
+        }
         let started = if queue { outcome::QUEUED } else { outcome::STARTED };
         if req.dry_run {
             let overrides = workflow::parse_param_args(&params).unwrap_or_default();
@@ -515,6 +535,7 @@ impl Engine {
             "params": params,
             "trigger": fields,
             "cause": cause,
+            "delivery_id": req.event.bus.as_ref().map(|(_, d)| d),
         });
         match self.start(&p) {
             Ok(run) => Fired {

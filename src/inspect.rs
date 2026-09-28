@@ -104,6 +104,9 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
             cause.push_str(" [fired by hand]");
         }
         out.push_str(&format!("  {:<10}{cause}\n", "trigger"));
+        if t.get("event_id").is_some_and(|v| !v.is_null()) {
+            out.push_str(&format!("  {:<10}{} on {} from {}\n", "event", s(&t["event_id"]), s(&t["topic"]), s(&t["sender"])));
+        }
     }
     out.push_str(&format!("  {:<10}{}\n", "started", ts(&run["created_at"])));
     if !run["finished_at"].is_null() {

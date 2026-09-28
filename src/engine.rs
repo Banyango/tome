@@ -63,6 +63,11 @@ pub struct Engine {
     pub(crate) file_polling: Mutex<HashMap<String, String>>,
     /// Launched agents that haven't made a tome call yet.
     pub(crate) starts: Mutex<HashMap<Agent, Pending>>,
+    /// Held while topic triggers hand out their pending deliveries.
+    pub(crate) draining: Mutex<()>,
+    /// Topic triggers whose runs can't be started, by armed key, with why:
+    /// left alone until they're re-armed.
+    pub(crate) stalled: Mutex<HashMap<String, String>>,
 }
 
 impl Engine {
@@ -73,6 +78,8 @@ impl Engine {
             launching: Mutex::new(HashSet::new()),
             file_polling: Mutex::new(HashMap::new()),
             starts: Mutex::new(HashMap::new()),
+            draining: Mutex::new(()),
+            stalled: Mutex::new(HashMap::new()),
         }
     }
 
@@ -147,6 +154,10 @@ impl Engine {
                 }
             };
             let (run, _body) = api::create_run(store, p, &wf, status)?;
+            // A topic trigger's run holds its delivery from the start.
+            if let Some(delivery) = p["delivery_id"].as_i64() {
+                store.set_delivery_runs(delivery, &[run.id])?;
+            }
             Ok(run)
         })?;
         if run.status == RunStatus::Queued {

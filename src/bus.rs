@@ -10,11 +10,13 @@ use crate::api::{opt_str, req_id_at, req_str};
 use crate::arming::{self, Armed};
 use crate::engine::Engine;
 use crate::output::{CliError, CliResult};
-use crate::store::{BusEvent, Delivery, NewEvent, Run, Subscriber};
+use crate::store::{delivery_state as state, BusEvent, Delivery, NewEvent, Run, Subscriber};
 use crate::topic;
-use crate::workflow::TriggerKind;
+use crate::triggers::{self, outcome, Event, FireRequest};
+use crate::workflow::{Target, TriggerKind};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const METHODS: &[&str] = &["events.publish"];
 
@@ -138,10 +140,17 @@ impl Engine {
         }
         let published = self.publish(&publish, dry_run)?;
         let names: Vec<&str> = published.matches.iter().map(|a| a.name.as_str()).collect();
+        let enabled = self.with_store(|store| store.projects())?.iter().any(|p| p.path == project && p.enabled);
         let matches: Vec<Value> = published
             .matches
             .iter()
-            .map(|a| json!({ "workflow": a.name, "workflow_path": a.workflow_path, "index": a.index, "on": a.trigger.describe() }))
+            .map(|a| {
+                let mut m = json!({ "workflow": a.name, "workflow_path": a.workflow_path, "index": a.index, "on": a.trigger.describe() });
+                if dry_run {
+                    m["would"] = json!(self.would(a, enabled));
+                }
+                m
+            })
             .collect();
         Ok(json!({
             "event": published.event,
@@ -226,6 +235,104 @@ impl Engine {
                 }
                 Err(e) => eprintln!("tome daemon: dropping stale deliveries failed: {}", e.message),
             }
+        }
+    }
+}
+
+impl Engine {
+    /// What a delivery to `a` would lead to, for dry runs.
+    fn would(&self, a: &Armed, enabled: bool) -> String {
+        if !enabled {
+            return "would wait: the project's triggers are disabled".into();
+        }
+        if let Some(why) = self.stalled.lock().unwrap_or_else(|p| p.into_inner()).get(&a.key()) {
+            return format!("would wait: {why}");
+        }
+        let wf = match triggers::load(&a.workflow_path, a.project.as_deref()) {
+            Ok(wf) => wf,
+            Err(inv) => return format!("would wait: {}", triggers::first_errors(&inv)),
+        };
+        let start = format!("would start a run of {}", a.name);
+        let Some(limit) = wf.frontmatter.concurrency.map(|n| n as usize) else { return start };
+        let active = self.active_runs(&a.name, &a.workflow_path).map(|r| r.len()).unwrap_or(0);
+        let ahead = self.pending_of(a).len();
+        if active + ahead < limit {
+            start
+        } else {
+            format!("would wait: {} at its concurrency limit ({active} of {limit} active, {ahead} waiting)", a.name)
+        }
+    }
+
+    /// A subscription's pending deliveries, oldest first.
+    fn pending_of(&self, a: &Armed) -> Vec<Delivery> {
+        let (Some(project), Some(pattern)) = (&a.project, pattern_of(a)) else { return Vec::new() };
+        self.with_store(|store| {
+            store.subscription_deliveries(&project.display().to_string(), &a.name, &pattern.to_string(), state::PENDING)
+        })
+        .unwrap_or_default()
+    }
+
+    /// Hand out the pending deliveries of the armed topic triggers, off the
+    /// caller's thread. One drain at a time; a tick that finds one going
+    /// skips.
+    pub(crate) fn drain_all(self: &Arc<Self>, armed: &[Armed]) {
+        let topics: Vec<Armed> = armed.iter().filter(|a| pattern_of(a).is_some() && a.project.is_some()).cloned().collect();
+        if topics.is_empty() {
+            return;
+        }
+        let engine = Arc::clone(self);
+        std::thread::spawn(move || {
+            let Ok(_draining) = engine.draining.try_lock() else { return };
+            for a in &topics {
+                engine.drain(a);
+            }
+        });
+    }
+
+    /// Hand out one subscription's pending deliveries in publish order.
+    /// With `to: new`, each is claimed for a new run before it starts,
+    /// while the workflow's concurrency has room; the rest stay pending.
+    fn drain(&self, a: &Armed) {
+        if a.trigger.to != Target::New || self.stalled.lock().unwrap_or_else(|p| p.into_inner()).contains_key(&a.key()) {
+            return;
+        }
+        let pending = self.pending_of(a);
+        if pending.is_empty() {
+            return;
+        }
+        // An invalid workflow claims nothing; re-arming records why.
+        let Ok(wf) = triggers::load(&a.workflow_path, a.project.as_deref()) else { return };
+        let limit = wf.frontmatter.concurrency.map(|n| n as usize);
+        for d in pending {
+            if let Some(limit) = limit {
+                let active = self.active_runs(&a.name, &a.workflow_path).map_or(usize::MAX, |r| r.len());
+                if active >= limit {
+                    return;
+                }
+            }
+            let Ok(Some(event)) = self.with_store(|store| store.bus_event(d.event_id)) else { continue };
+            if !self.with_store(|store| store.move_delivery(d.id, state::PENDING, state::CLAIMED, Some(&[]))).unwrap_or(false) {
+                continue;
+            }
+            let fired = self.fire(&FireRequest {
+                workflow_path: a.workflow_path.clone(),
+                project: a.project.clone(),
+                index: a.index,
+                event: Event { bus: Some((event, d.id)), ..Default::default() },
+                dry_run: false,
+            });
+            // A run that was recorded holds the delivery, even if it failed
+            // to launch.
+            let held = self.with_store(|store| store.delivery(d.id)).ok().flatten().is_some_and(|d| !d.run_ids.is_empty());
+            if held {
+                continue;
+            }
+            let _ = self.with_store(|store| store.move_delivery(d.id, state::CLAIMED, state::PENDING, Some(&[])));
+            if fired.outcome == outcome::ERROR {
+                let why = fired.message.unwrap_or_else(|| "the run couldn't be started".into());
+                self.stalled.lock().unwrap_or_else(|p| p.into_inner()).insert(a.key(), why);
+            }
+            return;
         }
     }
 }

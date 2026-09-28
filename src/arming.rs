@@ -250,6 +250,8 @@ impl Engine {
                 }
                 reported = still;
                 self.drop_unsubscribed(&next, &projects);
+                // Re-armed: stalled topic triggers get another go.
+                self.stalled.lock().unwrap_or_else(|p| p.into_inner()).clear();
                 current = next;
                 eprintln!("tome daemon: {} trigger(s) armed", current.armed.len());
             }
@@ -264,6 +266,7 @@ impl Engine {
                 self.fire_armed(&armed, event);
             }
             *self.file_polling.lock().unwrap_or_else(|p| p.into_inner()) = files.polling();
+            self.drain_all(&current.armed);
             std::thread::sleep(tick());
         }
     }
