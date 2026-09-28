@@ -26,6 +26,7 @@ fn session(env: &Env) -> Value {
 fn workspace(env: &Env) -> String {
     let s = session(env);
     assert_eq!(s["backend"], "cmux", "{s}");
+    assert!(s["pane"].as_str().is_some_and(|p| !p.is_empty()), "no surface: {s}");
     s["handle"].as_str().unwrap_or_else(|| panic!("no handle: {s}")).to_string()
 }
 

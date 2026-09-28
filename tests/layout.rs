@@ -88,3 +88,33 @@ fn the_config_layout_is_recorded_on_every_session() {
     assert!(all.iter().all(|s| s["layout"] == "workspace"), "{all:?}");
     assert!(env.has_session("tome-1-build-w1"));
 }
+
+/// A `reader` harness whose orchestrator writes the first line typed into
+/// it to `got.txt` in the tome home, then idles.
+fn reader(env: &Env, layout: &str) {
+    let script = env.home().join("reader.sh");
+    fs::write(&script, format!("read line; echo \"$line\" > {}; sleep 30\n", env.home().join("got.txt").display())).unwrap();
+    env.set_config(&format!("{}  reader: [sh, \"{}\"]\nlayout: {layout}\n", common::IDLE_CONFIG, script.display()));
+    write_wf(env, "build", "defaults:\n  harness: reader\n");
+}
+
+fn got(env: &Env) -> String {
+    fs::read_to_string(env.home().join("got.txt")).unwrap_or_default()
+}
+
+#[test]
+fn sessions_are_tracked_by_their_own_pane() {
+    let env = env();
+    reader(&env, "workspace");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    let s = &sessions(&env, 1)[0];
+    let pane = s["pane"].as_str().unwrap_or_else(|| panic!("no pane: {s}"));
+    assert!(pane.starts_with('%'), "{s}");
+
+    // The user opens another window in the session: nudges still reach the
+    // orchestrator's own pane.
+    assert!(env.tmux(&["new-window", "-t", "=tome-1-build:"]).status.success());
+    spawn(&env, 1, "w1", &["true"]);
+    common::eventually("the nudge", || got(&env).contains("[tome] worker w1 done"));
+}
