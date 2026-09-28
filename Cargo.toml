@@ -12,11 +12,17 @@ path = "src/main.rs"
 anyhow = "1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive", "env"] }
-duckdb = { version = "1.10505.0", features = ["bundled", "chrono"] }
+duckdb = { version = "1.10505.0", features = ["chrono"] }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
+
+[features]
+# Compile DuckDB from source and link it statically, for a self-contained binary.
+# Use for release/distribution builds: cargo build --release --features bundled
+# Dev builds link the prebuilt libduckdb instead (DUCKDB_DOWNLOAD_LIB in .cargo/config.toml).
+bundled = ["duckdb/bundled"]
 
 [dev-dependencies]
 tempfile = "3"
