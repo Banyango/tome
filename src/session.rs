@@ -20,6 +20,10 @@
 //! agent's environment, captures its output to a log and `exec`s it, so the
 //! session ends when the agent does.
 
+mod workspace;
+
+pub use workspace::Places;
+
 use crate::harness::{self, shell_quote};
 use crate::output::{CliError, CliResult};
 use crate::store::Session;
@@ -408,6 +412,7 @@ impl Tmux {
     }
 
     /// Names of all sessions on the server.
+    #[cfg(test)]
     pub fn list(&self) -> Vec<String> {
         match self.run(&["list-sessions", "-F", "#{session_name}"]) {
             Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect(),
@@ -415,9 +420,21 @@ impl Tmux {
         }
     }
 
-    /// Kill every session whose name starts with `prefix`; returns their names.
+    /// Kill every session whose name starts with `prefix`, except tome
+    /// workspaces; returns their names.
     pub fn kill_prefix(&self, prefix: &str) -> Vec<String> {
-        self.list().into_iter().filter(|n| n.starts_with(prefix) && self.kill(n)).collect()
+        let format = format!("#{{session_name}}\t#{{{}}}", workspace::TMUX_OPTION);
+        let sessions = match self.run(&["list-sessions", "-F", &format]) {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+            _ => return Vec::new(),
+        };
+        sessions
+            .lines()
+            .filter_map(|l| l.split_once('\t'))
+            .filter(|(name, tag)| tag.is_empty() && name.starts_with(prefix))
+            .map(|(name, _)| name.to_string())
+            .filter(|name| self.kill(name))
+            .collect()
     }
 }
 
@@ -659,10 +676,10 @@ mod tests {
     }
 
     /// A private tmux server, killed on drop.
-    struct Server(Tmux);
+    pub struct Server(pub Tmux);
 
     impl Server {
-        fn new(tag: &str) -> Option<Server> {
+        pub fn new(tag: &str) -> Option<Server> {
             if !Tmux::available() {
                 eprintln!("skipping: tmux isn't installed");
                 return None;
