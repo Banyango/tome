@@ -2,6 +2,8 @@
 
 Source feature: [feature.md](./feature.md)
 
+> All tasks are done: implemented as 005-1 to 005-5 and merged into main in eee3a9b.
+
 ## Tasks
 
 ### 005-1. OS-event file watching as the default

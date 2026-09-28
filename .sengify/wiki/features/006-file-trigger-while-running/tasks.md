@@ -2,6 +2,8 @@
 
 Source feature: [feature.md](./feature.md)
 
+> All tasks are done: implemented as 006-1 to 006-4 and merged into main in e76a146.
+
 ## Tasks
 
 ### 006-1. Queued runs survive a daemon restart
