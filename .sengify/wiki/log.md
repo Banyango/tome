@@ -19,3 +19,4 @@
 - 2026-09-28 09:43 — feature — 009 re-scoped from project queues to a project message bus (topics, fan-out deliveries, `on:` triggers, run lifecycle events); directory renamed to 009-message-bus — pages touched: features/009-message-bus/feature.md, features/009-message-bus/tasks.md, entities/event.md (new), entities/trigger.md, entities/queue.md, index.md
 - 2026-09-28 10:46 — update — 009-message-bus implemented — pages touched: features/009-message-bus/tasks.md
 - 2026-09-28 10:46 — update — 009-message-bus: what changed and potential follow-ups — pages touched: features/009-message-bus/tasks.md, entities/event.md, entities/trigger.md
+- 2026-09-28 11:05 — update — 009-message-bus: follow-ups moved to their own page — pages touched: features/009-message-bus/follow-ups.md (new), features/009-message-bus/tasks.md, index.md

@@ -34,3 +34,4 @@
 - [007 - Agent start handshake](features/007-agent-start-handshake/feature.md)
 - [008 - Session layout](features/008-session-layout/feature.md)
 - [009 - Project message bus and topic triggers](features/009-message-bus/feature.md)
+  - [Follow-ups](features/009-message-bus/follow-ups.md)
