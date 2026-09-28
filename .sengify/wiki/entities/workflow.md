@@ -12,6 +12,7 @@ A reusable, user-authored definition of the steps an agentic process should take
 - triggers: the [[trigger]]s that start the workflow or advance its steps
 - failure conditions: user-specified; by default, notify the user
 - capabilities: run agents, open multiplexer windows, run CLI commands, notify the user, etc.
+- session placement: `defaults.layout` sets where sessions go (`layout`, `workspace`, `split`, `from`, `preset`), with `orchestrator` and `workers` role blocks and per-worker `workers:` rules matched by name glob _(source: [010](../features/010-session-placement/feature.md))_
 
 ## Relationships
 
@@ -33,3 +34,4 @@ A reusable, user-authored definition of the steps an agentic process should take
 - .sengify/sources/interview-2026-09-26.md
 - .sengify/sources/feature-set-2026-09-26.md
 - features/002-running-a-workflow/feature.md
+- features/010-session-placement/feature.md

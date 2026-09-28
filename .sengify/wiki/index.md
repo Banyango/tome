@@ -36,3 +36,4 @@
 - [009 - Project message bus and topic triggers](features/009-message-bus/feature.md)
   - [Follow-ups](features/009-message-bus/follow-ups.md)
 - [010 - Session placement](features/010-session-placement/feature.md)
+  - [Follow-ups](features/010-session-placement/follow-ups.md)

@@ -2,6 +2,45 @@
 
 Source feature: [feature.md](./feature.md)
 
+> All tasks are done: implemented as 010-1 to 010-7 directly on main (2b214b1, 0a30973, 03db0ec, e9ee58b, 51707d1, 55fa914, 390ec6f). Follow-ups: [follow-ups.md](./follow-ups.md).
+
+## What changed
+
+- **Config:** a project's `.tome/config.yaml` (the nearest one above the run's project directory) takes the same keys as `~/.tome/config.yaml`: `backend`, `harnesses`, `layout`, `layout_presets`. The project file wins per top-level key, and per entry for `harnesses` and `layout_presets`. Either file refuses an unknown top-level key, with the known keys as the hint.
+- **Placement:** a session's placement is a set of settings: `layout`, `workspace`, `split.direction`, `split.size`, `from`. Each resolves on its own, from the highest level that gives it:
+  1. `tome worker spawn` flags (workers) or `tome run` flags (the orchestrator)
+  2. the first matching `workers[]` rule (glob on the worker's name)
+  3. the `workers` or `orchestrator` role block
+  4. `tome run` flags (for workers)
+  5. the workflow's `defaults.layout`, then its preset
+  6. `TOME_LAYOUT`
+  7. `layout` in the project's `.tome/config.yaml`, then the global one
+  8. the built-in default (`tab` in the project workspace)
+
+  At each level, the level's own settings come before the `preset:` it's built on. The built-in presets are `tab`, `split` and `workspace`; `tome layout presets` lists them with the global and project ones.
+- **Records:** each session records its resolved placement as JSON, with the source of each setting and any warnings (store migration 9). Each run records its `tome run` flags, the workspace focused when it was requested and any placement notes (migration 10). Sessions from before placements are read as their old `layout`.
+- **Flags:** `tome run` and `tome worker spawn` take `--preset --layout --workspace --direction --size --from`. An undefined preset fails the command before anything is recorded. `tome validate` only warns about one, since presets depend on the environment.
+- **Splits:** `from` anchors come from the run's recorded sessions, newest first for `last`. On tmux, a split without an anchor runs along the whole edge of the first window (`-f`). On cmux, the size is applied after the split by measuring and resizing.
+- **Workspaces:** `~/.tome/workspaces.json` records are keyed by backend, tmux socket, project and name, so each `<project>-<name>` workspace is kept like the project one. The focused workspace is found with `tmux list-clients` (the most recently active client) or `cmux identify`. tome doesn't keep a record for it.
+- **`tome runs show`:** after the sessions table, a `placement:` section lists each session's settings with their sources and its warnings, then the focused workspace and the run's notes.
+- **`tome session move <run>/<name>`:** it re-places a live session. The tmux pane or cmux surface keeps its id, so the agent keeps running. The record's handle, layout and placement are updated in place.
+- **Tests:** `tests/layout.rs` (tmux) covers flags, presets, direction and size, `from`, named and focused workspaces, `runs show` and moves. It fakes an attached client with `script -q /dev/null tmux attach`. `tests/cmux.rs` covers tab `from`, best-effort size and a move through split, own and back to tab.
+
+## Interpretations made while implementing
+
+- **`workers:`** is either a list of rules or a role block with `rules:`.
+- **`layout: workspace`** means `workspace: own`, unless a higher level set `workspace`, which then wins (the layout falls back to `tab`).
+- **Config `layout`** resolves per key: each setting comes from the project file if it gives it, else the global one. The global config refuses unknown keys too.
+- **`from`** is used only if its pane is in the target workspace. Otherwise the session opens in the default place, with a warning on the session.
+- **cmux `split.size`** is best effort. It's skipped, with a warning, for a workspace cmux hasn't shown yet (no geometry).
+- **`focused`** is detected when the run is requested (`engine.start`, before any queueing). A run started by a trigger records it as unknown. A note is recorded on the run only when `focused` is actually used and falls back to the project workspace. A focused workspace that's gone by launch time falls back to the project workspace, with a session warning. A tab in a focused cmux workspace joins the run's latest pane there, since tome doesn't keep a tabs pane for a workspace it doesn't own.
+- **`tome session move`:**
+  - Settings the flags don't give stay as the session had them. Leaving `own` for `tab`/`split` goes to the project workspace unless `--workspace` is given; a named, project or focused workspace with the old layout `workspace` becomes a `tab`.
+  - `focused` there means the workspace focused at move time.
+  - The session is given as `<run>/<name>`, where `name` is `orchestrator` or a worker's name (just `<name>` uses `TOME_RUN_ID`).
+  - tmux doesn't need `move-window`: a tab is `break-pane` into the target session, a split is `join-pane`, and own is `break-pane` into a new session named like the session. cmux doesn't need `break-pane`/`join-pane`: `move-surface`, `drag-surface-to-split` and `move-tab-to-new-workspace` cover it. An own cmux workspace left empty is closed.
+  - A failed cmux step moves the surface back to its old pane. tmux moves are single commands, except own, whose new session is killed if the pane can't be moved into it.
+
 ## Tasks
 
 ### 010-1. Project config file
@@ -66,20 +105,3 @@ Launches on tmux and cmux follow the resolved `workspace`:
 - **tmux:** it uses `join-pane`, `break-pane` and `move-window`.
 
 tome updates the session's recorded handle and resolved placement, so liveness checks, kill, nudges and crash recovery follow the session to its new place. A preset that isn't defined fails with a hint. If a move fails partway, the session stays where it was, its recorded handle doesn't change, and the command errors. (UC 12)
-
-> All tasks are done: implemented as 010-1 to 010-7 directly on main (2b214b1, 0a30973, 03db0ec, e9ee58b, 51707d1, 55fa914, 390ec6f).
-
-## Interpretations made while implementing
-
-- **`workers:`** is either a list of rules or a role block with `rules:`.
-- **`layout: workspace`** means `workspace: own`, unless a higher level set `workspace`, which then wins (the layout falls back to `tab`).
-- **Config `layout`** resolves per key: each setting comes from the project file if it gives it, else the global one. The global config refuses unknown keys too.
-- **`from`** is used only if its pane is in the target workspace. Otherwise the session opens in the default place, with a warning on the session.
-- **cmux `split.size`** is best effort. It's skipped, with a warning, for a workspace cmux hasn't shown yet (no geometry).
-- **`focused`** is detected when the run is requested (`engine.start`, before any queueing). A run started by a trigger records it as unknown. A note is recorded on the run only when `focused` is actually used and falls back to the project workspace. A focused workspace that's gone by launch time falls back to the project workspace, with a session warning. A tab in a focused cmux workspace joins the run's latest pane there, since tome doesn't keep a tabs pane for a workspace it doesn't own.
-- **`tome session move`:**
-  - Settings the flags don't give stay as the session had them. Leaving `own` for `tab`/`split` goes to the project workspace unless `--workspace` is given; a named, project or focused workspace with the old layout `workspace` becomes a `tab`.
-  - `focused` there means the workspace focused at move time.
-  - The session is given as `<run>/<name>`, where `name` is `orchestrator` or a worker's name (just `<name>` uses `TOME_RUN_ID`).
-  - tmux doesn't need `move-window`: a tab is `break-pane` into the target session, a split is `join-pane`, and own is `break-pane` into a new session named like the session. cmux doesn't need `break-pane`/`join-pane`: `move-surface`, `drag-surface-to-split` and `move-tab-to-new-workspace` cover it. An own cmux workspace left empty is closed.
-  - A failed cmux step moves the surface back to its old pane. tmux moves are single commands, except own, whose new session is killed if the pane can't be moved into it.

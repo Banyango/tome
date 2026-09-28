@@ -10,6 +10,7 @@ The agent that carries out a [[run]]. The [[daemon]] launches it in its own visi
 - bootstrap: a built-in prompt (the tome command reference and its duties), the resolved workflow body, any extra orchestrator instructions from the workflow, and the env vars `TOME_RUN_ID` and `TOME_OUTPUT=json`
 - duties: decide order, branching and looping; spawn workers; report [[step]] progress with `tome step start|done|fail`; end the run with `tome run finish --status succeeded|failed`
 - exits without finishing: the run fails with reason `orchestrator_exited`
+- placement: `tome run` placement flags, above the workflow's `orchestrator` block; its session can be re-placed with `tome session move <run>/orchestrator` _(source: [010](../features/010-session-placement/feature.md))_
 
 ## Relationships
 
@@ -22,3 +23,4 @@ The agent that carries out a [[run]]. The [[daemon]] launches it in its own visi
 ## Sources
 
 - features/002-running-a-workflow/feature.md
+- features/010-session-placement/feature.md

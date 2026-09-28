@@ -23,3 +23,4 @@
 - 2026-09-28 12:53 — feature — 010-session-placement: placement settings (layout, workspace, split direction/size, anchor), presets, per-role and per-worker rules, project config, spawn/run flags, session move — pages touched: features/010-session-placement/feature.md (new), index.md
 - 2026-09-28 14:04 — update — 010-session-placement implemented — pages touched: features/010-session-placement/tasks.md
 - 2026-09-28 14:04 — update — 010-session-placement: interpretations made while implementing — pages touched: features/010-session-placement/tasks.md, entities/session.md
+- 2026-09-28 15:02 — update — 010-session-placement: what changed and potential follow-ups — pages touched: features/010-session-placement/tasks.md, features/010-session-placement/follow-ups.md (new), index.md, entities/run.md, entities/workflow.md, entities/worker.md, entities/orchestrator.md
