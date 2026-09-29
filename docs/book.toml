@@ -1,0 +1,15 @@
+[book]
+title = "tome"
+description = "Docs for tome, an agentic workflow management CLI"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+site-url = "/tome/"
+git-repository-url = "https://github.com/banyango/tome"
+edit-url-template = "https://github.com/banyango/tome/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"

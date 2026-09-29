@@ -1,0 +1,69 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  examples:
+    name: validate example workflows
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+      - name: tome validate
+        run: |
+          set -eu
+          found=0
+          for f in $(find docs -path docs/book -prune -o -name '*.md' -path '*/examples/*' -print | sort); do
+            found=1
+            echo "::group::$f"
+            ./target/debug/tome validate "$f"
+            echo "::endgroup::"
+          done
+          [ "$found" = 1 ] || { echo "no example workflows found under docs/"; exit 1; }
+
+  build:
+    name: build site
+    needs: examples
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: latest
+      - name: mdbook build
+        run: mdbook build docs
+      - name: llms.txt
+        run: python3 llms.py https://banyango.github.io/tome
+        working-directory: docs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/book
+
+  deploy:
+    name: deploy to GitHub Pages
+    # A failed build or example leaves the live site as it is.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
