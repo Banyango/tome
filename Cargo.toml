@@ -3,6 +3,9 @@ name = "tome"
 version = "0.1.0"
 edition = "2021"
 description = "Agentic workflow management CLI"
+license = "MIT"
+repository = "https://github.com/banyango/tome"
+homepage = "https://banyango.github.io/tome"
 
 [[bin]]
 name = "tome"
