@@ -46,7 +46,7 @@ The worker's working directory is the worktree, and it commits its changes to th
 
 `tome worktree create <name> [--base <ref>]` makes a worktree that isn't tied to a worker.
 
-Worktrees stay after a run ends, so you can look at the branches. [`tome gc`](operating.md#cleaning-up) removes them with old runs.
+Worktrees stay after a run ends, so you can look at the branches. [`tome gc`](operating.md#cleaning-up) removes them with old runs, and deletes a branch only if it was merged into its base.
 
 ## Fan-out and fan-in
 
