@@ -188,6 +188,10 @@ impl Engine {
         };
         let flags = p.get("placement").filter(|v| !v.is_null()).map(Settings::from_json).transpose()?;
         if let Some(flags) = &flags {
+            if flags.from == Some(placement::From::Caller) {
+                return Err(CliError::invalid(format!("--from: {}", placement::CALLER_IS_FOR_THE_ORCHESTRATOR))
+                    .with_hint("use --from orchestrator, last or first"));
+            }
             placement::check_flag_preset(flags, "`tome worker spawn` flags", orchestrator::run_project(&run).as_deref())?;
         }
         // Resolve the base before recording anything, so a bad one spawns nothing.

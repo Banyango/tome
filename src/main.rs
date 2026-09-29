@@ -459,7 +459,8 @@ struct PlacementArgs {
     /// A split's size: a percentage (30%) or cells (80).
     #[arg(long, value_name = "SIZE", help_heading = "Placement")]
     size: Option<String>,
-    /// The pane a split or tab opens from: orchestrator, last, or first.
+    /// The pane a split or tab opens from: orchestrator, last, first, or
+    /// caller (the cmux pane running this command; the orchestrator only).
     #[arg(long, value_name = "PANE", help_heading = "Placement")]
     from: Option<String>,
 }

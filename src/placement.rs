@@ -18,6 +18,10 @@
 //! project's `.tome/config.yaml`, the global `~/.tome/config.yaml` and
 //! the built-in default (`tab` in the project workspace). A level's own
 //! settings come before the preset it's built on.
+//!
+//! `from: caller` (the cmux pane that ran `tome run`) is for the
+//! orchestrator only: a worker's own levels can't set it, and workers skip
+//! it at the levels both roles share.
 
 use crate::config::{self, Config};
 use crate::glob::Glob;
@@ -34,7 +38,7 @@ use std::path::Path;
 pub const RESERVED: &[&str] = &["project", "focused", "own"];
 pub const LAYOUTS: &[&str] = &["tab", "split", "workspace"];
 pub const DIRECTIONS: &[&str] = &["right", "down", "left", "up"];
-pub const FROMS: &[&str] = &["orchestrator", "last", "first"];
+pub const FROMS: &[&str] = &["orchestrator", "last", "first", "caller"];
 /// The keys a placement block takes (a workflow's also takes role blocks).
 pub const KEYS: &[&str] = &["preset", "layout", "workspace", "split", "from"];
 pub const SPLIT_KEYS: &[&str] = &["direction", "size"];
@@ -158,6 +162,8 @@ pub enum From {
     Orchestrator,
     Last,
     First,
+    /// The cmux pane that ran `tome run` (the orchestrator only).
+    Caller,
 }
 
 impl From {
@@ -166,6 +172,7 @@ impl From {
             "orchestrator" => Some(From::Orchestrator),
             "last" => Some(From::Last),
             "first" => Some(From::First),
+            "caller" => Some(From::Caller),
             _ => None,
         }
     }
@@ -175,6 +182,7 @@ impl From {
             From::Orchestrator => "orchestrator",
             From::Last => "last",
             From::First => "first",
+            From::Caller => "caller",
         }
     }
 }
@@ -474,7 +482,9 @@ pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
         let rules: Option<&Vec<Yaml>> = match w {
             Yaml::Sequence(rules) => Some(rules),
             Yaml::Mapping(m) => {
-                spec.workers = Some(parse_settings(m, &at, "`defaults.layout.workers`", &["rules"], true, problems));
+                let workers = parse_settings(m, &at, "`defaults.layout.workers`", &["rules"], true, problems);
+                no_caller(&workers, &at, "`defaults.layout.workers`", problems);
+                spec.workers = Some(workers);
                 match m.get("rules") {
                     None | Some(Yaml::Null) => None,
                     Some(Yaml::Sequence(rules)) => Some(rules),
@@ -511,11 +521,24 @@ pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
                 }
             };
             let settings = parse_settings(m, &at, &what, &["match"], true, problems);
+            no_caller(&settings, &at, &what, problems);
             spec.rules.push(Rule { pattern, glob, settings });
         }
     }
     Some(spec)
 }
+
+/// `from: caller` in a worker's block: an error, since only the
+/// orchestrator opens next to the caller.
+fn no_caller(s: &Settings, at: &[&str], what: &str, problems: &mut Vec<Problem>) {
+    if s.from == Some(From::Caller) {
+        let mut path = at.to_vec();
+        path.push("from");
+        problems.push(Problem::new(&path, format!("{what}: {CALLER_IS_FOR_THE_ORCHESTRATOR}")));
+    }
+}
+
+pub const CALLER_IS_FOR_THE_ORCHESTRATOR: &str = "`from: caller` is for the orchestrator only; a worker can't open next to the caller";
 
 // --- presets -------------------------------------------------------------
 
@@ -701,6 +724,9 @@ pub struct Placement {
     pub from: Option<From>,
     /// Where each setting came from.
     pub sources: BTreeMap<String, String>,
+    /// With `from: caller`, where it opened next to the caller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -725,6 +751,7 @@ impl Placement {
             size: str_of("size").and_then(|s| Size::parse(s).ok()),
             from: str_of("from").and_then(From::parse),
             sources,
+            caller: str_of("caller").map(str::to_string),
             warnings: Vec::new(),
         })
     }
@@ -740,6 +767,7 @@ impl Placement {
             size: None,
             from: None,
             sources: BTreeMap::new(),
+            caller: None,
             warnings: Vec::new(),
         }
     }
@@ -749,6 +777,9 @@ impl Placement {
 struct Level {
     source: String,
     settings: Settings,
+    /// Whether both roles share it (for a worker, `tome run` flags and
+    /// below), so a worker skips its `from: caller`.
+    shared: bool,
 }
 
 /// Resolve a placement for `inputs` in the config that applies to
@@ -763,23 +794,29 @@ pub fn resolve(inputs: &Inputs, project: Option<&Path>) -> CliResult<Placement> 
 pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> CliResult<Placement> {
     let presets = presets(cfg)?;
     let mut levels = Vec::new();
+    let worker = matches!(inputs.role, Role::Worker(_));
+    let own = |levels: &mut Vec<Level>, source: String, s: Option<&Settings>| {
+        if let Some(s) = s {
+            levels.push(Level { source, settings: s.clone(), shared: false });
+        }
+    };
     let push = |levels: &mut Vec<Level>, source: String, s: Option<&Settings>| {
         if let Some(s) = s {
-            levels.push(Level { source, settings: s.clone() });
+            levels.push(Level { source, settings: s.clone(), shared: worker });
         }
     };
     let spec = inputs.spec;
     match inputs.role {
         Role::Orchestrator => {
-            push(&mut levels, "`tome run` flags".into(), inputs.flags);
-            push(&mut levels, "the `orchestrator` block".into(), spec.and_then(|s| s.orchestrator.as_ref()));
+            own(&mut levels, "`tome run` flags".into(), inputs.flags);
+            own(&mut levels, "the `orchestrator` block".into(), spec.and_then(|s| s.orchestrator.as_ref()));
         }
         Role::Worker(name) => {
-            push(&mut levels, "`tome worker spawn` flags".into(), inputs.flags);
+            own(&mut levels, "`tome worker spawn` flags".into(), inputs.flags);
             if let Some(rule) = spec.and_then(|s| s.rules.iter().find(|r| r.matches(name))) {
-                push(&mut levels, format!("the `workers` rule `{}`", rule.pattern), Some(&rule.settings));
+                own(&mut levels, format!("the `workers` rule `{}`", rule.pattern), Some(&rule.settings));
             }
-            push(&mut levels, "the `workers` block".into(), spec.and_then(|s| s.workers.as_ref()));
+            own(&mut levels, "the `workers` block".into(), spec.and_then(|s| s.workers.as_ref()));
             push(&mut levels, "`tome run` flags".into(), inputs.run_flags);
         }
     }
@@ -811,11 +848,21 @@ pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> 
     let mut expanded: Vec<Level> = Vec::new();
     for level in levels {
         let preset = level.settings.preset.clone();
-        let source = level.source.clone();
+        let (source, shared) = (level.source.clone(), level.shared);
         expanded.push(level);
         if let Some(name) = preset {
             let p = presets.get(&name).ok_or_else(|| unknown_preset(&name, &presets, &source))?;
-            expanded.push(Level { source: format!("preset `{name}` (from {source})"), settings: p.settings.clone() });
+            expanded.push(Level { source: format!("preset `{name}` (from {source})"), settings: p.settings.clone(), shared });
+        }
+    }
+    // A worker skips `from: caller` where it's shared with the orchestrator;
+    // its own levels can't give it.
+    for level in expanded.iter_mut().filter(|_| worker) {
+        if level.settings.from == Some(From::Caller) {
+            if !level.shared {
+                return Err(CliError::invalid(format!("{CALLER_IS_FOR_THE_ORCHESTRATOR} (from {})", level.source)));
+            }
+            level.settings.from = None;
         }
     }
 
@@ -863,6 +910,7 @@ pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> 
         size: size.map(|(_, s)| s),
         from: from.map(|(_, f)| f),
         sources,
+        caller: None,
         warnings: Vec::new(),
     })
 }
@@ -873,12 +921,12 @@ pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> 
 pub fn moved(current: &Placement, flags: &Settings, project: Option<&Path>) -> CliResult<Placement> {
     let presets = presets(&Config::load(project)?)?;
     let source = "`tome session move` flags";
-    let mut levels = vec![Level { source: source.into(), settings: flags.clone() }];
+    let mut levels = vec![Level { source: source.into(), settings: flags.clone(), shared: false }];
     if let Some(name) = &flags.preset {
         let p = presets.get(name).ok_or_else(|| unknown_preset(name, &presets, source))?;
-        levels.push(Level { source: format!("preset `{name}` (from {source})"), settings: p.settings.clone() });
+        levels.push(Level { source: format!("preset `{name}` (from {source})"), settings: p.settings.clone(), shared: false });
     }
-    let mut out = Placement { warnings: Vec::new(), ..current.clone() };
+    let mut out = Placement { caller: None, warnings: Vec::new(), ..current.clone() };
     macro_rules! pick {
         ($field:ident, $key:expr) => {{
             let found = levels.iter().enumerate().find_map(|(i, l)| l.settings.$field.clone().map(|v| (i, v)));
@@ -896,8 +944,14 @@ pub fn moved(current: &Placement, flags: &Settings, project: Option<&Path>) -> C
     if let Some((_, s)) = pick!(size, "split.size") {
         out.size = Some(s);
     }
-    if let Some((_, f)) = pick!(from, "from") {
-        out.from = Some(f);
+    match pick!(from, "from") {
+        Some((_, f)) => out.from = Some(f),
+        // The caller is whoever runs the move, so only the flags give it.
+        None if out.from == Some(From::Caller) => {
+            out.from = None;
+            out.sources.remove("from");
+        }
+        None => {}
     }
     let default = |out: &mut Placement, key: &str| {
         out.sources.insert(key.to_string(), "the default".into());
@@ -1124,6 +1178,48 @@ mod tests {
 
         let nested = Config::parse(config::Scope::Global, "layout_presets:\n  a: { preset: b }\n").unwrap();
         assert!(presets(&nested).unwrap_err().message.contains("can't reference another preset"));
+    }
+
+    #[test]
+    fn caller_is_for_the_orchestrator_only() {
+        // A worker's own blocks can't give it.
+        for yaml in ["workers: [{ match: \"*\", from: caller }]", "workers: { from: caller }"] {
+            let (_, problems) = spec(yaml);
+            assert!(problems.iter().any(|p| p.message.contains("`from: caller` is for the orchestrator only")), "{yaml}: {problems:?}");
+            assert_eq!(problems[0].path.last().map(String::as_str), Some("from"), "{problems:?}");
+        }
+        let (_, problems) = spec("orchestrator: { from: caller }");
+        assert!(problems.is_empty(), "{problems:?}");
+
+        // At a shared level it's the orchestrator's; workers take `from`
+        // from the next level down.
+        let cfg = Config::parse(config::Scope::Project, "layout: { from: last }\n").unwrap();
+        let (s, _) = spec("layout: split\nfrom: caller");
+        let run = Settings { from: Some(From::Caller), ..Settings::default() };
+        let inputs = Inputs { role: Role::Orchestrator, flags: None, run_flags: None, spec: s.as_ref() };
+        let o = resolve_in(&inputs, &cfg, None).unwrap();
+        assert_eq!((o.from, o.sources["from"].as_str()), (Some(From::Caller), "`defaults.layout`"));
+        let inputs = Inputs { role: Role::Worker("w"), flags: None, run_flags: Some(&run), spec: s.as_ref() };
+        let w = resolve_in(&inputs, &cfg, None).unwrap();
+        assert_eq!((w.from, w.sources["from"].as_str()), (Some(From::Last), "project config"));
+
+        // A worker's own preset giving it is an error.
+        let cfg = Config::parse(config::Scope::Project, "layout_presets:\n  chat: { from: caller }\n").unwrap();
+        let flags = Settings { preset: Some("chat".into()), ..Settings::default() };
+        let inputs = Inputs { role: Role::Worker("w"), flags: Some(&flags), run_flags: None, spec: None };
+        let err = resolve_in(&inputs, &cfg, None).unwrap_err();
+        assert!(err.message.contains("(from preset `chat` (from `tome worker spawn` flags))"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_move_keeps_from_caller_only_when_its_flags_give_it() {
+        let mut at = Placement::of_layout(Layout::Tab);
+        at.from = Some(From::Caller);
+        at.caller = Some("pane P".into());
+        let m = moved(&at, &Settings::layout(Layout::Split), None).unwrap();
+        assert_eq!((m.from, m.caller.as_deref()), (None, None));
+        let m = moved(&at, &Settings { from: Some(From::Caller), ..Settings::default() }, None).unwrap();
+        assert_eq!(m.from, Some(From::Caller));
     }
 
     #[test]

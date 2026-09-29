@@ -52,7 +52,8 @@ impl Split {
         let placed: Vec<&Session> = sessions.iter().filter(|s| s.handle.is_some() && s.pane.is_some()).collect();
         let anchor = |s: &&Session| Anchor { handle: s.handle.clone().unwrap(), pane: s.pane.clone().unwrap() };
         let mut anchors: Vec<Anchor> = Vec::new();
-        if let Some(from) = from {
+        // The caller's pane isn't one of the run's; launches add it.
+        if let Some(from) = from.filter(|f| *f != From::Caller) {
             if from == From::Orchestrator {
                 anchors.extend(placed.iter().filter(|s| s.role == crate::orchestrator::ROLE).map(anchor));
             }
@@ -75,7 +76,9 @@ impl Split {
 
     /// Note that `from` found no pane to open from.
     pub(super) fn missing_anchor(&self, found: bool, warnings: &mut Vec<String>) {
-        if let (Some(from), false) = (self.from, found) {
+        if let (Some(From::Caller), false) = (self.from, found) {
+            warnings.push("from: caller: the caller's pane isn't open there any more; opened in the default place".to_string());
+        } else if let (Some(from), false) = (self.from, found) {
             warnings.push(format!("from: {from}: none of the run's panes is open in this workspace; opened in the default place"));
         }
     }
