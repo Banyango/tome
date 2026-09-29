@@ -2,6 +2,8 @@
 
 Source feature: [feature.md](./feature.md)
 
+> All tasks are done: implemented as 011-1 to 011-4 directly on main (f9b2098, a5e74c7, 590370b, 0491034).
+
 ## Tasks
 
 ### 011-1. `from: caller` as a placement value, orchestrator only
