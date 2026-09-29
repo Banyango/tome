@@ -8,6 +8,11 @@
 - [Quickstart](quickstart.md)
 - [Recipes](recipes.md)
 
+# For agents
+
+- [Install tome (for agents)](agents/install.md)
+- [Install the tome skill](agents/skill.md)
+
 # Guides
 
 - [Write a workflow](guides/write-a-workflow.md)
