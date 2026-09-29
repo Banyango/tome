@@ -293,6 +293,16 @@ fn placement(run: &Value, sessions: &[Value]) -> String {
     if let Some(id) = run["focused"]["id"].as_str() {
         out.push_str(&format!("  focused workspace at start: {id}\n"));
     }
+    if let Some(surface) = run["caller"]["surface"].as_str() {
+        let mut at = format!("surface {surface}");
+        if let Some(pane) = run["caller"]["pane"].as_str() {
+            at = format!("pane {pane} ({at})");
+        }
+        if let Some(ws) = run["caller"]["workspace"].as_str() {
+            at.push_str(&format!(" in workspace {ws}"));
+        }
+        out.push_str(&format!("  caller at start: {at}\n"));
+    }
     out.push_str(&notes.concat());
     if out.is_empty() {
         return out;
@@ -331,8 +341,12 @@ mod tests {
                 "warnings": ["split.size 95% is outside 10%..90%; clamped to 90%"]}}),
             json!({"name": "old"}),
         ];
-        let run = json!({"notes": ["workspace: focused: no tmux client is attached; used the project workspace"]});
+        let run = json!({
+            "notes": ["workspace: focused: no tmux client is attached; used the project workspace"],
+            "caller": {"surface": "S1", "pane": "P1", "workspace": "W1"},
+        });
         let out = placement(&run, &sessions);
+        assert!(out.contains("  caller at start: pane P1 (surface S1) in workspace W1\n"), "{out}");
         assert!(out.starts_with("\nplacement:\n  tome-1-b\n"), "{out}");
         assert!(out.lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["split.direction", "down", "preset", "`x`", "(from", "`tome", "run`", "flags)"]), "{out}");
         assert!(out.contains("    warning: split.size 95% is outside"), "{out}");

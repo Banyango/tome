@@ -141,15 +141,30 @@ impl Engine {
         orchestrator::placement(fm, flags.as_ref(), project)?;
         placement::check_presets(fm.defaults.layout.as_ref(), project)?;
         // What's focused now, for `workspace: focused`.
-        let focused = match p.get("cause").filter(|c| c.is_object()) {
-            Some(_) => Err("the run was started by a trigger".to_string()),
-            None => session::focused(kind),
+        let by_trigger = p.get("cause").is_some_and(Value::is_object);
+        let focused = match by_trigger {
+            true => Err("the run was started by a trigger".to_string()),
+            false => session::focused(kind),
+        };
+        // The cmux pane that ran `tome run`, for `from: caller`.
+        let caller = match (by_trigger, p.get("cmux_caller").filter(|c| c["surface"].is_string())) {
+            (true, _) => json!({ "unknown": "the run was started by a trigger" }),
+            (false, None) => json!({ "unknown": "`tome run` wasn't run from a cmux pane" }),
+            (false, Some(c)) => {
+                let mut c = c.clone();
+                if let Some(Ok((anchor, pane))) = c["surface"].as_str().map(session::caller_anchor) {
+                    c["workspace"] = json!(anchor.handle);
+                    c["pane"] = json!(pane);
+                }
+                c
+            }
         };
         let mut p = p.clone();
         p["focused"] = match focused {
             Ok(id) => json!({ "id": id }),
             Err(why) => json!({ "unknown": why }),
         };
+        p["caller"] = caller;
         let p = &p;
         let run = self.with_store(|store| {
             let status = match fm.concurrency {

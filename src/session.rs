@@ -256,6 +256,23 @@ pub fn focused(kind: Kind) -> Result<String, String> {
     }
 }
 
+/// The cmux pane this process runs in, from its environment:
+/// `{surface, workspace}`; `None` outside cmux.
+pub fn caller_env() -> Option<Value> {
+    let var = |k| std::env::var(k).ok().filter(|v: &String| !v.trim().is_empty());
+    let surface = var("CMUX_SURFACE_ID")?;
+    Some(serde_json::json!({ "surface": surface, "workspace": var("CMUX_WORKSPACE_ID") }))
+}
+
+/// Where the cmux surface `surface` is now, as an anchor to open from (its
+/// workspace and the surface), or why it can't be used.
+pub fn caller_anchor(surface: &str) -> Result<(split::Anchor, String), String> {
+    let all = Cmux.surfaces().ok_or("cmux isn't answering")?;
+    let s = all.into_iter().find(|s| s.id == surface).ok_or("the caller's pane is gone")?;
+    let pane = s.pane.clone().unwrap_or_default();
+    Ok((split::Anchor { handle: s.workspace, pane: surface.to_string() }, pane))
+}
+
 // Recorded sessions are found by their own pane or tab (`pane`: a tmux pane
 // id, a cmux surface id). Sessions from before that are found by their tmux
 // session name or cmux workspace id instead.

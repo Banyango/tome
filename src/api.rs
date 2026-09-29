@@ -82,13 +82,16 @@ pub fn create_run(store: &mut Store, p: &Value, wf: &Workflow, status: RunStatus
     // in while it waits, so its placeholders are filled in when it starts.
     let deferred = crate::triggers::waits_for_idle(p.get("cause"));
     // `tome run`'s placement flags, kept for the run's workers, and what
-    // was focused when it was asked for.
+    // was focused and which cmux pane asked for it.
     let mut placement = serde_json::Map::new();
     if let Some(flags) = p.get("placement").filter(|v| v.as_object().is_some_and(|o| !o.is_empty())) {
         placement.insert("flags".into(), flags.clone());
     }
     if let Some(focused) = p.get("focused").filter(|v| v.is_object()) {
         placement.insert("focused".into(), focused.clone());
+    }
+    if let Some(caller) = p.get("caller").filter(|v| v.is_object()) {
+        placement.insert("caller".into(), caller.clone());
     }
     let placement = (!placement.is_empty()).then(|| Value::Object(placement));
 

@@ -316,7 +316,7 @@ pub struct Run {
     pub trigger: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow_snapshot: Option<String>,
-    /// Placement state: `{flags?, focused?, notes?}`.
+    /// Placement state: `{flags?, focused?, caller?, notes?}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placement: Option<Value>,
 }

@@ -41,6 +41,9 @@ pub fn start_params(cwd: &Path, target: &str, params: &[String], placement: &Set
     if !placement.is_empty() {
         p["placement"] = json!(placement);
     }
+    if let Some(caller) = crate::session::caller_env() {
+        p["cmux_caller"] = caller;
+    }
     Ok(p)
 }
 
