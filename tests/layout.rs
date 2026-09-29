@@ -636,3 +636,60 @@ fn session_move_refuses_bad_requests_and_leaves_the_session() {
     let after = session_named(&env, "tome-1-build-w1");
     assert_eq!((&after["handle"], &after["pane"], &after["layout"]), (&before["handle"], &before["pane"], &before["layout"]));
 }
+
+#[test]
+fn from_caller_is_for_the_orchestrator_and_falls_back_off_cmux() {
+    let mut env = env();
+    env.set_config(common::IDLE_CONFIG);
+    write_wf(&env, "bad", "defaults:\n  layout:\n    workers: [{ match: \"*\", from: caller }]\n");
+    let (code, v) = env.json(&["validate", "bad"]);
+    assert_eq!(code, 2, "{v}");
+    assert!(v.to_string().contains("`from: caller` is for the orchestrator only"), "{v}");
+
+    // A shared level: the orchestrator's, skipped by workers.
+    write_wf(&env, "build", "defaults:\n  layout: { layout: split, from: caller }\n");
+    env.set_var("CMUX_SURFACE_ID", "S-fake");
+    env.set_var("CMUX_WORKSPACE_ID", "W-fake");
+    env.start_daemon();
+    let (code, run) = env.json(&["run", "build", "--detach"]);
+    assert_eq!(code, 0, "{run}");
+    let o = session_named(&env, "tome-1-build");
+    assert_eq!((o["layout"].as_str(), o["placement"]["from"].as_str()), (Some("split"), Some("caller")), "{o}");
+    assert!(o["placement"]["warnings"].to_string().contains("`from: caller` is cmux only"), "{o}");
+    let human = String::from_utf8_lossy(&env.run(&["runs", "show", "1"]).stdout).into_owned();
+    assert!(human.contains("caller at start: surface S-fake in workspace W-fake"), "{human}");
+
+    spawn(&env, 1, "w1", &["sleep", "600"]);
+    let w = session_named(&env, "tome-1-build-w1");
+    assert!(w["placement"]["from"].is_null(), "{w}");
+
+    // A worker can't be given it.
+    let out = env
+        .cmd(&["--json", "worker", "spawn", "--name", "w2", "--from", "caller", "--", "sleep", "600"])
+        .env("TOME_RUN_ID", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("`from: caller` is for the orchestrator only"));
+
+    // Moves next to the caller fail, leaving the session where it was.
+    let before = session_named(&env, "tome-1-build");
+    for (session, message) in [("1/orchestrator", "`from: caller` is cmux only"), ("1/w1", "is for the orchestrator only")] {
+        let (code, err) = move_session(&env, session, &["--from", "caller"]);
+        assert_eq!(code, 2, "{err}");
+        assert!(err["error"]["message"].as_str().unwrap().contains(message), "{err}");
+    }
+    env.vars.retain(|(k, _)| !k.starts_with("CMUX_"));
+    let out = env.cmd(&["--json", "session", "move", "1/orchestrator", "--from", "caller"]).env_remove("CMUX_SURFACE_ID").output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("wasn't run from a cmux pane"));
+    let after = session_named(&env, "tome-1-build");
+    assert_eq!((&after["handle"], &after["pane"], &after["layout"]), (&before["handle"], &before["pane"], &before["layout"]));
+
+    // Without a cmux pane, the run records why there's no caller.
+    let out = env.cmd(&["--json", "run", "build", "--detach"]).env_remove("CMUX_SURFACE_ID").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let (_, shown) = env.json(&["runs", "show", "2"]);
+    assert_eq!(shown["run"]["placement"]["caller"]["unknown"], "`tome run` wasn't run from a cmux pane", "{shown}");
+}

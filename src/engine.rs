@@ -345,10 +345,11 @@ impl Engine {
         self.with_store(|store| store.sessions(run_id).map_err(internal)).unwrap_or_default()
     }
 
-    /// `session.move {run_id, name, placement}`: move a live session of the
-    /// run (`orchestrator` or a worker's name) as the placement flags say,
-    /// without restarting it. Settings the flags don't give stay as they
-    /// were. Returns the session, with `attach_command`.
+    /// `session.move {run_id, name, placement, cmux_caller?}`: move a live
+    /// session of the run (`orchestrator` or a worker's name) as the
+    /// placement flags say, without restarting it. Settings the flags don't
+    /// give stay as they were; `from: caller` is the cmux pane that ran the
+    /// move (`cmux_caller`). Returns the session, with `attach_command`.
     fn move_session(&self, p: &Value) -> CliResult<Value> {
         let run_id = req_id_at(p, "run_id")?;
         let name = req_str(p, "name")?;
@@ -392,7 +393,7 @@ impl Engine {
             .unwrap_or_else(|| placement::Placement::of_layout(session::Layout::of(&s)));
         let mut placement = placement::moved(&current, &flags, project.as_deref())?;
         let others: Vec<store::Session> = recorded.iter().filter(|o| o.name != s.name).cloned().collect();
-        let split = session::Split::new(placement.direction, placement.size, placement.from, &others);
+        let mut split = session::Split::new(placement.direction, placement.size, placement.from, &others);
         // `focused` is the workspace focused now, not when the run started.
         let mut warnings = Vec::new();
         let target = match &placement.workspace {
@@ -405,13 +406,34 @@ impl Engine {
             },
             _ => orchestrator::target(&run, &placement).0,
         };
+        // Next to the pane that runs the move; if that can't be, the move fails.
+        let mut target = target;
+        let mut layout = placement.layout;
+        if placement.from == Some(placement::From::Caller) {
+            let found = match (s.role.as_str(), p.get("cmux_caller").filter(|c| c["surface"].is_string())) {
+                (orchestrator::ROLE, None) => Err("`tome session move` wasn't run from a cmux pane".to_string()),
+                (orchestrator::ROLE, Some(c)) => {
+                    let kind = session::Kind::parse(&s.backend).unwrap_or(session::Kind::Tmux);
+                    orchestrator::caller_anchor(kind, Some(c))
+                        .and_then(|found| match s.pane.as_deref() == Some(found.0.pane.as_str()) {
+                            true => Err("that's the session's own pane".to_string()),
+                            false => Ok(found),
+                        })
+                }
+                _ => Err(placement::CALLER_IS_FOR_THE_ORCHESTRATOR.to_string()),
+            };
+            if let Err(why) = &found {
+                return Err(CliError::invalid(format!("can't move `{name}` next to the caller: {why}; it was left where it was")));
+            }
+            layout = orchestrator::use_caller(&mut placement, found, &mut split, &mut target, &mut warnings);
+        }
         let title = match s.role.as_str() {
             orchestrator::ROLE => format!("tome: {} #{}", run.workflow_name, run.id),
             _ => format!("tome: {} #{} / {name}", run.workflow_name, run.id),
         };
         let (moved, more) = session::move_to(
             &s,
-            &session::Move { title: &title, layout: placement.layout, split: &split, target: &target, project: project.as_deref() },
+            &session::Move { title: &title, layout, split: &split, target: &target, project: project.as_deref() },
         )?;
         warnings.extend(more);
         placement.warnings = warnings;

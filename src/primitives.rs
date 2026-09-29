@@ -88,11 +88,17 @@ pub fn session_move(session: &str, placement: &crate::placement::Settings) -> Cl
     if name.is_empty() {
         return Err(CliError::invalid("which session? give it as <run>/<name>, e.g. 42/orchestrator or 42/w1"));
     }
-    let moved = call("session.move", json!({ "run_id": run, "name": name, "placement": placement }))?;
+    let mut params = json!({ "run_id": run, "name": name, "placement": placement });
+    if let Some(caller) = crate::session::caller_env() {
+        params["cmux_caller"] = caller;
+    }
+    let moved = call("session.move", params)?;
     let p = &moved["placement"];
     let mut human = format!("moved {name}: {}", s(&p["layout"]));
-    if let Some(w) = p["workspace"].as_str() {
-        human.push_str(&format!(" in workspace {w}"));
+    match (p["caller"].as_str(), p["workspace"].as_str()) {
+        (Some(at), _) => human.push_str(&format!(" next to {at}")),
+        (None, Some(w)) => human.push_str(&format!(" in workspace {w}")),
+        (None, None) => {}
     }
     for w in p["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
         human.push_str(&format!("\nwarning: {w}"));

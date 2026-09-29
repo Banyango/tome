@@ -348,3 +348,76 @@ fn session_move_moves_a_live_surface_between_tabs_splits_and_its_own_workspace()
     assert_eq!(env.json(&["worker", "status", "w1", "--run", "1"]).1["status"], "running");
     assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
 }
+
+/// A stand-in for the chat pane `tome run` is typed in: a new unfocused
+/// workspace, `(workspace, surface)`. The tests point `CMUX_*` at it rather
+/// than at the pane they run in.
+fn chat_pane() -> (String, String) {
+    let out = cmux(&["new-workspace", "--name", "tome test chat", "--focus", "false"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let reference = stdout.trim().strip_prefix("OK ").unwrap_or_else(|| panic!("{stdout}")).to_string();
+    let out = cmux(&["--id-format", "both", "tree", "--all", "--json"]);
+    let tree: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ws = tree["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|w| w["workspaces"].as_array().into_iter().flatten())
+        .find(|w| w["ref"] == reference.as_str())
+        .unwrap_or_else(|| panic!("no {reference}: {tree}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let surface = panes_of(&ws)[0].1[0].0.clone();
+    (ws, surface)
+}
+
+/// The pane holding `surface` in `ws`, with its surfaces.
+fn pane_with(ws: &str, surface: &str) -> Option<(String, Vec<String>)> {
+    panes_of(ws)
+        .into_iter()
+        .find(|(_, s)| s.iter().any(|(id, _)| id == surface))
+        .map(|(p, s)| (p, s.into_iter().map(|(id, _)| id).collect()))
+}
+
+#[test]
+fn from_caller_opens_the_orchestrator_next_to_the_pane_that_ran_tome() {
+    let Some(mut env) = layout_env("tab") else { return };
+    let (chat, chat_surface) = chat_pane();
+    env.set_var("CMUX_WORKSPACE_ID", &chat);
+    env.set_var("CMUX_SURFACE_ID", &chat_surface);
+    env.start_daemon();
+
+    // A tab in the caller's pane, in the caller's workspace.
+    env.json(&["run", "build", "--detach", "--from", "caller"]);
+    let s = session(&env);
+    assert_eq!(s["handle"], chat.as_str(), "{s}");
+    assert_eq!(s["layout"], "tab", "{s}");
+    let orch = s["pane"].as_str().unwrap().to_string();
+    let (_, tabs) = pane_with(&chat, &chat_surface).unwrap();
+    assert!(tabs.contains(&orch), "{:?}", panes_of(&chat));
+    assert!(s["placement"]["caller"].as_str().is_some_and(|c| c.contains(&chat_surface)), "{s}");
+    assert!(s["placement"]["warnings"].is_null(), "{s}");
+    let (_, shown) = env.json(&["runs", "show", "1"]);
+    assert_eq!(shown["run"]["placement"]["caller"]["surface"], chat_surface.as_str(), "{shown}");
+
+    // Moved into a split off the caller's pane, and the chat keeps its own.
+    let (code, moved) = env.json(&["session", "move", "1/orchestrator", "--layout", "split", "--from", "caller"]);
+    assert_eq!(code, 0, "{moved}");
+    assert_eq!(moved["handle"], chat.as_str(), "{moved}");
+    let panes = panes_of(&chat);
+    assert_eq!(panes.len(), 2, "{panes:?}");
+    assert_eq!(pane_with(&chat, &orch).unwrap().1, [orch.clone()], "{panes:?}");
+    assert_eq!(pane_with(&chat, &chat_surface).unwrap().1, [chat_surface.clone()], "{panes:?}");
+    assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
+    eventually("the orchestrator's pane closed", || panes_of(&chat).len() == 1);
+
+    // Once the caller's pane is gone, it falls back with a warning.
+    assert!(cmux(&["close-workspace", "--workspace", &chat]).status.success());
+    env.json(&["run", "build", "--detach", "--from", "caller"]);
+    let (_, shown) = env.json(&["runs", "show", "2"]);
+    let s = &shown["sessions"][0];
+    assert_ne!(s["handle"], chat.as_str(), "{s}");
+    assert!(s["placement"]["warnings"].to_string().contains("from: caller"), "{s}");
+    assert_eq!(env.json(&["run", "cancel", "2"]).0, 0);
+}
