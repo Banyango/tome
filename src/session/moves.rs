@@ -129,6 +129,9 @@ impl Cmux {
         if own && m.layout == Layout::Workspace {
             return Ok(old_workspace);
         }
+        // cmux's `move-surface` takes focus even with `--focus false`; give
+        // it back to whatever had it, unless that's the session itself.
+        let focused = self.focused_surface().filter(|f| f.0 != surface);
         let moved = self.move_surface_to(surface, &old_workspace, m, warnings);
         match &moved {
             Ok(workspace) if own && *workspace != old_workspace => {
@@ -145,7 +148,20 @@ impl Cmux {
                 }
             }
         }
+        if let Some((focused, workspace)) = focused {
+            if self.focused_surface().is_some_and(|now| now.0 != focused) {
+                let _ = self.run(&["focus-panel", "--panel", &focused, "--workspace", &workspace]);
+            }
+        }
         moved.map_err(|e| CliError { message: format!("{}; it was put back where it was", e.message), ..e })
+    }
+
+    /// The focused cmux surface and its workspace.
+    fn focused_surface(&self) -> Option<(String, String)> {
+        let out = self.run(&["--id-format", "uuids", "identify", "--json"]).ok().filter(|o| o.status.success())?;
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+        let f = &v["focused"];
+        Some((f["surface_id"].as_str()?.to_string(), f["workspace_id"].as_str()?.to_string()))
     }
 
     fn move_surface_to(&self, surface: &str, old_workspace: &str, m: &Move, warnings: &mut Vec<String>) -> CliResult<String> {
