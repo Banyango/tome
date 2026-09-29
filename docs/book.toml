@@ -1,6 +1,6 @@
 [book]
 title = "tome"
-description = "Docs for tome, an agentic workflow management CLI"
+description = "Docs for tome: repeatable agentic workflows, triggered by file changes, schedules and messages"
 language = "en"
 src = "src"
 
@@ -13,3 +13,6 @@ git-repository-url = "https://github.com/banyango/tome"
 edit-url-template = "https://github.com/banyango/tome/edit/main/docs/{path}"
 default-theme = "light"
 preferred-dark-theme = "navy"
+no-section-label = true
+additional-css = ["theme/tome.css"]
+additional-js = ["theme/tome.js"]

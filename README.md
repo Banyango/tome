@@ -1,8 +1,10 @@
 # tome
 
-Agentic workflow management CLI. tome runs multi-step workflows written as
-Markdown files, starting agent workers in your terminal multiplexer (cmux or
-tmux) and coordinating them through worktrees, queues and triggers.
+Repeatable agentic workflows. Write a workflow once as a Markdown file, in
+plain English, and say what starts it: a file change, a cron schedule, a
+message, or another workflow finishing. The tome daemon starts an orchestrator
+agent each time, which spawns worker agents in your terminal multiplexer (cmux
+or tmux) where you can watch and steer them.
 
 **Docs: <https://banyango.github.io/tome>**
 

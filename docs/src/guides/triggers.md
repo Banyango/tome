@@ -19,7 +19,7 @@ Every trigger can also take:
 
 ## File triggers
 
-```markdown
+```markdown title=.tome/workflows/doc-check.md
 {{#include ../../examples/watch-files.md}}
 ```
 
@@ -37,7 +37,7 @@ tome has no loop guard. A run that edits files that its own trigger watches make
 
 ## Cron triggers
 
-```markdown
+```markdown title=.tome/workflows/nightly.md
 {{#include ../../examples/nightly.md}}
 ```
 
@@ -65,7 +65,7 @@ The event reaches a new run in the body as `{{trigger.topic}}`, `{{trigger.paylo
 
 This example receives requests one at a time. `concurrency: 1` makes extra ones wait:
 
-```markdown
+```markdown title=.tome/workflows/implement.md
 {{#include ../../examples/chain-implement.md}}
 ```
 
@@ -73,7 +73,7 @@ This example receives requests one at a time. `concurrency: 1` makes extra ones 
 
 Set `to: running-or-new` and the run gets later events on its `events` queue instead of starting more runs:
 
-```markdown
+```markdown title=.tome/workflows/watcher.md
 {{#include ../../examples/signal-running.md}}
 ```
 
@@ -81,7 +81,7 @@ Set `to: running-or-new` and the run gets later events on its `events` queue ins
 
 tome publishes an event when a run changes state: `tome.run.<workflow>.started`, `.succeeded`, `.failed` and `.cancelled`, with a JSON payload. Subscribe to one to make a workflow follow another:
 
-```markdown
+```markdown title=.tome/workflows/review.md
 {{#include ../../examples/chain-review.md}}
 ```
 

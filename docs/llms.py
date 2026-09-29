@@ -50,7 +50,7 @@ def main():
     index = [
         "# tome",
         "",
-        "> tome runs agentic workflows: Markdown files that describe steps, which an orchestrator agent carries out with workers in your terminal multiplexer (cmux or tmux).",
+        "> tome runs repeatable agentic workflows: Markdown files that describe steps in plain English and what triggers them (file changes, schedules, messages). An orchestrator agent carries each run out with workers in your terminal multiplexer (cmux or tmux).",
         "",
         f"Every page below is plain Markdown. The whole site as one file: {SITE}/llms-full.txt",
     ]

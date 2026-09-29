@@ -1,33 +1,52 @@
-# tome
+# Introduction
 
-tome runs agentic workflows. You describe a process as a Markdown file: what the steps are, in plain English. tome starts an orchestrator agent that reads the file and carries it out, spawning worker agents in your terminal multiplexer as it goes. You can watch every agent work, type into any of them, and repeat the process later or in another project.
+tome runs repeatable agentic workflows. You describe a process once, in a Markdown file in plain English, and say what starts it. Every time it fires, tome starts agents in tmux or cmux, where you can watch them work and step in.
 
-## Why
+```markdown title=.tome/workflows/plan-feature.md
+{{#include ../examples/intro.md}}
+```
 
-Repeating an agent workflow usually means a pile of prompts and notes that you re-paste by hand. Tome keeps the workflow in one file that you can version, copy to another project and change a little. Because each agent runs in a visible terminal session, you can see what is happening and step in when something needs you.
+Add a `features/<name>/feature.md` to your project, and an agent investigates the codebase and writes the plan. You don't run a command.
 
-## What is in the box
+## Quick start
 
-- **Workflows**: Markdown files with a little YAML frontmatter. The body is plain English. tome never parses it; the orchestrator agent reads it.
-- **A daemon** that starts runs, watches for triggers and keeps track of every run.
-- **Workers, worktrees, groups and queues**: the pieces an orchestrator uses to split work across agents and collect the results.
-- **Triggers**: start a workflow when a file changes, on a schedule, or when a message arrives.
-- **Two multiplexers**: cmux and tmux. Any agent CLI can be a harness; Claude Code is built in.
+Install tome and start its daemon:
 
-tome is written in Rust and keeps run history in an embedded DuckDB database under `~/.tome`.
+```sh title=Terminal
+curl -fsSL https://raw.githubusercontent.com/banyango/tome/main/install.sh | sh
+tome daemon start
+```
 
-## Where to go next
+Then follow the [quickstart](quickstart.md) to add a workflow and watch it fire.
 
-1. [Install tome](install.md) and [do a first run](quickstart.md).
-2. Read the [concepts](concepts/workflows.md) to see how the pieces fit together.
-3. Follow the [guides](guides/write-a-workflow.md) when you want to build something.
+## Features
 
-There is no CLI reference in these docs. Run `tome --help`, or `tome <command> --help`, for every command and flag.
+- **Triggered.** Runs start when files change, on a cron schedule, when a message arrives, or when another workflow finishes.
+- **Repeatable.** A workflow is one file. Commit it, copy it to the next project, change a line.
+- **Parallel.** Fan work out to many agents, each on its own git worktree, then merge the results.
+- **Visible.** Every agent runs in a terminal session you can attach to and type into.
+- **Any agent.** Claude Code is built in. Any agent CLI can be added as a harness.
+- **Recorded.** Each run's steps, history and logs are kept, and `tome runs` and `tome query` show them.
 
-## For agents
+## When to use tome
 
-The docs are also published as plain text: [`llms.txt`](https://banyango.github.io/tome/llms.txt) is an index, and [`llms-full.txt`](https://banyango.github.io/tome/llms-full.txt) is every page in one file.
+tome fits processes you run again and again, where an agent's judgement is useful but the shape of the work stays the same:
 
-## What these docs cover
+- turning a feature spec into tasks, then into branches
+- fixing failing tests as you work
+- reviewing a branch with one agent per file
+- scheduled checks, such as stale branches every morning
+- chains, where one workflow's result starts the next
 
-Only what tome does today. Planned pieces, such as the herdr backend and a skill for writing workflows, will be documented when they land.
+It's not the right tool for a one-off question, where you'd talk to the agent directly. Nor is it for a fully scripted pipeline with no decisions in it: use `make` or CI for that.
+
+## Where it runs
+
+tome runs on your machine, on macOS and Linux. Agents open in tmux or cmux, and run state lives in `~/.tome`. Nothing is hosted.
+
+## Learn more
+
+- [Recipes](recipes.md) has workflows you can copy for common jobs.
+- The [guides](guides/write-a-workflow.md) cover every option, and [How it works](concepts/workflows.md) explains the pieces.
+- Run `tome --help`, or `tome <command> --help`, for every command and flag.
+- For agents, the docs are also published as plain text: [`llms.txt`](https://banyango.github.io/tome/llms.txt) is an index, and [`llms-full.txt`](https://banyango.github.io/tome/llms-full.txt) is every page in one file.

@@ -30,7 +30,7 @@ Workers get these environment variables: `TOME_RUN_ID`, `TOME_WORKER_ID`, `TOME_
 
 Here is a workflow that runs the tests as a command worker and starts an agent only if they fail:
 
-```markdown
+```markdown title=.tome/workflows/test-then-fix.md
 {{#include ../../examples/command-worker.md}}
 ```
 
@@ -64,13 +64,13 @@ tome group status reviews                 # every member's result
 
 Example: one reviewer per changed file, then one report.
 
-```markdown
+```markdown title=.tome/workflows/fan-out.md
 {{#include ../../examples/fan-out.md}}
 ```
 
 When workers change code, give each its own worktree, then merge in a final step:
 
-```markdown
+```markdown title=.tome/workflows/fan-in-worktrees.md
 {{#include ../../examples/fan-in-worktrees.md}}
 ```
 

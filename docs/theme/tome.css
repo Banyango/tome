@@ -1,0 +1,259 @@
+/* tome docs theme, layered on mdBook's default. Loaded via `additional-css`. */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+:root {
+  --content-max-width: 760px;
+  --page-padding: 24px;
+  --mono-font: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --code-font-size: 0.875em;
+  --radius: 10px;
+  --toc-width: 220px;
+}
+
+/* Light */
+.light, html:not(.js) {
+  --bg: #ffffff;
+  --fg: #1c1f24;
+  --muted: #5b6270;
+  --border: #e6e8eb;
+  --accent: #3553d6;
+  --accent-soft: #eef1fd;
+  --code-bg: #f6f7f9;
+  --code-header-bg: #eef0f3;
+
+  --sidebar-bg: #fafbfc;
+  --sidebar-fg: #3d4450;
+  --sidebar-active: var(--accent);
+  --sidebar-spacer: var(--border);
+  --sidebar-header-border-color: var(--border);
+  --links: var(--accent);
+  --inline-code-color: #1c1f24;
+  --icons: #6b7280;
+  --icons-hover: #1c1f24;
+  --quote-bg: var(--accent-soft);
+  --quote-border: #d6ddfa;
+  --table-border-color: var(--border);
+  --table-header-bg: #f3f4f6;
+  --table-alternate-bg: #fafbfc;
+  --searchbar-bg: #ffffff;
+  --searchbar-border-color: var(--border);
+  --searchresults-li-bg: var(--accent-soft);
+}
+
+/* Dark: used by the navy and coal themes, and by "Auto" in a dark OS. */
+.navy, .coal {
+  --bg: #0f1216;
+  --fg: #e4e7eb;
+  --muted: #9aa3ae;
+  --border: #242a31;
+  --accent: #8ea2ff;
+  --accent-soft: #1a2040;
+  --code-bg: #161a20;
+  --code-header-bg: #1c2129;
+
+  --sidebar-bg: #0c0f12;
+  --sidebar-fg: #b8c0ca;
+  --sidebar-active: var(--accent);
+  --sidebar-spacer: var(--border);
+  --sidebar-header-border-color: var(--border);
+  --links: var(--accent);
+  --inline-code-color: #e4e7eb;
+  --icons: #8a939e;
+  --icons-hover: #e4e7eb;
+  --quote-bg: var(--accent-soft);
+  --quote-border: #2a3366;
+  --table-border-color: var(--border);
+  --table-header-bg: #1a1f26;
+  --table-alternate-bg: #13171c;
+  --searchbar-bg: #161a20;
+  --searchbar-border-color: var(--border);
+  --searchresults-li-bg: var(--accent-soft);
+}
+
+html {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+body { background: var(--bg); }
+
+/* Top bar */
+#mdbook-menu-bar {
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+}
+.menu-title {
+  font-weight: 700;
+  font-size: 1.15em;
+  letter-spacing: -0.01em;
+}
+.right-buttons { display: flex; align-items: center; }
+.right-buttons a[href$="print.html"] { display: none; }
+.top-links { display: flex; align-items: center; gap: 4px; margin-right: 8px; }
+.top-links a {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-radius: 6px;
+  text-decoration: none;
+}
+.top-links a:hover { color: var(--fg); background: var(--code-bg); }
+@media (max-width: 640px) { .top-links { display: none; } }
+
+/* Sidebar */
+.sidebar { border-right: 1px solid var(--border); font-size: 0.9em; }
+.chapter li.part-title {
+  color: var(--fg);
+  font-size: 0.75em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 1.6em 0 0.4em;
+}
+.chapter li a { padding: 3px 0; color: var(--sidebar-fg); }
+.chapter li.chapter-item { margin-top: 0.35em; }
+.chapter li a:hover { color: var(--fg); text-decoration: none; }
+.chapter li a.active { color: var(--accent); font-weight: 600; }
+
+/* Content */
+.content { line-height: 1.7; }
+.content main { padding-top: 16px; padding-bottom: 48px; }
+.content h1, .content h2, .content h3 { letter-spacing: -0.015em; line-height: 1.25; }
+.content h1 { font-size: 2.3em; font-weight: 700; margin: 0.6em 0 0.5em; }
+.content h2 {
+  font-size: 1.5em;
+  font-weight: 650;
+  margin-top: 2.2em;
+  padding-top: 0.2em;
+}
+.content h3 { font-size: 1.15em; font-weight: 600; margin-top: 1.8em; }
+.content a.header { color: inherit; }
+.content h1 + p { font-size: 1.12em; color: var(--muted); }
+.content p, .content li { color: var(--fg); }
+.content li { margin: 0.3em 0; }
+.content a { text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+
+/* Inline code */
+:not(pre) > code {
+  font-family: var(--mono-font);
+  font-size: var(--code-font-size);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
+}
+a > code { color: var(--links); }
+
+/* Code blocks, with an optional file-name header added by tome.js */
+pre {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--code-bg) !important;
+}
+pre > code, pre > code.hljs {
+  font-family: var(--mono-font);
+  font-size: var(--code-font-size);
+  line-height: 1.6;
+  background: transparent !important;
+  padding: 14px 16px;
+}
+.code-frame { margin: 1.2em 0; }
+.code-frame > .code-title {
+  font-family: var(--mono-font);
+  font-size: 0.78em;
+  color: var(--muted);
+  background: var(--code-header-bg);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 7px 16px;
+}
+.code-frame > pre { margin: 0; border-radius: 0 0 var(--radius) var(--radius); }
+
+/* A `*` in a glob shouldn't turn the rest of a workflow italic. */
+.hljs-emphasis, .hljs-strong { font-style: normal; font-weight: inherit; }
+.language-markdown .hljs-section { font-weight: 600; }
+
+/* Tables */
+.content table { border-collapse: collapse; font-size: 0.93em; margin: 1.2em 0; }
+.content table thead th { background: var(--table-header-bg); font-weight: 600; text-align: left; }
+.content table td, .content table th { border: 1px solid var(--border); padding: 8px 12px; }
+
+/* Blockquotes and callouts */
+blockquote {
+  border: 1px solid var(--quote-border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--quote-bg);
+  padding: 4px 16px;
+}
+
+/* Previous / next cards at the end of each page (filled in by tome.js) */
+.nav-wide-wrapper { display: none; }
+.nav-wrapper {
+  display: flex !important;
+  gap: 16px;
+  max-width: var(--content-max-width);
+  margin: 56px auto 0;
+  padding: 0 var(--page-padding);
+  box-sizing: border-box;
+}
+.nav-wrapper .mobile-nav-chapters {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  width: auto;
+  font-size: 1em;
+  text-align: left;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  text-decoration: none;
+}
+.nav-wrapper .mobile-nav-chapters.next { align-items: flex-end; text-align: right; margin-left: auto; }
+.nav-wrapper .mobile-nav-chapters:hover { border-color: var(--accent); text-decoration: none; }
+.nav-wrapper .mobile-nav-chapters .fa-svg { display: none; }
+.nav-card-label { font-size: 0.78em; color: var(--muted); }
+.nav-card-title { font-weight: 600; color: var(--fg); }
+
+/* "On this page", shown on wide screens */
+.page-toc { display: none; }
+@media (min-width: 1300px) {
+  .page-toc {
+    display: block;
+    position: fixed;
+    top: calc(var(--menu-bar-height, 50px) + 32px);
+    right: 24px;
+    width: var(--toc-width);
+    max-height: calc(100vh - 140px);
+    overflow-y: auto;
+    font-size: 0.83em;
+  }
+  .content { padding-right: calc(var(--toc-width) + 24px); }
+  /* The sidebar's own heading list would repeat it. */
+  #mdbook-sidebar .on-this-page { display: none; }
+}
+.page-toc-title {
+  font-size: 0.8em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg);
+  margin-bottom: 8px;
+}
+.page-toc ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--border); }
+.page-toc li a {
+  display: block;
+  color: var(--muted);
+  padding: 4px 0 4px 12px;
+  margin-left: -1px;
+  border-left: 2px solid transparent;
+  text-decoration: none;
+}
+.page-toc li.depth-3 a { padding-left: 24px; }
+.page-toc li a:hover { color: var(--fg); }
+.page-toc li a.active { color: var(--accent); border-left-color: var(--accent); }

@@ -8,7 +8,7 @@ Every example on this page is a real file under `docs/examples/` in the repo, an
 
 Only `name` is required.
 
-```markdown
+```markdown title=.tome/workflows/minimal.md
 {{#include ../../examples/minimal.md}}
 ```
 
@@ -40,7 +40,7 @@ Named inputs, filled in from `--param key=value` on `tome run`, from a trigger's
 - `default`: used when nothing sets it. A param without a default is required.
 - `description`
 
-```markdown
+```markdown title=.tome/workflows/summarize.md
 {{#include ../../examples/params.md}}
 ```
 
@@ -54,7 +54,7 @@ In the body, `{{params.<name>}}` inserts a value and `{{run.id}}` inserts the ru
 
 Workflow-wide settings.
 
-```markdown
+```markdown title=.tome/workflows/defaults-tour.md
 {{#include ../../examples/defaults.md}}
 ```
 
@@ -76,7 +76,7 @@ Workflow-wide settings.
 
 Extra instructions for the orchestrator only, added to its prompt. Use it for how the orchestrator should behave, and keep the body for what the workflow does.
 
-```markdown
+```markdown title=.tome/workflows/one-at-a-time.md
 {{#include ../../examples/limits.md}}
 ```
 
@@ -84,7 +84,7 @@ Extra instructions for the orchestrator only, added to its prompt. Use it for ho
 
 A list of rules that start the workflow or signal its runs. This example has one of each kind:
 
-```markdown
+```markdown title=.tome/workflows/triggers-tour.md
 {{#include ../../examples/triggers-tour.md}}
 ```
 

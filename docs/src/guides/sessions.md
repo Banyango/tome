@@ -86,7 +86,7 @@ tome worker spawn --name review-1 --layout split --direction down --size 30% --p
 
 Or in the workflow. Under `defaults.layout`, `orchestrator` sets the orchestrator's placement, `workers` sets the workers', and a workers list matches each worker's name against a glob, first match wins:
 
-```markdown
+```markdown title=.tome/workflows/review-layout.md
 {{#include ../../examples/layout.md}}
 ```
 
