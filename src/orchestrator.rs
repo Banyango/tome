@@ -9,8 +9,8 @@ use crate::harness::{self, Harness, Vars};
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::recovery::RecoveryHooks;
-use crate::placement::{self, Inputs, Placement, Role, Settings, Workspace};
-use crate::session::{self, Backend, Cmux, Kind, Launch, Split, Target, Tmux};
+use crate::placement::{self, From, Inputs, Placement, Role, Settings, Workspace};
+use crate::session::{self, Anchor, Backend, Cmux, Kind, Launch, Layout, Split, Target, Tmux};
 use crate::store::{Run, Session, Worker};
 use crate::workflow::{self, Frontmatter, Workflow};
 use std::fs;
@@ -58,6 +58,53 @@ pub fn target(run: &Run, placement: &Placement) -> (Target, Option<String>) {
         }
         Workspace::Project | Workspace::Own => (Target::Project, None),
     }
+}
+
+/// Where `from: caller` opens a session on `backend`: next to the cmux
+/// surface `caller` recorded (`{surface}`, else `{unknown: why}`), found
+/// where it is now. Returns the anchor and its pane, or why it can't.
+pub fn caller_anchor(backend: Kind, caller: Option<&serde_json::Value>) -> Result<(Anchor, String), String> {
+    if backend == Kind::Tmux {
+        return Err("`from: caller` is cmux only, and this session is on tmux".into());
+    }
+    let caller = caller.ok_or("no caller was recorded")?;
+    let surface = caller["surface"]
+        .as_str()
+        .ok_or_else(|| caller["unknown"].as_str().unwrap_or("no caller was recorded").to_string())?;
+    session::caller_anchor(surface)
+}
+
+/// Open next to the caller (`found`) if `placement` says `from: caller`: a
+/// tab in its pane or a split off it, in its workspace, which wins over
+/// `workspace` (so an own workspace becomes a tab). Returns the layout to
+/// open with. When the caller can't be used, the session goes where it
+/// would without `from`, and a warning says why.
+pub fn use_caller(
+    placement: &mut Placement,
+    found: Result<(Anchor, String), String>,
+    split: &mut Split,
+    target: &mut Target,
+    warnings: &mut Vec<String>,
+) -> Layout {
+    if placement.from != Some(From::Caller) {
+        return placement.layout;
+    }
+    match found {
+        Ok((anchor, pane)) => {
+            placement.caller = Some(format!("pane {pane} (surface {}) in workspace {}", anchor.pane, anchor.handle));
+            *target = Target::Caller(anchor.handle.clone());
+            split.anchors = vec![anchor];
+            if placement.layout == Layout::Workspace {
+                placement.layout = Layout::Tab;
+                placement.sources.insert("layout".into(), "`from: caller` (its workspace wins over `workspace: own`)".into());
+            }
+        }
+        Err(why) => {
+            warnings.push(format!("from: caller: {why}; opened where it would go without `from`"));
+            split.from = None;
+        }
+    }
+    placement.layout
 }
 
 /// The placement flags `tome run` was given for this run, if any.
@@ -161,10 +208,17 @@ pub fn launch(run: &Run, plan: &Plan, recorded: &[Session]) -> CliResult<(Sessio
         cwd: &plan.cwd.to_string_lossy(),
     });
     // An orchestrator relaunched after a restart may open from what's left.
-    let p = &plan.placement;
-    let split = Split::new(p.direction, p.size, p.from, recorded);
-    let (target, note) = target(run, p);
-    let (session, warnings) = backend.launch(&Launch {
+    let mut placement = plan.placement.clone();
+    let p = &placement;
+    let mut split = Split::new(p.direction, p.size, p.from, recorded);
+    let (mut target, note) = target(run, p);
+    let mut warnings = Vec::new();
+    let found = match p.from {
+        Some(From::Caller) => caller_anchor(plan.backend, run.placement.as_ref().map(|r| &r["caller"])),
+        _ => Err(String::new()),
+    };
+    let layout = use_caller(&mut placement, found, &mut split, &mut target, &mut warnings);
+    let (session, more) = backend.launch(&Launch {
         name: &plan.session,
         title: &plan.title,
         cwd: &plan.cwd,
@@ -172,17 +226,17 @@ pub fn launch(run: &Run, plan: &Plan, recorded: &[Session]) -> CliResult<(Sessio
         env: &session_env(run.id),
         script: &dir.join("orchestrator.sh"),
         log: &dir.join(format!("{ROLE}.log")),
-        layout: plan.placement.layout,
+        layout,
         split: &split,
         target: &target,
         project: run_project(run).as_deref(),
     })?;
-    let mut placement = plan.placement.clone();
+    warnings.extend(more);
     placement.warnings = warnings;
     let session = Session {
         run_id: run.id,
         role: ROLE.to_string(),
-        layout: Some(plan.placement.layout.as_str().to_string()),
+        layout: Some(layout.as_str().to_string()),
         harness: Some(plan.harness.name.clone()),
         placement: Some(placement.to_json()),
         ..session

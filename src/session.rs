@@ -25,7 +25,7 @@ mod split;
 mod workspace;
 
 pub use moves::{move_to, Move};
-pub use split::Split;
+pub use split::{Anchor, Split};
 
 use crate::config::Config;
 use crate::harness::shell_quote;
@@ -196,6 +196,8 @@ pub enum Target {
     /// A workspace (tmux session) of the user's, by id: the one focused
     /// when the run started.
     Focused(String),
+    /// The cmux workspace of the pane that ran `tome run` (`from: caller`).
+    Caller(String),
 }
 
 impl Target {
@@ -212,6 +214,7 @@ impl Target {
     fn label(&self, project: Option<&Path>) -> String {
         match self {
             Target::Focused(id) => format!("the focused workspace ({id})"),
+            Target::Caller(id) => format!("the caller's workspace ({id})"),
             t => workspace::name(project, t.name()),
         }
     }
@@ -220,8 +223,10 @@ impl Target {
 /// Note that the focused workspace `target` names is gone, so the session
 /// goes in the project's instead.
 fn gone(target: &Target, warnings: &mut Vec<String>) {
-    if let Target::Focused(id) = target {
-        warnings.push(format!("workspace: focused: {id} is gone; opened in the project workspace"));
+    match target {
+        Target::Focused(id) => warnings.push(format!("workspace: focused: {id} is gone; opened in the project workspace")),
+        Target::Caller(id) => warnings.push(format!("from: caller: its workspace {id} is gone; opened in the project workspace")),
+        _ => {}
     }
 }
 
@@ -762,7 +767,9 @@ impl Cmux {
         warnings: &mut Vec<String>,
     ) -> CliResult<(workspace::Record, bool)> {
         match target {
-            Target::Focused(id) if self.is_alive(id) == Some(true) => Ok((workspace::Record::unkept("cmux", id), false)),
+            Target::Focused(id) | Target::Caller(id) if self.is_alive(id) == Some(true) => {
+                Ok((workspace::Record::unkept("cmux", id), false))
+            }
             target => {
                 gone(target, warnings);
                 Ok((places.cmux(self, project, target.name(), home)?, true))

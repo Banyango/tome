@@ -285,6 +285,9 @@ fn placement(run: &Value, sessions: &[Value]) -> String {
             .map(|(key, v)| vec![key.to_string(), s(v), p["sources"][key].as_str().unwrap_or("").to_string()])
             .collect();
         out.push_str(&indent(&indent(&table(&["SETTING", "VALUE", "FROM"], rows))));
+        if let Some(at) = p["caller"].as_str() {
+            out.push_str(&format!("    caller: opened next to {at}\n"));
+        }
         for w in p["warnings"].as_array().into_iter().flatten() {
             out.push_str(&format!("    warning: {}\n", s(w)));
         }
