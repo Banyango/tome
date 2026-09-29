@@ -1,12 +1,13 @@
-//! `tome workflow new <name>`: write a starter workflow file.
+//! `tome workflow new <name>`: write a starter workflow file, and
+//! `tome workflow rm <name|path>`: delete one.
 //!
-//! Runs locally (it only writes a file), so it works without the daemon. The
+//! Both run locally (they only touch a file), so they work without the daemon. The
 //! file lands where `tome run <name>` will find it: the nearest project
 //! `.tome/workflows` (created in the working directory if there is none), or
 //! `~/.tome/workflows` with `--global`.
 
 use crate::output::{CliError, CliResult, Report};
-use crate::workflow::{self, Library, Scope};
+use crate::workflow::{self, Entry, Library, Scope};
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -47,15 +48,124 @@ pub fn new(cwd: &Path, name: &str, description: Option<&str>, global: bool, forc
     let shadows: Option<PathBuf> = (scope == Scope::Project)
         .then(|| entries.iter().find(|e| e.scope == Scope::Global && e.name() == Some(name)).map(|e| e.path.clone()))
         .flatten();
-    let scope_str = match scope {
-        Scope::Global => "global",
-        Scope::Project => "project",
-    };
     let mut human = format!("created workflow `{name}` at {}\nedit it, then run: tome run {name}", path.display());
     if let Some(g) = &shadows {
         human.push_str(&format!("\nnote: this overrides the global workflow at {}", g.display()));
     }
-    Ok(Report::new(json!({ "name": name, "path": path, "scope": scope_str, "shadows": shadows }), human))
+    Ok(Report::new(json!({ "name": name, "path": path, "scope": scope_str(scope), "shadows": shadows }), human))
+}
+
+/// `tome workflow rm <name|path>`: delete one workflow file.
+///
+/// A name is looked up in one scope only (the project, or `~/.tome/workflows`
+/// with `--global`); a path must be a `.md` directly inside a workflows
+/// directory, and its location decides the scope. Only the file goes: runs,
+/// logs, worktrees and directories are left alone.
+pub fn rm(cwd: &Path, target: &str, global: bool) -> CliResult<Report> {
+    let library = Library::discover(cwd);
+    let (scope, path, name) = if target.contains('/') || target.ends_with(".md") {
+        by_path(&library, &cwd.join(target), target, global)?
+    } else {
+        by_name(&library, target, global)?
+    };
+    fs::remove_file(&path)?;
+
+    // With the project copy gone, `tome run <name>` falls back to a global
+    // workflow of the same name, unless another project file still has it.
+    let falls_back_to: Option<PathBuf> = match (scope, &name) {
+        (Scope::Project, Some(name)) => {
+            let project_root = path.parent().and_then(Path::parent).and_then(Path::parent).unwrap_or(cwd);
+            let entries = Library::discover(project_root).entries();
+            let named = |s: Scope| entries.iter().find(|e| e.scope == s && e.name() == Some(name.as_str()));
+            named(Scope::Project).is_none().then(|| named(Scope::Global).map(|e| e.path.clone())).flatten()
+        }
+        _ => None,
+    };
+    let mut human = match &name {
+        Some(name) => format!("removed workflow `{name}` at {}", path.display()),
+        None => format!("removed workflow file {}", path.display()),
+    };
+    if let (Some(name), Some(g)) = (&name, &falls_back_to) {
+        human.push_str(&format!("\nnote: `tome run {name}` now uses the global workflow at {}", g.display()));
+    }
+    Ok(Report::new(
+        json!({ "name": name, "path": path, "scope": scope_str(scope), "falls_back_to": falls_back_to }),
+        human,
+    ))
+}
+
+fn by_path(library: &Library, path: &Path, target: &str, global: bool) -> CliResult<(Scope, PathBuf, Option<String>)> {
+    if !path.is_file() {
+        return Err(CliError::not_found(format!("no workflow file at `{target}`")));
+    }
+    let where_hint = "workflow files are the `.md` files in a project's .tome/workflows or in ~/.tome/workflows";
+    let path = path.canonicalize()?;
+    let dir = path.parent().unwrap_or(Path::new("/"));
+    let in_project_dir =
+        dir.file_name().is_some_and(|n| n == "workflows") && dir.parent().and_then(Path::file_name).is_some_and(|n| n == ".tome");
+    let scope = if path.extension().is_none_or(|x| x != "md") {
+        None
+    } else if workflow::same_path(dir, &library.global_dir) {
+        Some(Scope::Global)
+    } else if in_project_dir {
+        Some(Scope::Project)
+    } else {
+        None
+    };
+    let Some(scope) = scope else {
+        return Err(CliError::invalid(format!("{} is not a workflow file", path.display())).with_hint(where_hint));
+    };
+    if global && scope == Scope::Project {
+        return Err(CliError::invalid(format!("{} is a project workflow, but --global was passed", path.display()))
+            .with_hint("drop --global: a path's own location decides its scope"));
+    }
+    let name = match workflow::load(&path) {
+        Ok(wf) => Some(wf.name().to_string()),
+        Err(inv) => inv.name,
+    };
+    Ok((scope, path, name))
+}
+
+fn by_name(library: &Library, name: &str, global: bool) -> CliResult<(Scope, PathBuf, Option<String>)> {
+    let (scope, other) = if global { (Scope::Global, Scope::Project) } else { (Scope::Project, Scope::Global) };
+    let entries = library.entries();
+    let matches: Vec<&Entry> = entries.iter().filter(|e| e.scope == scope && e.name() == Some(name)).collect();
+    match matches.as_slice() {
+        [only] => Ok((scope, only.path.clone(), Some(name.to_string()))),
+        [] => {
+            let message = format!("no {} workflow named `{name}`", scope_str(scope));
+            let hint = if let Some(e) = entries.iter().find(|e| e.scope == other && e.name() == Some(name)) {
+                match other {
+                    Scope::Global => format!("there's a global one at {}; pass --global to remove it", e.path.display()),
+                    Scope::Project => format!("there's a project one at {}; drop --global to remove it", e.path.display()),
+                }
+            } else if let Some(e) = entries
+                .iter()
+                .find(|e| e.scope == scope && e.name().is_none() && e.path.file_stem().is_some_and(|s| s == name))
+            {
+                format!("{} has no readable name; pass its path to remove it", e.path.display())
+            } else {
+                match (scope, &library.project_dir) {
+                    (Scope::Global, _) => format!("global workflows are loaded from {}", library.global_dir.display()),
+                    (Scope::Project, Some(dir)) => format!("project workflows are loaded from {}", dir.display()),
+                    (Scope::Project, None) => "there's no .tome/workflows directory here or above".to_string(),
+                }
+            };
+            Err(CliError::not_found(message).with_hint(hint))
+        }
+        many => {
+            let paths: Vec<String> = many.iter().map(|e| e.path.display().to_string()).collect();
+            Err(CliError::invalid(format!("workflow name `{name}` is defined more than once: {}", paths.join(", ")))
+                .with_hint("pass the path of the one to remove"))
+        }
+    }
+}
+
+fn scope_str(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Global => "global",
+        Scope::Project => "project",
+    }
 }
 
 fn template(name: &str, description: Option<&str>) -> String {

@@ -57,7 +57,7 @@ enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
-    /// Create workflows.
+    /// Create and remove workflows.
     Workflow {
         #[command(subcommand)]
         command: WorkflowCommand,
@@ -202,6 +202,14 @@ enum WorkflowCommand {
         /// Overwrite the file if it already exists.
         #[arg(long)]
         force: bool,
+    },
+    /// Delete a workflow file (no prompt; runs and logs are kept).
+    Rm {
+        /// Workflow name, or path to a `.md` file in a workflows directory.
+        workflow: String,
+        /// Look the name up in ~/.tome/workflows instead of the project.
+        #[arg(long)]
+        global: bool,
     },
 }
 
@@ -629,6 +637,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             WorkflowCommand::New { name, description, global, force } => {
                 scaffold::new(&current_dir()?, &name, description.as_deref(), global, force)
             }
+            WorkflowCommand::Rm { workflow, global } => scaffold::rm(&current_dir()?, &workflow, global),
         },
         Command::Validate { workflow, params } => validate::run(&current_dir()?, workflow.as_deref(), &params),
         Command::Run { command: Some(command), .. } => match command {
