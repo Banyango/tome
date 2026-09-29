@@ -2,7 +2,16 @@
 
 Source feature: [feature.md](./feature.md)
 
-> All tasks are done: implemented as 011-1 to 011-4 directly on main (f9b2098, a5e74c7, 590370b, 0491034).
+> All tasks are done: implemented as 011-1 to 011-4 directly on main (f9b2098, a5e74c7, 590370b, 0491034). Follow-ups: [follow-ups.md](./follow-ups.md).
+
+## What changed
+
+- **Placement:** `from` takes `caller`. `tome validate` and the workflow load reject it in a `workers[]` rule or the `workers` block, and `tome worker spawn --from caller` is refused with a hint. At levels both roles share, workers skip it. Each session's placement JSON can carry `caller`, the pane it opened next to.
+- **Records:** each run's placement JSON has `caller`. That's `{surface, workspace, pane}` for a `tome run` from a cmux pane, or `{unknown: why}` for a trigger or a run from outside cmux. No store migration was needed.
+- **Launch:** on cmux, the orchestrator opens in the caller's workspace, as a tab in its pane (`new-surface --pane`) or a split off it (`new-split --surface`), without focus. With no caller, on tmux, or when the caller's pane is gone, it opens where it would without `from`, with a session warning.
+- **`tome session move <run>/orchestrator --from caller`:** it moves the orchestrator next to the pane running the move. It fails, leaving the session where it was, off cmux, on tmux, for a worker, or from the orchestrator's own pane. The human output names the caller's pane.
+- **`tome runs show`:** each session that used the anchor shows `caller: opened next to …`, and the run shows `caller at start: pane … (surface …) in workspace …`.
+- **Tests:** `tests/layout.rs` (tmux) covers the validation error, workers skipping a shared `from: caller`, the refused spawn, the tmux and not-from-cmux fallbacks, and the failed moves. `tests/cmux.rs` opens a stand-in "chat" workspace, points `CMUX_*` at it, and covers the tab, a move into a split, and the fallback once the caller's workspace is closed.
 
 ## Interpretations made while implementing
 

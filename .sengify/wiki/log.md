@@ -27,3 +27,4 @@
 - 2026-09-28 16:50 — feature — 011-caller-placement: `from: caller` opens the orchestrator as a tab (or split) in the pane that ran `tome run` (cmux only), plus `tome session move --from caller` — pages touched: features/011-caller-placement/feature.md (new), index.md
 - 2026-09-28 19:01 — update — 011-caller-placement implemented — pages touched: features/011-caller-placement/tasks.md
 - 2026-09-28 19:01 — update — 011-caller-placement: interpretations made while implementing — pages touched: features/011-caller-placement/tasks.md
+- 2026-09-28 19:02 — update — 011-caller-placement: what changed and potential follow-ups — pages touched: features/011-caller-placement/tasks.md, features/011-caller-placement/follow-ups.md (new), index.md, entities/run.md, entities/orchestrator.md, entities/worker.md, entities/session.md

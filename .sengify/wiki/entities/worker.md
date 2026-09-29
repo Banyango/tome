@@ -16,6 +16,7 @@ An agent or command that the [[orchestrator]] spawns to do part of a [[run]]'s w
 - optional [[group]] membership
 - env: `TOME_RUN_ID`, `TOME_WORKER_ID`, `TOME_OUTPUT=json`, `TOME_WORKTREE`
 - placement: `tome worker spawn --preset --layout --workspace --direction --size --from`, above the workflow's matching rule and `workers` block; a live worker's session can be re-placed with `tome session move <run>/<name>` _(source: [010](../features/010-session-placement/feature.md))_
+- `from: caller` is for the orchestrator only: an error in a worker's rule or the `workers` block, refused by `tome worker spawn`, and skipped at levels shared with the orchestrator _(source: [011](../features/011-caller-placement/feature.md))_
 
 ## Relationships
 
@@ -29,3 +30,4 @@ An agent or command that the [[orchestrator]] spawns to do part of a [[run]]'s w
 
 - features/003-primitives/feature.md
 - features/010-session-placement/feature.md
+- features/011-caller-placement/feature.md
