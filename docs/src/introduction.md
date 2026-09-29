@@ -1,12 +1,10 @@
 # Introduction
 
-tome runs repeatable agentic workflows. You describe a process once, in a Markdown file in plain English, and say what starts it. Every time it fires, tome starts agents in tmux or cmux, where you can watch them work and step in.
+Tome is a new way to orchestrate agentic harnesses together. Use the primitives to build repeatable and scalable workflows that link together agent harnesses.
 
-```markdown title=.tome/workflows/plan-feature.md
-{{#include ../examples/intro.md}}
-```
+Tome provides things like triggers, queues, and an event bus. That you can mold together into a software factory.
 
-Add a `features/<name>/feature.md` to your project, and an agent investigates the codebase and writes the plan. You don't run a command.
+Tome also integrates seamlessly with tmux/cmux and allows you to view what's going on.
 
 ## Quick start
 
@@ -30,19 +28,16 @@ Then follow the [quickstart](quickstart.md) to add a workflow and watch it fire.
 
 ## When to use tome
 
-tome fits processes you run again and again, where an agent's judgement is useful but the shape of the work stays the same:
-
 - turning a feature spec into tasks, then into branches
 - fixing failing tests as you work
 - reviewing a branch with one agent per file
 - scheduled checks, such as stale branches every morning
 - chains, where one workflow's result starts the next
 
-It's not the right tool for a one-off question, where you'd talk to the agent directly. Nor is it for a fully scripted pipeline with no decisions in it: use `make` or CI for that.
 
 ## Where it runs
 
-tome runs on your machine, on macOS and Linux. Agents open in tmux or cmux, and run state lives in `~/.tome`. Nothing is hosted.
+tome runs on your machine, on macOS and Linux. Agents open in tmux or cmux, and run state lives in `~/.tome`.
 
 ## Learn more
 
