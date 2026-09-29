@@ -210,6 +210,9 @@ enum WorkflowCommand {
         /// Look the name up in ~/.tome/workflows instead of the project.
         #[arg(long)]
         global: bool,
+        /// Delete it even if it has running or queued runs (or the daemon is down).
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -637,7 +640,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             WorkflowCommand::New { name, description, global, force } => {
                 scaffold::new(&current_dir()?, &name, description.as_deref(), global, force)
             }
-            WorkflowCommand::Rm { workflow, global } => scaffold::rm(&current_dir()?, &workflow, global),
+            WorkflowCommand::Rm { workflow, global, force } => scaffold::rm(&current_dir()?, &workflow, global, force),
         },
         Command::Validate { workflow, params } => validate::run(&current_dir()?, workflow.as_deref(), &params),
         Command::Run { command: Some(command), .. } => match command {

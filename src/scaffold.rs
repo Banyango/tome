@@ -1,12 +1,14 @@
 //! `tome workflow new <name>`: write a starter workflow file, and
 //! `tome workflow rm <name|path>`: delete one.
 //!
-//! Both run locally (they only touch a file), so they work without the daemon. The
-//! file lands where `tome run <name>` will find it: the nearest project
+//! Both run locally (they only touch a file), though `rm` first asks the daemon
+//! whether the file has live runs unless given `--force`. The file lands where `tome run <name>` will find it: the nearest project
 //! `.tome/workflows` (created in the working directory if there is none), or
 //! `~/.tome/workflows` with `--global`.
 
-use crate::output::{CliError, CliResult, Report};
+use crate::output::{CliError, CliResult, ErrorKind, Report};
+use crate::paths;
+use crate::rpc;
 use crate::workflow::{self, Entry, Library, Scope};
 use serde_json::json;
 use std::fs;
@@ -61,13 +63,20 @@ pub fn new(cwd: &Path, name: &str, description: Option<&str>, global: bool, forc
 /// with `--global`); a path must be a `.md` directly inside a workflows
 /// directory, and its location decides the scope. Only the file goes: runs,
 /// logs, worktrees and directories are left alone.
-pub fn rm(cwd: &Path, target: &str, global: bool) -> CliResult<Report> {
+///
+/// Unless `force` is set, it refuses while the file has running or queued
+/// runs, or when the daemon (which alone can tell) isn't running. Live runs
+/// carry on from their saved snapshots either way.
+pub fn rm(cwd: &Path, target: &str, global: bool, force: bool) -> CliResult<Report> {
     let library = Library::discover(cwd);
     let (scope, path, name) = if target.contains('/') || target.ends_with(".md") {
         by_path(&library, &cwd.join(target), target, global)?
     } else {
         by_name(&library, target, global)?
     };
+    if !force {
+        refuse_if_live(&path)?;
+    }
     fs::remove_file(&path)?;
 
     // With the project copy gone, `tome run <name>` falls back to a global
@@ -92,6 +101,29 @@ pub fn rm(cwd: &Path, target: &str, global: bool) -> CliResult<Report> {
         json!({ "name": name, "path": path, "scope": scope_str(scope), "falls_back_to": falls_back_to }),
         human,
     ))
+}
+
+/// Ask the daemon for the running and queued runs of the file at `path`.
+fn refuse_if_live(path: &Path) -> CliResult<()> {
+    let data = match rpc::call(&paths::socket_path(), "runs.live", json!({ "workflow_path": path })) {
+        Ok(data) => data,
+        Err(e) if e.kind == ErrorKind::DaemonNotRunning => {
+            return Err(CliError::new(ErrorKind::DaemonNotRunning, "can't check for live runs: daemon is not running")
+                .with_hint("start it with `tome daemon start`, or pass --force to remove the file anyway"));
+        }
+        Err(e) => return Err(e),
+    };
+    let ids: Vec<i64> = data["runs"].as_array().into_iter().flatten().filter_map(|r| r["id"].as_i64()).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let list: Vec<String> = ids.iter().map(|id| format!("#{id}")).collect();
+    Err(CliError::conflict(format!("{} has running or queued runs: {}", path.display(), list.join(", ")))
+        .with_hint(format!(
+            "cancel them with `tome run cancel {}`, or pass --force to remove the file anyway (they carry on from their saved copy)",
+            ids[0]
+        ))
+        .with_details(json!({ "runs": ids })))
 }
 
 fn by_path(library: &Library, path: &Path, target: &str, global: bool) -> CliResult<(Scope, PathBuf, Option<String>)> {

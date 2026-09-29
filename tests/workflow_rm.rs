@@ -1,6 +1,7 @@
 mod common;
 
 use common::Env;
+use serde_json::json;
 use std::fs;
 
 fn msg(err: &serde_json::Value) -> &str {
@@ -14,6 +15,7 @@ fn hint(err: &serde_json::Value) -> &str {
 #[test]
 fn removes_a_project_workflow_by_name() {
     let env = Env::new();
+    env.start_daemon();
     assert_eq!(env.json(&["workflow", "new", "ship"]).0, 0);
     let dir = env.project().join(".tome/workflows");
     let path = dir.join("ship.md").canonicalize().unwrap();
@@ -35,6 +37,7 @@ fn removes_a_project_workflow_by_name() {
 #[test]
 fn global_flag_picks_the_global_library_and_never_crosses_scopes() {
     let env = Env::new();
+    env.start_daemon();
     assert_eq!(env.json(&["workflow", "new", "tidy", "--global"]).0, 0);
     let global = env.home().join("workflows/tidy.md");
 
@@ -61,6 +64,7 @@ fn global_flag_picks_the_global_library_and_never_crosses_scopes() {
 #[test]
 fn removing_a_project_override_notes_the_global_fallback() {
     let env = Env::new();
+    env.start_daemon();
     assert_eq!(env.json(&["workflow", "new", "tidy", "--global"]).0, 0);
     assert_eq!(env.json(&["workflow", "new", "tidy"]).0, 0);
 
@@ -81,6 +85,7 @@ fn removing_a_project_override_notes_the_global_fallback() {
 #[test]
 fn refuses_an_ambiguous_name() {
     let env = Env::new();
+    env.start_daemon();
     let dir = env.project().join(".tome/workflows");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("a.md"), "---\nname: dup\n---\nhi\n").unwrap();
@@ -102,6 +107,7 @@ fn refuses_an_ambiguous_name() {
 #[test]
 fn removes_a_broken_file_by_path() {
     let env = Env::new();
+    env.start_daemon();
     let dir = env.project().join(".tome/workflows");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("broken.md"), "---\nname: [oops\n---\n").unwrap();
@@ -122,6 +128,7 @@ fn removes_a_broken_file_by_path() {
 #[test]
 fn a_global_path_works_with_or_without_the_flag() {
     let env = Env::new();
+    env.start_daemon();
     assert_eq!(env.json(&["workflow", "new", "a", "--global"]).0, 0);
     assert_eq!(env.json(&["workflow", "new", "b", "--global"]).0, 0);
     let a = env.home().join("workflows/a.md");
@@ -164,4 +171,73 @@ fn refuses_bad_paths() {
     // Missing file.
     let (code, _) = env.json(&["workflow", "rm", ".tome/workflows/nope.md"]);
     assert_eq!(code, 4);
+}
+
+#[test]
+fn refuses_while_the_file_has_live_runs_unless_forced() {
+    let env = Env::new();
+    env.start_daemon();
+    assert_eq!(env.json(&["workflow", "new", "ship"]).0, 0);
+    assert_eq!(env.json(&["workflow", "new", "ship", "--global"]).0, 0);
+    let project = env.project().join(".tome/workflows/ship.md").canonicalize().unwrap();
+    let global = env.home().join("workflows/ship.md").canonicalize().unwrap();
+    let run = env.rpc_ok("run.create", json!({ "workflow_path": project, "project_path": env.project() }));
+    let id = run["id"].as_i64().unwrap();
+
+    let (code, err) = env.json(&["workflow", "rm", "ship"]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(err["error"]["kind"], "conflict");
+    assert!(msg(&err).contains(&format!("#{id}")), "{err}");
+    assert_eq!(err["error"]["details"]["runs"], json!([id]));
+    assert!(hint(&err).contains("--force") && hint(&err).contains("tome run cancel"), "{err}");
+    assert!(project.exists());
+
+    // The match is on the file, not the name: the global `ship` has no runs.
+    let (code, out) = env.json(&["workflow", "rm", "ship", "--global"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!global.exists());
+
+    let (code, out) = env.json(&["workflow", "rm", "ship", "--force"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!project.exists());
+
+    // The run carries on, and its snapshot is still there to show.
+    let (code, shown) = env.json(&["runs", "show", &id.to_string(), "--snapshot"]);
+    assert_eq!(code, 0, "{shown}");
+    assert_eq!(shown["run"]["status"], "running");
+    assert!(shown["run"]["workflow_snapshot"].as_str().is_some_and(|s| s.contains("name: ship")), "{shown}");
+}
+
+#[test]
+fn finished_runs_do_not_block_removal() {
+    let env = Env::new();
+    env.start_daemon();
+    assert_eq!(env.json(&["workflow", "new", "ship"]).0, 0);
+    let path = env.project().join(".tome/workflows/ship.md").canonicalize().unwrap();
+    let run = env.rpc_ok("run.create", json!({ "workflow_path": path }));
+    let id = run["id"].to_string();
+    let (code, out) = env.json(&["run", "finish", "--status", "succeeded", "--run", &id]);
+    assert_eq!(code, 0, "{out}");
+
+    let (code, out) = env.json(&["workflow", "rm", "ship"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!path.exists());
+}
+
+#[test]
+fn refuses_without_the_daemon_unless_forced() {
+    let env = Env::new();
+    assert_eq!(env.json(&["workflow", "new", "ship"]).0, 0);
+    let path = env.project().join(".tome/workflows/ship.md");
+
+    let (code, err) = env.json(&["workflow", "rm", "ship"]);
+    assert_eq!(code, 3, "{err}");
+    assert_eq!(err["error"]["kind"], "daemon_not_running");
+    assert!(msg(&err).contains("can't check for live runs: daemon is not running"), "{err}");
+    assert!(hint(&err).contains("tome daemon start") && hint(&err).contains("--force"), "{err}");
+    assert!(path.exists());
+
+    let (code, out) = env.json(&["workflow", "rm", "ship", "--force"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!path.exists());
 }

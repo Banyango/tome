@@ -14,6 +14,7 @@ const METHODS: &[&str] = &[
     "run.get",
     "worktree.add",
     "runs.list",
+    "runs.live",
     "runs.show",
     "runs.logs",
     "runs.gc",
@@ -33,6 +34,7 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> CliResult<Va
         "run.get" => run_get(store, params),
         "worktree.add" => worktree_add(store, params),
         "runs.list" => runs_list(store, params),
+        "runs.live" => runs_live(store, params),
         "runs.show" => runs_show(store, params),
         "runs.logs" => runs_logs(store, params),
         "runs.gc" => gc::collect(store, params),
@@ -165,6 +167,19 @@ fn runs_list(store: &mut Store, p: &Value) -> CliResult<Value> {
         limit: p.get("limit").and_then(Value::as_u64).map(|n| n as usize),
     };
     Ok(json!({ "runs": store.list_runs(&filter).map_err(internal)? }))
+}
+
+/// `runs.live {workflow_path}`: the running and queued runs of that exact
+/// file, oldest first. `tome workflow rm` asks this before deleting it.
+fn runs_live(store: &mut Store, p: &Value) -> CliResult<Value> {
+    let path = PathBuf::from(req_str(p, "workflow_path")?);
+    let runs: Vec<Run> = store
+        .in_progress_runs()
+        .map_err(internal)?
+        .into_iter()
+        .filter(|r| r.workflow_path.as_deref().is_some_and(|w| workflow::same_path(Path::new(w), &path)))
+        .collect();
+    Ok(json!({ "runs": runs }))
 }
 
 /// `runs.show {id, snapshot?}`: the run with its steps, step history,
