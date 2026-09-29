@@ -4,6 +4,16 @@ Source feature: [feature.md](./feature.md)
 
 > All tasks are done: implemented as 011-1 to 011-4 directly on main (f9b2098, a5e74c7, 590370b, 0491034).
 
+## Interpretations made while implementing
+
+- **Who reads the caller:** the CLI, not the daemon, since the daemon's environment isn't the caller's. `tome run` and `tome session move` send `CMUX_SURFACE_ID` and `CMUX_WORKSPACE_ID` as `cmux_caller`. At request time the daemon looks up the surface's pane and workspace, which are recorded and shown. At launch it looks the surface up again, since a pane can move between request and launch.
+- **`TOME_LAYOUT`** only carries a layout name, so it can't give `from: caller`.
+- **The caller's workspace wins:** with `from: caller`, `layout: workspace` (or `workspace: own`) becomes a tab in the caller's pane, with a source saying so.
+- **The caller's own workspace gone:** it's handled like a gone `focused` workspace. The session opens in the project workspace, with a session warning.
+- **A worker's own levels vs shared ones:** `from: caller` in a worker's spawn flags, its `workers[]` rule, the `workers` block or a preset used there is an error. At a shared level (`tome run` flags, `defaults.layout`, `TOME_LAYOUT`, the config, or a preset used there) workers skip it.
+- **Moves:** `from: caller` applies to a move only when the move's own flags (or their preset) give it. A session placed with `from: caller` drops it on a later move that doesn't give it. `--from caller` fails when the pane running the move is the orchestrator's own.
+- **`tome runs show`:** the run shows `caller at start` only when a surface was recorded. Why there was no caller shows as the session's warning when `from: caller` was used.
+
 ## Tasks
 
 ### 011-1. `from: caller` as a placement value, orchestrator only
