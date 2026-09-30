@@ -268,12 +268,15 @@ enum WorkerCommand {
         /// Add the worker to this group (created on first use).
         #[arg(long)]
         group: Option<String>,
-        /// Give the worker its own git worktree on branch tome/<run>/<name>.
+        /// Give the worker its own git worktree on a new branch (default: tome/<run>/<name>).
         #[arg(long)]
         worktree: bool,
         /// What the worktree branches from (default: the current HEAD commit).
         #[arg(long, value_name = "REF")]
         base: Option<String>,
+        /// Name the worktree's new branch (default: tome/<run>/<name>).
+        #[arg(long, value_name = "NAME")]
+        branch: Option<String>,
         /// Harness for an agent worker (default: the workflow's, else claude).
         #[arg(long)]
         harness: Option<String>,
@@ -375,6 +378,9 @@ enum WorktreeCommand {
         /// What the branch starts from (default: the current HEAD commit).
         #[arg(long, value_name = "REF")]
         base: Option<String>,
+        /// Name the new branch (default: tome/<run>/<name>).
+        #[arg(long, value_name = "NAME")]
+        branch: Option<String>,
         #[command(flatten)]
         run: RunArg,
     },
@@ -709,6 +715,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 group,
                 worktree,
                 base,
+                branch,
                 harness,
                 keep_open,
                 placement,
@@ -723,6 +730,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 group,
                 worktree,
                 base,
+                branch,
                 harness,
                 keep_open,
                 prompt,
@@ -761,8 +769,14 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             }
         },
         Command::Worktree {
-            command: WorktreeCommand::Create { name, base, run },
-        } => primitives::worktree_create(name, base, run.run),
+            command:
+                WorktreeCommand::Create {
+                    name,
+                    base,
+                    branch,
+                    run,
+                },
+        } => primitives::worktree_create(name, base, branch, run.run),
         Command::Queue { command } => match command {
             QueueCommand::Push { queue, text, run } => primitives::push(queue, text, run.run),
             QueueCommand::Pull { queue, wait, run } => primitives::pull(queue, wait, run.run),

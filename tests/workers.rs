@@ -422,9 +422,71 @@ fn worktrees_branch_from_head_and_are_ignored() {
     );
     assert_eq!(code, 2, "--base needs --worktree");
 
+    let named = ok(
+        &env,
+        &run,
+        &[
+            "worker",
+            "spawn",
+            "--name",
+            "t004",
+            "--worktree",
+            "--branch",
+            "task/004-renderer",
+            "--",
+            "true",
+        ],
+    );
+    assert_eq!(named["branch"], "task/004-renderer", "{named}");
+    let free_named = ok(
+        &env,
+        &run,
+        &["worktree", "create", "notes", "--branch", "notes/scratch"],
+    );
+    assert_eq!(free_named["branch"], "notes/scratch", "{free_named}");
+    let (code, _) = tome(
+        &env,
+        &run,
+        &[
+            "worker",
+            "spawn",
+            "--name",
+            "dup",
+            "--worktree",
+            "--branch",
+            "task/004-renderer",
+            "--",
+            "true",
+        ],
+    );
+    assert_eq!(code, 2, "the branch is taken");
+    let (code, _) = tome(
+        &env,
+        &run,
+        &[
+            "worker",
+            "spawn",
+            "--name",
+            "bad",
+            "--worktree",
+            "--branch",
+            "no..dots",
+            "--",
+            "true",
+        ],
+    );
+    assert_eq!(code, 2, "not a valid branch name");
+    let (code, _) = tome(
+        &env,
+        &run,
+        &["worker", "spawn", "--branch", "x", "--", "true"],
+    );
+    assert_eq!(code, 2, "--branch needs --worktree");
+    ok(&env, &run, &["worker", "wait", "t004"]);
+
     let shown = env.json(&["runs", "show", &run]).1;
     let worktrees = shown["worktrees"].as_array().unwrap();
-    assert_eq!(worktrees.len(), 2, "{shown}");
+    assert_eq!(worktrees.len(), 4, "{shown}");
     assert_eq!(worktrees[0]["worker"], "wt");
 }
 

@@ -13,7 +13,7 @@ Only the orchestrator starts workers. Workers can't start workers. A worker has 
 
 ## Worktree
 
-A **worktree** is a git worktree for a worker, so it can change files without touching your checkout or other workers. It gets its own branch, named `tome/<run>/<worker>`, which starts from a base you choose. When the worker finishes, its branch holds its commits, and the orchestrator merges the branches it wants.
+A **worktree** is a git worktree for a worker, so it can change files without touching your checkout or other workers. It gets its own branch, named `tome/<run>/<worker>` unless you name it, which starts from a base you choose. When the worker finishes, its branch holds its commits, and the orchestrator merges the branches it wants.
 
 ## Group
 

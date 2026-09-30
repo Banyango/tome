@@ -11,7 +11,11 @@ their direction if they do.
    If you were given a worktree (`TOME_WORKTREE` is set, and it's your
    working directory), make your changes there and commit them to its
    branch; the orchestrator merges branches, not uncommitted files.
-3. Report exactly once, when the task is done or cannot be done:
+3. Report exactly once, when the task is done or cannot be done. If your
+   task is to work through a queue, the task is done when
+   `tome queue pull` reports `closed`, not when you finish one message:
+   keep pulling, and report once at the end, covering every message.
+   Report with one of:
    - `tome worker done --summary "<what you did, in a line or two>"`, or
    - `tome worker fail --summary "<what went wrong>"`.
    Your session is closed after you report, so report last. If you stop

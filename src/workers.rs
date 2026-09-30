@@ -189,6 +189,10 @@ impl Engine {
         if base.is_some() && !with_worktree {
             return Err(CliError::invalid("--base only applies with --worktree"));
         }
+        let branch = opt_str(p, "branch");
+        if branch.is_some() && !with_worktree {
+            return Err(CliError::invalid("--branch only applies with --worktree"));
+        }
         let run = self.with_store(|store| {
             store
                 .get_run(run_id, true)
@@ -273,7 +277,7 @@ impl Engine {
         let name = worker.name.clone();
 
         let created = match &base {
-            Some(base) => match worktree::create(base, run_id, &name) {
+            Some(base) => match worktree::create(base, run_id, &name, branch) {
                 Ok(c) => Some(c),
                 Err(e) => {
                     let _ = self.with_store(|store| store.delete_worker(run_id, &name));
@@ -553,7 +557,7 @@ impl Engine {
         })
     }
 
-    /// `worktree.create {run_id, name, base?, cwd?}`: a worktree not tied to
+    /// `worktree.create {run_id, name, base?, branch?, cwd?}`: a worktree not tied to
     /// a worker.
     fn create_worktree(&self, run_id: i64, p: &Value) -> CliResult<Value> {
         let name = req_str(p, "name")?;
@@ -566,7 +570,7 @@ impl Engine {
             )));
         }
         let base = worktree::resolve_base(&repo_dir(&run, p), opt_str(p, "base"))?;
-        let created = worktree::create(&base, run_id, name)?;
+        let created = worktree::create(&base, run_id, name, opt_str(p, "branch"))?;
         self.with_store(|store| {
             store
                 .add_worktree(

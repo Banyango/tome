@@ -42,9 +42,17 @@ A worker started with `--worktree` gets its own git worktree of the project, on 
 tome worker spawn --name task-1 --worktree --base main --prompt "Add a --verbose flag"
 ```
 
+`--branch` names the branch instead, to follow your team's convention or to open a pull request from it. The branch must not exist yet, so put something unique in the name, such as a task id:
+
+```sh
+tome worker spawn --name t004-renderer --worktree --base main --branch task/004-renderer --prompt "..."
+```
+
+Say how to name branches in the workflow body, and the orchestrator passes `--branch` for you.
+
 The worker's working directory is the worktree, and it commits its changes to that branch. tome doesn't merge anything for you. The orchestrator merges the branches with git, which is why prompts should tell workers to commit before they report done.
 
-`tome worktree create <name> [--base <ref>]` makes a worktree that isn't tied to a worker.
+`tome worktree create <name> [--base <ref>] [--branch <name>]` makes a worktree that isn't tied to a worker.
 
 Worktrees stay after a run ends, so you can look at the branches. [`tome gc`](operating.md#cleaning-up) removes them with old runs, and deletes a branch only if it was merged into its base.
 
@@ -88,8 +96,12 @@ tome queue ls
 
 A message is text up to about 1 MiB. Put bigger data in a file and send its path. A claimed message that is never acked goes back on the queue when the worker that claimed it finishes, so another worker can pick it up.
 
+A worker reports once, and its session closes when it does, so a worker only works through a queue if its prompt tells it to loop. Say it in the prompt: pull, do the item, ack, and pull again until `pull` reports `closed`, then report once. `pull` exits 3 in two cases, and the JSON `status` tells them apart: `empty` means nothing is there yet, and `closed` means nothing more will come. That is why the orchestrator has to close the queue after its last push. A closed queue stays closed for the rest of the run, so a workflow that pushes more work in a later round needs a new queue name for that round.
+
+If every item gets its own worker, you don't need a queue. Put the item in the worker's prompt.
+
 ## Limits and tips
 
 - A worker's summary is the main channel back to the orchestrator. Ask for a useful one.
-- There is no limit on how many workers run at once. Say in the workflow if you want a cap, for example "at most 3 workers at a time".
-- Worker names must be unique in a run. Without `--name`, they are `w1`, `w2` and so on.
+- There is no limit on how many workers run at once. Each agent worker is a full harness session, so say in the workflow how many your machine can take, for example "never have more than {{params.workers}} workers running", with a param that defaults to 1 or 2.
+- Worker names must be unique in a run. Without `--name`, they are `w1`, `w2` and so on. A name shows in the worker's tab title, in `tome runs show` and in its branch, so say in the workflow how to name workers, for example "name each worker `t<id>-<short title>`".

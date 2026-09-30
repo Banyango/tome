@@ -35,6 +35,7 @@ pub struct Spawn {
     pub group: Option<String>,
     pub worktree: bool,
     pub base: Option<String>,
+    pub branch: Option<String>,
     pub harness: Option<String>,
     pub keep_open: bool,
     pub placement: crate::placement::Settings,
@@ -71,6 +72,7 @@ pub fn spawn(a: Spawn) -> CliResult<Report> {
             "group": a.group,
             "worktree": a.worktree,
             "base": a.base,
+            "branch": a.branch,
             "harness": a.harness,
             "keep_open": a.keep_open,
             "placement": (!a.placement.is_empty()).then_some(&a.placement),
@@ -211,16 +213,17 @@ pub fn group(method: &str, name: String, wait: bool, run: Option<String>) -> Cli
     }
 }
 
-/// `tome worktree create <name> [--base <ref>]`
+/// `tome worktree create <name> [--base <ref>] [--branch <name>]`
 pub fn worktree_create(
     name: String,
     base: Option<String>,
+    branch: Option<String>,
     run: Option<String>,
 ) -> CliResult<Report> {
     let run = run_id(run)?;
     let wt = call(
         "worktree.create",
-        json!({ "run_id": run, "name": name, "base": base, "cwd": std::env::current_dir().ok() }),
+        json!({ "run_id": run, "name": name, "base": base, "branch": branch, "cwd": std::env::current_dir().ok() }),
     )?;
     let human = format!(
         "{} (branch {}, from {})",

@@ -47,8 +47,15 @@ can spawn workers; there is no limit on how many run at once.
   run a command (tests, a build) as a worker. Exit `0` is done, anything else
   failed; its summary is the exit code and the last lines of its output.
 - `--worktree` gives the worker a git worktree of the project on a new
-  branch `tome/<run>/<name>`, from `--base` or the current HEAD commit
-  (uncommitted changes aren't included). Merge the branches yourself with git.
+  branch, from `--base` or the current HEAD commit (uncommitted changes
+  aren't included). The branch is `tome/<run>/<name>` unless you pass
+  `--branch <name>`; pass it whenever the workflow says how to name
+  branches. Merge the branches yourself with git.
+- Always give a worker a `--name`. Use the naming the workflow asks for;
+  otherwise make one from what the worker does, short and unique in the
+  run, such as `t004-renderer`, `review-security` or `tests`. The user sees
+  it in the worker's tab title, and it names the worker's branch. Names are
+  letters, digits, `_` and `-`.
 - `tome worker status [<name>]` / `tome worker wait <name>`: a worker's status,
   summary, branch and worktree (`wait` blocks until it finishes).
 - `tome worker kill <name>`: stop a worker (marked cancelled).
@@ -57,7 +64,7 @@ can spawn workers; there is no limit on how many run at once.
 - `tome group wait <g>` / `tome group status <g>`: every member's result
   (`wait` closes the group to new members and blocks until all have finished).
 - `tome group close <g>`: take no new members.
-- `tome worktree create <name> [--base <ref>]`: a worktree not tied to a worker.
+- `tome worktree create <name> [--base <ref>] [--branch <name>]`: a worktree not tied to a worker.
 - `tome queue push <q> "<text>"`, `tome queue pull <q> [--wait [<dur>]]`,
   `tome queue ack <id>`, `tome queue close <q>`, `tome queue ls`: run-scoped
   message queues. A pulled message is claimed until acked; a worker's unacked

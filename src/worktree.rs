@@ -1,5 +1,5 @@
 //! Git worktrees for a run: `<repo>/.tome/worktrees/<run>-<name>` on a new
-//! branch `tome/<run>/<name>`. tome only creates them and (in gc) removes
+//! branch, `tome/<run>/<name>` unless the caller names one. tome only creates them and (in gc) removes
 //! them; merging their branches is up to the orchestrator.
 
 use crate::output::{CliError, CliResult};
@@ -77,10 +77,14 @@ pub fn resolve_base(dir: &Path, base: Option<&str>) -> CliResult<Base> {
     Ok(Base { repo, commit, name })
 }
 
-/// Create `<repo>/.tome/worktrees/<run>-<name>` on branch `tome/<run>/<name>`.
-pub fn create(base: &Base, run_id: i64, name: &str) -> CliResult<Created> {
+/// Create `<repo>/.tome/worktrees/<run>-<name>` on a new branch: `branch`,
+/// or `tome/<run>/<name>`.
+pub fn create(base: &Base, run_id: i64, name: &str, branch: Option<&str>) -> CliResult<Created> {
     let path = base.repo.join(DIR).join(format!("{run_id}-{name}"));
-    let branch = format!("tome/{run_id}/{name}");
+    let branch = match branch {
+        Some(b) => check_branch(&base.repo, b)?,
+        None => format!("tome/{run_id}/{name}"),
+    };
     if path.exists() {
         return Err(CliError::invalid(format!(
             "{} already exists",
@@ -119,6 +123,17 @@ pub fn create(base: &Base, run_id: i64, name: &str) -> CliResult<Created> {
     )
     .map_err(|e| CliError::internal(format!("git couldn't create worktree {target}: {e}")))?;
     Ok(Created { path, branch })
+}
+
+/// `branch` if git accepts it as a new branch name.
+fn check_branch(repo: &Path, branch: &str) -> CliResult<String> {
+    match git(repo, &["check-ref-format", "--branch", branch]) {
+        Ok(b) if b.trim() == branch => Ok(branch.to_string()),
+        _ => Err(
+            CliError::invalid(format!("`{branch}` isn't a valid branch name"))
+                .with_hint("e.g. `feature/export-csv`; see `git check-ref-format --help`"),
+        ),
+    }
 }
 
 /// Add `.tome/worktrees/` to the repo's `.gitignore` unless it's already
@@ -212,7 +227,7 @@ mod tests {
         fs::write(repo.join("dirty.txt"), "uncommitted").unwrap();
         let base = resolve_base(&repo, None).unwrap();
         assert_eq!(base.name, "main");
-        let wt = create(&base, 3, "a").unwrap();
+        let wt = create(&base, 3, "a", None).unwrap();
         assert_eq!(wt.path, repo.join(".tome/worktrees/3-a"));
         assert_eq!(wt.branch, "tome/3/a");
         assert!(wt.path.join(".git").is_file());
@@ -225,7 +240,7 @@ mod tests {
             "target\n.tome/worktrees/\n"
         );
         // Already ignored: not added twice; the name is taken.
-        create(&base, 3, "b").unwrap();
+        create(&base, 3, "b", None).unwrap();
         assert_eq!(
             fs::read_to_string(repo.join(".gitignore"))
                 .unwrap()
@@ -233,8 +248,23 @@ mod tests {
                 .count(),
             1
         );
-        assert!(create(&base, 3, "a").is_err());
+        assert!(create(&base, 3, "a", None).is_err());
         assert_eq!(merged(&repo, "tome/3/a", "main"), Some(true));
+    }
+
+    #[test]
+    fn a_named_branch_is_used_and_checked() {
+        let (_d, repo) = repo();
+        let base = resolve_base(&repo, None).unwrap();
+        let wt = create(&base, 4, "t004-renderer", Some("feature/renderer")).unwrap();
+        assert_eq!(wt.branch, "feature/renderer");
+        assert_eq!(wt.path, repo.join(".tome/worktrees/4-t004-renderer"));
+        assert_eq!(merged(&repo, "feature/renderer", "main"), Some(true));
+        // Taken, or not a branch name git accepts: nothing is created.
+        assert!(create(&base, 4, "other", Some("feature/renderer")).is_err());
+        let err = create(&base, 4, "bad", Some("has space..")).unwrap_err();
+        assert_eq!(err.kind, crate::output::ErrorKind::Invalid);
+        assert!(!repo.join(".tome/worktrees/4-bad").exists());
     }
 
     #[test]
