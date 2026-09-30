@@ -72,25 +72,33 @@ tome daemon status
 
 To have it start at login, `tome daemon install` registers a launchd (macOS) or systemd `--user` (Linux) service. Only do that if the user asks.
 
-## 7. Install the tome skill
+## 7. Install the tome plugin
 
-The [tome skill](skill.md) teaches agents to write, run and debug tome workflows. Install it for every project:
+The [tome plugin](skill.md) teaches agents to write, run and debug tome workflows. If you're Claude Code, install it for every project:
 
 ```sh
-mkdir -p ~/.claude/skills/tome
-curl -fsSL https://raw.githubusercontent.com/banyango/tome/main/skills/tome/SKILL.md \
-  -o ~/.claude/skills/tome/SKILL.md
+claude plugin marketplace add banyango/tome
+claude plugin install tome@tome
 ```
 
-If the user asked for it in this project only, use `.claude/skills/tome/` in the repository instead of `~/.claude/skills/tome/`. If you aren't Claude Code but you read Agent Skills, put `tome/SKILL.md` in your own skills directory. If you don't read skills, skip this step and say so in your report.
+If the user asked for it in this project only, add `--scope project` to both commands. That writes `.claude/settings.json`; tell the user to commit it.
 
 Check it:
 
 ```sh
-head -3 ~/.claude/skills/tome/SKILL.md
+claude plugin details tome
 ```
 
-The file starts with `---` and then `name: tome`. The skill loads in the next session, not this one.
+The output lists `Skills (1)  tome`. The plugin loads in the next session, or after the user runs `/reload-plugins`.
+
+If you aren't Claude Code but you read Agent Skills, download the skill into your own skills directory instead:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/banyango/tome/main/plugin/skills/tome/SKILL.md \
+  -o <skills-dir>/tome/SKILL.md
+```
+
+If you don't read skills, skip this step and say so in your report.
 
 ## 8. Report back
 
@@ -99,6 +107,6 @@ Tell the user:
 - the version from `tome --version`, and where the binary is,
 - anything missing from step 5,
 - whether the daemon is running,
-- where the skill was installed, and that it loads in a new session.
+- whether the plugin (or skill) was installed, and that it loads in a new session.
 
 Next, they can follow the [Quickstart](../quickstart.md).

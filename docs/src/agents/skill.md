@@ -1,52 +1,72 @@
-# Install the tome skill
+# Install the tome plugin
 
-The tome skill teaches a coding agent how to write, validate, run and debug tome workflows. It is one file, `SKILL.md`, in the [Agent Skills](https://agentskills.io) format. The agent loads it when a task mentions tome or `.tome/workflows`.
+The tome plugin for Claude Code teaches your agent how to write, validate, run and debug tome workflows. It holds one skill, `tome`, in the [Agent Skills](https://agentskills.io) format. The agent loads it when a task mentions tome or `.tome/workflows`, or you can call it with `/tome:tome`.
 
-The skill doesn't install tome itself. Do that first: [Install](../install.md). [Install tome (for agents)](install.md) installs tome and the skill together.
+The plugin doesn't install tome itself. Do that first: [Install](../install.md). [Install tome (for agents)](install.md) installs tome and the plugin together.
 
 ## Claude Code
 
-For every project, install it in your home directory:
+In a Claude Code session, add the tome marketplace and install the plugin:
 
-```sh
-mkdir -p ~/.claude/skills/tome
-curl -fsSL https://raw.githubusercontent.com/banyango/tome/main/skills/tome/SKILL.md \
-  -o ~/.claude/skills/tome/SKILL.md
+```text
+/plugin marketplace add banyango/tome
+/plugin install tome@tome
 ```
 
-For one project, install it in the repository and commit it, so everyone working there gets it:
+Or from your shell:
 
 ```sh
-mkdir -p .claude/skills/tome
-curl -fsSL https://raw.githubusercontent.com/banyango/tome/main/skills/tome/SKILL.md \
-  -o .claude/skills/tome/SKILL.md
+claude plugin marketplace add banyango/tome
+claude plugin install tome@tome
 ```
 
-Start a new Claude Code session to load it. To check it's there, ask "what skills do you have?", or ask for something like "write a tome workflow that runs the tests every night".
+Run `/reload-plugins`, or start a new session, to load it. To check it's there, run `claude plugin details tome`, or ask for something like "write a tome workflow that runs the tests every night".
 
-To upgrade, run the same `curl` again.
+To install it for everyone working in one repository, run this there once and commit the `.claude/settings.json` it writes:
+
+```sh
+claude plugin marketplace add banyango/tome --scope project
+claude plugin install tome@tome --scope project
+```
+
+## Updates
+
+The plugin follows the tome repository, so each change to the skill is a new version. To update:
+
+```text
+/plugin marketplace update tome
+```
+
+or `claude plugin update tome@tome` from your shell, then start a new session. To update on its own, turn on auto-update: run `/plugin`, go to **Marketplaces**, select `tome`, and select **Enable auto-update**.
+
+Once it's installed, see [Create workflows with an agent](../guides/create-with-an-agent.md) for how to use it.
 
 ## Other agents
 
-Any agent that reads Agent Skills can use the same file. Put `SKILL.md` in a `tome/` folder in that agent's skills directory; its docs say where that is.
+Any agent that reads Agent Skills can use the skill without the plugin. Download `SKILL.md` into a `tome/` folder in that agent's skills directory; its docs say where that is:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/banyango/tome/main/plugin/skills/tome/SKILL.md \
+  -o <skills-dir>/tome/SKILL.md
+```
+
+Run the same `curl` again to upgrade.
 
 An agent that doesn't support skills can read the same material as plain text. Point it at [`llms-full.txt`](https://banyango.github.io/tome/llms-full.txt), or paste the file below into its instructions.
 
 ## Asking an agent to install it
 
-Paste this into your agent:
+Paste this into Claude Code:
 
 ```text
-Install the tome skill for Claude Code: download
-https://raw.githubusercontent.com/banyango/tome/main/skills/tome/SKILL.md
-to ~/.claude/skills/tome/SKILL.md, creating the folder if needed. Then tell me
-to start a new session.
+Install the tome plugin: run `claude plugin marketplace add banyango/tome`
+and `claude plugin install tome@tome`, then tell me to run /reload-plugins.
 ```
 
 ## What's in it
 
 The skill covers checking the install, the daemon, workflow files and their frontmatter, triggers and the message bus, running and inspecting runs, and fixing common failures. The full file:
 
-````markdown title=skills/tome/SKILL.md
-{{#include ../../../skills/tome/SKILL.md}}
+````markdown title=plugin/skills/tome/SKILL.md
+{{#include ../../../plugin/skills/tome/SKILL.md}}
 ````

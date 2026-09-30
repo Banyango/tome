@@ -56,4 +56,4 @@ To run a workflow you need two more things:
 
 `git` is also needed for workflows that give workers their own worktrees.
 
-Next: [Quickstart](quickstart.md). To have your coding agent install tome and the tome skill for you, see [Install tome (for agents)](agents/install.md).
+Next: [Quickstart](quickstart.md). To have your coding agent install tome and the tome plugin for you, see [Install tome (for agents)](agents/install.md).

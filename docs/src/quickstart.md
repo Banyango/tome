@@ -28,6 +28,8 @@ That writes `.tome/workflows/plan-feature.md`. Replace its contents with this:
 {{#include ../examples/plan-feature.md}}
 ```
 
+Here you paste a finished workflow so you can see one work. For your own workflows, ask your coding agent to write them; see [Create workflows with an agent](guides/create-with-an-agent.md).
+
 The frontmatter holds the trigger: a `feature.md` created under `features/`. The body is plain English, split into steps under `##` headings. tome never parses it; an orchestrator agent reads it. `{{trigger.paths}}` is replaced with the new files when the run starts.
 
 Check it, and confirm the daemon has picked up the trigger:
@@ -102,6 +104,7 @@ You can also start any workflow yourself with `tome run <name>`. It stays attach
 
 ## Next
 
+- [Create workflows with an agent](guides/create-with-an-agent.md): describe what you want and let your agent write the workflow.
 - [Recipes](recipes.md): implementing planned features, fixing failing tests, reviewing branches, and more.
 - [Triggers and the message bus](guides/triggers.md): schedules, messages, and chaining workflows together.
 - [Write a workflow](guides/write-a-workflow.md): every frontmatter option.

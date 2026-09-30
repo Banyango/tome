@@ -1,5 +1,7 @@
 # Write a workflow
 
+This page is the reference for workflow files. You rarely need to write one yourself: ask your coding agent, with the tome plugin installed, and it writes and validates the file for you. See [Create workflows with an agent](create-with-an-agent.md). Use this page to check what it wrote, or to make a small change by hand.
+
 A workflow is a Markdown file with YAML frontmatter. Put it in `.tome/workflows/` for one project or `~/.tome/workflows/` for all of them. `tome workflow new <name>` writes a starter file in the right place, and `tome validate [name]` checks it.
 
 Every example on this page is a real file under `docs/examples/` in the repo, and CI runs `tome validate` on each one.

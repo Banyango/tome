@@ -1,0 +1,14 @@
+{
+  "name": "tome",
+  "description": "The tome plugin for Claude Code.",
+  "owner": {
+    "name": "Kyle Reczek"
+  },
+  "plugins": [
+    {
+      "name": "tome",
+      "source": "./plugin",
+      "description": "Write, run and debug tome workflows."
+    }
+  ]
+}

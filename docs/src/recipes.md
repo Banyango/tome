@@ -1,6 +1,6 @@
 # Recipes
 
-Workflows to copy into `.tome/workflows/` and adapt. Each is a real file under `docs/examples/` in the repo, and CI runs `tome validate` on each one. They're written for a Rust project, so change the commands to fit yours.
+Workflows to copy into `.tome/workflows/` and adapt. Each is a real file under `docs/examples/` in the repo, and CI runs `tome validate` on each one. They're written for a Rust project. Rather than editing one by hand, ask your coding agent to adapt it, for example "adapt the fix-failing-tests tome recipe to this repo"; see [Create workflows with an agent](guides/create-with-an-agent.md).
 
 | Recipe | Starts when |
 | --- | --- |

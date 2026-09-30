@@ -11,10 +11,11 @@
 # For agents
 
 - [Install tome (for agents)](agents/install.md)
-- [Install the tome skill](agents/skill.md)
+- [Install the tome plugin](agents/skill.md)
 
 # Guides
 
+- [Create workflows with an agent](guides/create-with-an-agent.md)
 - [Write a workflow](guides/write-a-workflow.md)
 - [Triggers and the message bus](guides/triggers.md)
 - [Workers, worktrees and fan-out](guides/workers.md)
