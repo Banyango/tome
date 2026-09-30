@@ -12,13 +12,18 @@ use crate::arming;
 use crate::engine::Engine;
 use crate::output::{CliError, CliResult, ErrorKind};
 use crate::store::{BusEvent, NewFire, Run, RunStatus};
-use crate::{orchestrator, session};
 use crate::workflow::{self, FileEvent, Scope, Target, TriggerKind, WhileRunning, Workflow};
+use crate::{orchestrator, session};
 use chrono::{DateTime, Local, SecondsFormat};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
-pub const METHODS: &[&str] = &["triggers.fire", "triggers.ls", "triggers.enable", "project.register"];
+pub const METHODS: &[&str] = &[
+    "triggers.fire",
+    "triggers.ls",
+    "triggers.enable",
+    "project.register",
+];
 
 /// The queue signals are delivered on, and who they're from.
 pub const QUEUE: &str = "events";
@@ -101,7 +106,9 @@ fn merge_paths(fields: &mut Value, batch: &[(String, FileEvent)]) {
             None => paths.push(json!({ "path": path, "event": event.as_str() })),
         }
     }
-    fields["event"] = json!(event_names(paths.iter().filter_map(|p| p["event"].as_str())));
+    fields["event"] = json!(event_names(
+        paths.iter().filter_map(|p| p["event"].as_str())
+    ));
     fields["paths"] = Value::Array(paths);
 }
 
@@ -114,16 +121,26 @@ pub fn fields(kind: &TriggerKind, event: &Event, now: DateTime<Local>) -> Map<St
     let (kind_name, what) = match kind {
         TriggerKind::Manual => ("manual", String::new()),
         TriggerKind::Cron { .. } => ("cron", "scheduled".to_string()),
-        TriggerKind::File(_) => ("file", event_names(event.paths.iter().map(|(_, e)| e.as_str()))),
+        TriggerKind::File(_) => (
+            "file",
+            event_names(event.paths.iter().map(|(_, e)| e.as_str())),
+        ),
         TriggerKind::Topic { .. } => ("topic", "published".to_string()),
     };
-    let paths: Vec<Value> = event.paths.iter().map(|(p, e)| json!({ "path": p, "event": e.as_str() })).collect();
+    let paths: Vec<Value> = event
+        .paths
+        .iter()
+        .map(|(p, e)| json!({ "path": p, "event": e.as_str() }))
+        .collect();
     let mut m = Map::new();
     m.insert("kind".into(), json!(kind_name));
     m.insert("event".into(), json!(what));
     m.insert("paths".into(), Value::Array(paths));
     m.insert("time".into(), json!(local_time(now)));
-    m.insert("scheduled".into(), json!(event.scheduled.map(local_time).unwrap_or_default()));
+    m.insert(
+        "scheduled".into(),
+        json!(event.scheduled.map(local_time).unwrap_or_default()),
+    );
     match &event.bus {
         Some((e, _)) => {
             m.insert("topic".into(), json!(e.topic));
@@ -143,13 +160,21 @@ pub fn fields(kind: &TriggerKind, event: &Event, now: DateTime<Local>) -> Map<St
 /// Load a workflow as it's armed: a project workflow, or a global one
 /// (which needs absolute file globs).
 pub fn load(path: &Path, project: Option<&Path>) -> Result<Workflow, workflow::Invalid> {
-    let scope = if project.is_some() { Scope::Project } else { Scope::Global };
+    let scope = if project.is_some() {
+        Scope::Project
+    } else {
+        Scope::Global
+    };
     workflow::load(path).and_then(|wf| workflow::check_scope(wf, scope))
 }
 
 pub fn first_errors(inv: &workflow::Invalid) -> String {
     let n = inv.errors.len();
-    let first = inv.errors.first().map(|d| format!("line {}: {}", d.line, d.message)).unwrap_or_default();
+    let first = inv
+        .errors
+        .first()
+        .map(|d| format!("line {}: {}", d.line, d.message))
+        .unwrap_or_default();
     if n > 1 {
         format!("workflow is invalid: {first} (and {} more)", n - 1)
     } else {
@@ -172,8 +197,12 @@ impl Engine {
             "triggers.ls" => self.ls_rpc(),
             "triggers.enable" => {
                 let path = req_str(p, "project")?;
-                let enabled = p["enabled"].as_bool().ok_or_else(|| CliError::invalid("`enabled` must be a boolean"))?;
-                Ok(json!(self.with_store(|store| store.set_project_enabled(path, enabled))?))
+                let enabled = p["enabled"]
+                    .as_bool()
+                    .ok_or_else(|| CliError::invalid("`enabled` must be a boolean"))?;
+                Ok(json!(self.with_store(
+                    |store| store.set_project_enabled(path, enabled)
+                )?))
             }
             "project.register" => {
                 let path = req_str(p, "path")?;
@@ -196,10 +225,19 @@ impl Engine {
         let roots: Vec<PathBuf> = projects.iter().map(|p| PathBuf::from(&p.path)).collect();
         let scan = arming::scan(&roots);
         let fires = self.with_store(|store| store.last_fires())?;
-        let polling = self.file_polling.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let polling = self
+            .file_polling
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let last = |path: &Path, project: Option<&Path>, index: i64| {
-            let (path, project) = (path.display().to_string(), project.map(|p| p.display().to_string()));
-            let fire = fires.iter().find(|f| f.workflow_path == path && f.project_path == project && f.trigger_index == index)?;
+            let (path, project) = (
+                path.display().to_string(),
+                project.map(|p| p.display().to_string()),
+            );
+            let fire = fires.iter().find(|f| {
+                f.workflow_path == path && f.project_path == project && f.trigger_index == index
+            })?;
             // The fire's message holds each run's status when it fired;
             // `runs` has what it is now.
             let runs: Vec<Value> = fire
@@ -259,10 +297,16 @@ impl Engine {
 
     /// Queued and running runs of the workflow at `path`.
     pub(crate) fn active_runs(&self, name: &str, path: &Path) -> CliResult<Vec<Run>> {
-        let runs = self.with_store(|store| store.in_progress_runs().map_err(crate::api::internal))?;
+        let runs =
+            self.with_store(|store| store.in_progress_runs().map_err(crate::api::internal))?;
         Ok(runs
             .into_iter()
-            .filter(|r| r.workflow_name == name && r.workflow_path.as_deref().is_some_and(|p| same_file(Path::new(p), path)))
+            .filter(|r| {
+                r.workflow_name == name
+                    && r.workflow_path
+                        .as_deref()
+                        .is_some_and(|p| same_file(Path::new(p), path))
+            })
             .collect())
     }
 
@@ -271,21 +315,32 @@ impl Engine {
     fn fire_rpc(&self, p: &Value) -> CliResult<Value> {
         let workflow_path = PathBuf::from(req_str(p, "workflow_path")?);
         let project = opt_str(p, "project_path").map(PathBuf::from);
-        let paths: Vec<String> =
-            p["paths"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+        let paths: Vec<String> = p["paths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
         let index = match p.get("index").and_then(Value::as_u64) {
             Some(i) => i as usize,
             None => {
                 // The first real trigger, so `tome triggers fire <wf>` does the obvious thing.
                 match load(&workflow_path, project.as_deref()) {
-                    Ok(wf) => wf.frontmatter.triggers.iter().position(|t| !matches!(t.kind, TriggerKind::Manual)).unwrap_or(0),
+                    Ok(wf) => wf
+                        .frontmatter
+                        .triggers
+                        .iter()
+                        .position(|t| !matches!(t.kind, TriggerKind::Manual))
+                        .unwrap_or(0),
                     Err(_) => 0,
                 }
             }
         };
         let event_for = |kind: Option<&TriggerKind>| {
             let on = match kind {
-                Some(TriggerKind::File(f)) if !f.on.contains(&FileEvent::Modified) => FileEvent::Created,
+                Some(TriggerKind::File(f)) if !f.on.contains(&FileEvent::Modified) => {
+                    FileEvent::Created
+                }
                 _ => FileEvent::Modified,
             };
             Event {
@@ -296,7 +351,9 @@ impl Engine {
             }
         };
         let loaded = load(&workflow_path, project.as_deref()).ok();
-        let kind = loaded.as_ref().and_then(|wf| wf.frontmatter.triggers.get(index).map(|t| t.kind.clone()));
+        let kind = loaded
+            .as_ref()
+            .and_then(|wf| wf.frontmatter.triggers.get(index).map(|t| t.kind.clone()));
         if let (Some(wf), Some(TriggerKind::Topic { .. })) = (&loaded, &kind) {
             let armed = arming::Armed {
                 workflow_path: workflow_path.clone(),
@@ -334,7 +391,10 @@ impl Engine {
         let wf = load(&req.workflow_path, req.project.as_deref());
         let name = match &wf {
             Ok(wf) => wf.name().to_string(),
-            Err(inv) => inv.name.clone().unwrap_or_else(|| req.workflow_path.display().to_string()),
+            Err(inv) => inv
+                .name
+                .clone()
+                .unwrap_or_else(|| req.workflow_path.display().to_string()),
         };
         let trigger_desc = wf
             .as_ref()
@@ -344,14 +404,23 @@ impl Engine {
             .unwrap_or_else(|| format!("trigger {}", req.index));
         let fired = match wf {
             Ok(wf) => self.fire_workflow(&wf, req),
-            Err(inv) => Fired { outcome: outcome::ERROR, message: Some(first_errors(&inv)), runs: Vec::new(), data: json!({}) },
+            Err(inv) => Fired {
+                outcome: outcome::ERROR,
+                message: Some(first_errors(&inv)),
+                runs: Vec::new(),
+                data: json!({}),
+            },
         };
         if !req.dry_run {
             let recorded = self.with_store(|store| {
                 store.record_fire(&NewFire {
                     workflow_path: &req.workflow_path.display().to_string(),
                     workflow_name: &name,
-                    project_path: req.project.as_ref().map(|p| p.display().to_string()).as_deref(),
+                    project_path: req
+                        .project
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .as_deref(),
                     trigger_index: req.index as i64,
                     trigger: &trigger_desc,
                     outcome: fired.outcome,
@@ -365,7 +434,11 @@ impl Engine {
             eprintln!(
                 "tome daemon: trigger {trigger_desc} of {name} fired: {}{}",
                 fired.outcome,
-                fired.message.as_deref().map(|m| format!(" ({m})")).unwrap_or_default()
+                fired
+                    .message
+                    .as_deref()
+                    .map(|m| format!(" ({m})"))
+                    .unwrap_or_default()
             );
             // A rejection under `on_conflict: reject` is configured
             // behaviour: recorded, not notified.
@@ -377,22 +450,40 @@ impl Engine {
     }
 
     fn fire_workflow(&self, wf: &Workflow, req: &FireRequest) -> Fired {
-        let err = |outcome: &'static str, message: String| Fired { outcome, message: Some(message), runs: Vec::new(), data: json!({}) };
+        let err = |outcome: &'static str, message: String| Fired {
+            outcome,
+            message: Some(message),
+            runs: Vec::new(),
+            data: json!({}),
+        };
         let Some(trigger) = wf.frontmatter.triggers.get(req.index) else {
             let n = wf.frontmatter.triggers.len();
-            return err(outcome::ERROR, format!("workflow `{}` has no trigger at index {} ({n} trigger{})", wf.name(), req.index, if n == 1 { "" } else { "s" }));
+            return err(
+                outcome::ERROR,
+                format!(
+                    "workflow `{}` has no trigger at index {} ({n} trigger{})",
+                    wf.name(),
+                    req.index,
+                    if n == 1 { "" } else { "s" }
+                ),
+            );
         };
         let active = match self.active_runs(wf.name(), &wf.path) {
             Ok(runs) => runs,
             Err(e) => return err(outcome::ERROR, e.message),
         };
         let active_ids: Vec<i64> = active.iter().map(|r| r.id).collect();
-        if let (TriggerKind::File(f), Target::New, false) = (&trigger.kind, trigger.to, active.is_empty()) {
+        if let (TriggerKind::File(f), Target::New, false) =
+            (&trigger.kind, trigger.to, active.is_empty())
+        {
             match f.while_running {
                 WhileRunning::Mute => {
                     return Fired {
                         outcome: outcome::MUTED,
-                        message: Some(format!("muted while run {} is active", join_ids(&active_ids))),
+                        message: Some(format!(
+                            "muted while run {} is active",
+                            join_ids(&active_ids)
+                        )),
                         runs: Vec::new(),
                         data: json!({ "active": active_ids }),
                     }
@@ -402,10 +493,15 @@ impl Engine {
             }
         }
         match trigger.to {
-            Target::Running if active.is_empty() => {
-                Fired { outcome: outcome::NO_TARGET, message: Some("no active run to signal".into()), runs: Vec::new(), data: json!({}) }
+            Target::Running if active.is_empty() => Fired {
+                outcome: outcome::NO_TARGET,
+                message: Some("no active run to signal".into()),
+                runs: Vec::new(),
+                data: json!({}),
+            },
+            Target::Running | Target::RunningOrNew if !active.is_empty() => {
+                self.signal(trigger, req, &active)
             }
-            Target::Running | Target::RunningOrNew if !active.is_empty() => self.signal(trigger, req, &active),
             _ => self.fire_new(wf, trigger, req, false),
         }
     }
@@ -413,13 +509,21 @@ impl Engine {
     /// `while_running: queue` with a run active: merge the batch into the
     /// run this trigger queued before, if it's still waiting, or queue a
     /// new one.
-    fn fire_queued(&self, wf: &Workflow, trigger: &workflow::Trigger, req: &FireRequest, active: &[Run]) -> Fired {
+    fn fire_queued(
+        &self,
+        wf: &Workflow,
+        trigger: &workflow::Trigger,
+        req: &FireRequest,
+        active: &[Run],
+    ) -> Fired {
         let ours = |r: &&Run| {
             let cause = r.trigger.as_ref();
             r.status == RunStatus::Queued
                 && waits_for_idle(cause)
                 && cause.is_some_and(|c| {
-                    c["index"] == req.index && c["trigger"] == trigger.describe().as_str() && c["project"] == json!(req.project)
+                    c["index"] == req.index
+                        && c["trigger"] == trigger.describe().as_str()
+                        && c["project"] == json!(req.project)
                 })
         };
         if let Some(run) = active.iter().find(ours) {
@@ -433,11 +537,17 @@ impl Engine {
             }
             // Re-read under the lock: the run may have started since.
             let merged = self.with_store(|store| {
-                let Some(mut cause) = store.get_run(run.id, false).map_err(crate::api::internal)?.and_then(|r| r.trigger) else {
+                let Some(mut cause) = store
+                    .get_run(run.id, false)
+                    .map_err(crate::api::internal)?
+                    .and_then(|r| r.trigger)
+                else {
                     return Ok(false);
                 };
                 merge_paths(&mut cause["event"], &req.event.paths);
-                store.set_queued_trigger(run.id, &cause).map_err(crate::api::internal)
+                store
+                    .set_queued_trigger(run.id, &cause)
+                    .map_err(crate::api::internal)
             });
             match merged {
                 Ok(true) => {
@@ -449,7 +559,14 @@ impl Engine {
                     }
                 }
                 Ok(false) => {}
-                Err(e) => return Fired { outcome: outcome::ERROR, message: Some(e.message), runs: Vec::new(), data: json!({}) },
+                Err(e) => {
+                    return Fired {
+                        outcome: outcome::ERROR,
+                        message: Some(e.message),
+                        runs: Vec::new(),
+                        data: json!({}),
+                    }
+                }
             }
         }
         let fired = self.fire_new(wf, trigger, req, true);
@@ -499,20 +616,36 @@ impl Engine {
             }
             if run.status == RunStatus::Running {
                 let nudge = match &req.event.bus {
-                    Some((e, _)) => format!("[tome] event {} on {}. Details: tome queue pull {QUEUE}", e.id, e.topic),
-                    None => format!("[tome] trigger {} fired. Details: tome queue pull {QUEUE}", trigger.kind_name()),
+                    Some((e, _)) => format!(
+                        "[tome] event {} on {}. Details: tome queue pull {QUEUE}",
+                        e.id, e.topic
+                    ),
+                    None => format!(
+                        "[tome] trigger {} fired. Details: tome queue pull {QUEUE}",
+                        trigger.kind_name()
+                    ),
                 };
-                for s in self.recorded_sessions(run.id).iter().filter(|s| s.role == orchestrator::ROLE) {
+                for s in self
+                    .recorded_sessions(run.id)
+                    .iter()
+                    .filter(|s| s.role == orchestrator::ROLE)
+                {
                     session::send_line(s, &nudge);
                 }
             }
         }
         if signalled.is_empty() {
-            return Fired { outcome: outcome::ERROR, message: Some(errors.join("; ")), runs: Vec::new(), data: json!({}) };
+            return Fired {
+                outcome: outcome::ERROR,
+                message: Some(errors.join("; ")),
+                runs: Vec::new(),
+                data: json!({}),
+            };
         }
         // A topic event is held by the runs it went to until one ends.
         if let Some((_, delivery)) = &req.event.bus {
-            if let Err(e) = self.with_store(|store| store.set_delivery_runs(*delivery, &signalled)) {
+            if let Err(e) = self.with_store(|store| store.set_delivery_runs(*delivery, &signalled))
+            {
                 errors.push(format!("delivery {delivery}: {}", e.message));
             }
         }
@@ -520,15 +653,30 @@ impl Engine {
         if !errors.is_empty() {
             message.push_str(&format!(" (failed: {})", errors.join("; ")));
         }
-        Fired { outcome: outcome::SIGNALLED, message: Some(message), runs: signalled, data: json!({ "action": "signal" }) }
+        Fired {
+            outcome: outcome::SIGNALLED,
+            message: Some(message),
+            runs: signalled,
+            data: json!({ "action": "signal" }),
+        }
     }
 
     /// Start a detached run for a fired trigger, or with `queue` queue one
     /// that waits for the workflow to be idle.
-    fn fire_new(&self, wf: &Workflow, trigger: &workflow::Trigger, req: &FireRequest, queue: bool) -> Fired {
+    fn fire_new(
+        &self,
+        wf: &Workflow,
+        trigger: &workflow::Trigger,
+        req: &FireRequest,
+        queue: bool,
+    ) -> Fired {
         let now = Local::now();
         let fields = fields(&trigger.kind, &req.event, now);
-        let params: Vec<String> = trigger.params.iter().map(|(k, v)| format!("{k}={}", text(v))).collect();
+        let params: Vec<String> = trigger
+            .params
+            .iter()
+            .map(|(k, v)| format!("{k}={}", text(v)))
+            .collect();
         let mut cause = json!({
             "kind": trigger.kind_name(),
             "trigger": trigger.describe(),
@@ -547,17 +695,30 @@ impl Engine {
             cause["sender"] = json!(e.sender);
             cause["delivery"] = json!(delivery);
         }
-        let started = if queue { outcome::QUEUED } else { outcome::STARTED };
+        let started = if queue {
+            outcome::QUEUED
+        } else {
+            outcome::STARTED
+        };
         if req.dry_run {
             let overrides = workflow::parse_param_args(&params).unwrap_or_default();
             return match wf.resolve_params(&overrides, true) {
                 Ok(resolved) => Fired {
                     outcome: started,
-                    message: Some(format!("would {} a new run of {}", if queue { "queue" } else { "start" }, wf.name())),
+                    message: Some(format!(
+                        "would {} a new run of {}",
+                        if queue { "queue" } else { "start" },
+                        wf.name()
+                    )),
                     runs: Vec::new(),
                     data: json!({ "action": "start", "params": resolved, "trigger": fields }),
                 },
-                Err(inv) => Fired { outcome: outcome::ERROR, message: Some(first_errors(&inv)), runs: Vec::new(), data: json!({}) },
+                Err(inv) => Fired {
+                    outcome: outcome::ERROR,
+                    message: Some(first_errors(&inv)),
+                    runs: Vec::new(),
+                    data: json!({}),
+                },
             };
         }
         let p = json!({
@@ -576,18 +737,34 @@ impl Engine {
                 runs: vec![run.id],
                 data: json!({ "action": "start", "run": run }),
             },
-            Err(e) if e.kind == ErrorKind::Conflict => {
-                Fired { outcome: outcome::REJECTED, message: Some(e.message), runs: Vec::new(), data: json!({}) }
-            }
-            Err(e) => Fired { outcome: outcome::ERROR, message: Some(e.message), runs: Vec::new(), data: json!({}) },
+            Err(e) if e.kind == ErrorKind::Conflict => Fired {
+                outcome: outcome::REJECTED,
+                message: Some(e.message),
+                runs: Vec::new(),
+                data: json!({}),
+            },
+            Err(e) => Fired {
+                outcome: outcome::ERROR,
+                message: Some(e.message),
+                runs: Vec::new(),
+                data: json!({}),
+            },
         }
     }
 }
 
 /// `file specs/**/*.md fired (specs/a.md (modified))`, for event streams.
 fn describe_event(trigger: &workflow::Trigger, fields: &Map<String, Value>) -> String {
-    if let Some(topic) = fields.get("topic").and_then(Value::as_str).filter(|t| !t.is_empty()) {
-        return format!("{} fired (event {} on {topic})", trigger.describe(), text(&fields["event_id"]));
+    if let Some(topic) = fields
+        .get("topic")
+        .and_then(Value::as_str)
+        .filter(|t| !t.is_empty())
+    {
+        return format!(
+            "{} fired (event {} on {topic})",
+            trigger.describe(),
+            text(&fields["event_id"])
+        );
     }
     let paths = workflow::trigger_text(fields.get("paths").unwrap_or(&Value::Null));
     if paths.is_empty() {
@@ -605,7 +782,10 @@ fn text(v: &Value) -> String {
 }
 
 pub fn join_ids(ids: &[i64]) -> String {
-    ids.iter().map(i64::to_string).collect::<Vec<_>>().join(", ")
+    ids.iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -615,27 +795,50 @@ mod tests {
     #[test]
     fn event_fields() {
         let now = Local::now();
-        let ev = Event { paths: vec![("a.md".into(), FileEvent::Created), ("b.md".into(), FileEvent::Modified)], ..Default::default() };
-        let wf = workflow::parse(Path::new("w.md"), "---\nname: w\ntriggers:\n  - file: \"*.md\"\n---\n").unwrap();
+        let ev = Event {
+            paths: vec![
+                ("a.md".into(), FileEvent::Created),
+                ("b.md".into(), FileEvent::Modified),
+            ],
+            ..Default::default()
+        };
+        let wf = workflow::parse(
+            Path::new("w.md"),
+            "---\nname: w\ntriggers:\n  - file: \"*.md\"\n---\n",
+        )
+        .unwrap();
         let f = fields(&wf.frontmatter.triggers[0].kind, &ev, now);
         assert_eq!(f["kind"], "file");
         assert_eq!(f["event"], "created, modified");
         assert_eq!(f["paths"][1]["path"], "b.md");
         assert_eq!(f["scheduled"], "");
         let f = fields(&TriggerKind::Manual, &Event::default(), now);
-        assert_eq!((f["kind"].as_str(), f["event"].as_str()), (Some("manual"), Some("")));
+        assert_eq!(
+            (f["kind"].as_str(), f["event"].as_str()),
+            (Some("manual"), Some(""))
+        );
     }
 
     #[test]
     fn merged_paths_are_listed_once_and_created_wins() {
         let mut f = json!({ "event": "modified", "paths": [{ "path": "a.md", "event": "modified" }, { "path": "b.md", "event": "modified" }] });
-        merge_paths(&mut f, &[("b.md".into(), FileEvent::Modified), ("c.md".into(), FileEvent::Created), ("a.md".into(), FileEvent::Created)]);
+        merge_paths(
+            &mut f,
+            &[
+                ("b.md".into(), FileEvent::Modified),
+                ("c.md".into(), FileEvent::Created),
+                ("a.md".into(), FileEvent::Created),
+            ],
+        );
         assert_eq!(
             f["paths"],
             json!([{ "path": "a.md", "event": "created" }, { "path": "b.md", "event": "modified" }, { "path": "c.md", "event": "created" }])
         );
         assert_eq!(f["event"], "created, modified");
         merge_paths(&mut f, &[("c.md".into(), FileEvent::Modified)]);
-        assert_eq!(f["paths"][2]["event"], "created", "a later modify doesn't undo created");
+        assert_eq!(
+            f["paths"][2]["event"], "created",
+            "a later modify doesn't undo created"
+        );
     }
 }

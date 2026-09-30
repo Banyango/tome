@@ -1,8 +1,8 @@
 //! Daemon RPC methods backed by the run store. The daemon owns the only
 //! database connection; these handlers run with it locked.
 
-use crate::output::{CliError, CliResult};
 use crate::gc;
+use crate::output::{CliError, CliResult};
 use crate::query;
 use crate::store::{self, NewRun, Run, RunFilter, RunStatus, Store};
 use crate::workflow::{self, Invalid, Workflow};
@@ -68,25 +68,45 @@ pub fn load_workflow(p: &Value) -> CliResult<Workflow> {
 /// Resolve the request's `params` against the workflow and record the run
 /// with its resolved snapshot, so later edits to the file only affect new
 /// runs. Also returns the rendered body.
-pub fn create_run(store: &mut Store, p: &Value, wf: &Workflow, status: RunStatus) -> CliResult<(Run, String)> {
+pub fn create_run(
+    store: &mut Store,
+    p: &Value,
+    wf: &Workflow,
+    status: RunStatus,
+) -> CliResult<(Run, String)> {
     let args: Vec<String> = match p.get("params") {
         None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(items)) => items.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect(),
-        Some(_) => return Err(CliError::invalid("`params` must be a list of \"key=value\" strings")),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect(),
+        Some(_) => {
+            return Err(CliError::invalid(
+                "`params` must be a list of \"key=value\" strings",
+            ))
+        }
     };
     let overrides = workflow::parse_param_args(&args)?;
-    let params = wf.resolve_params(&overrides, true).map_err(Invalid::into_cli_error)?;
+    let params = wf
+        .resolve_params(&overrides, true)
+        .map_err(Invalid::into_cli_error)?;
     let project = opt_str(p, "project_path").map(PathBuf::from);
     // The `{{trigger.*}}` fields of the event that started this run, if any.
     let no_trigger = serde_json::Map::new();
-    let trigger = p.get("trigger").and_then(Value::as_object).unwrap_or(&no_trigger);
+    let trigger = p
+        .get("trigger")
+        .and_then(Value::as_object)
+        .unwrap_or(&no_trigger);
     // A run queued by a `while_running: queue` trigger has more paths merged
     // in while it waits, so its placeholders are filled in when it starts.
     let deferred = crate::triggers::waits_for_idle(p.get("cause"));
     // `tome run`'s placement flags, kept for the run's workers, and what
     // was focused and which cmux pane asked for it.
     let mut placement = serde_json::Map::new();
-    if let Some(flags) = p.get("placement").filter(|v| v.as_object().is_some_and(|o| !o.is_empty())) {
+    if let Some(flags) = p
+        .get("placement")
+        .filter(|v| v.as_object().is_some_and(|o| !o.is_empty()))
+    {
         placement.insert("flags".into(), flags.clone());
     }
     if let Some(focused) = p.get("focused").filter(|v| v.is_object()) {
@@ -135,7 +155,10 @@ fn run_get(store: &mut Store, p: &Value) -> CliResult<Value> {
 /// `worktree.add {run_id, path, repo_path?, branch?, base?}`: record a worktree a run
 /// created so gc can clean it up.
 fn worktree_add(store: &mut Store, p: &Value) -> CliResult<Value> {
-    let run_id = p.get("run_id").and_then(Value::as_i64).ok_or_else(|| CliError::invalid("missing integer `run_id`"))?;
+    let run_id = p
+        .get("run_id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| CliError::invalid("missing integer `run_id`"))?;
     store.require_run(run_id)?;
     let path = PathBuf::from(req_str(p, "path")?);
     store
@@ -158,7 +181,9 @@ fn runs_list(store: &mut Store, p: &Value) -> CliResult<Value> {
     let status = match opt_str(p, "status") {
         None => None,
         Some(s) => Some(RunStatus::parse(s).ok_or_else(|| {
-            CliError::invalid(format!("invalid status `{s}` (use queued, running, succeeded, failed or cancelled)"))
+            CliError::invalid(format!(
+                "invalid status `{s}` (use queued, running, succeeded, failed or cancelled)"
+            ))
         })?),
     };
     let filter = RunFilter {
@@ -177,7 +202,11 @@ fn runs_live(store: &mut Store, p: &Value) -> CliResult<Value> {
         .in_progress_runs()
         .map_err(internal)?
         .into_iter()
-        .filter(|r| r.workflow_path.as_deref().is_some_and(|w| workflow::same_path(Path::new(w), &path)))
+        .filter(|r| {
+            r.workflow_path
+                .as_deref()
+                .is_some_and(|w| workflow::same_path(Path::new(w), &path))
+        })
         .collect();
     Ok(json!({ "runs": runs }))
 }
@@ -227,7 +256,9 @@ fn runs_logs(store: &mut Store, p: &Value) -> CliResult<Value> {
         let stem = store::log_file_stem(step);
         logs.retain(|l| l.step == stem);
         if logs.is_empty() {
-            return Err(CliError::not_found(format!("run {id} has no log for step `{step}`")));
+            return Err(CliError::not_found(format!(
+                "run {id} has no log for step `{step}`"
+            )));
         }
     }
     let logs: Vec<Value> = logs
@@ -236,7 +267,9 @@ fn runs_logs(store: &mut Store, p: &Value) -> CliResult<Value> {
             let path = Path::new(&l.path);
             let content = match tail {
                 Some(n) => store::read_tail_bytes(path, n, LOG_TAIL_MAX_BYTES),
-                None => std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default(),
+                None => std::fs::read(path)
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .unwrap_or_default(),
             };
             json!({ "step": l.step, "path": l.path, "size": l.size, "content": content })
         })
@@ -269,7 +302,9 @@ pub fn req_id_at(p: &Value, key: &str) -> CliResult<i64> {
 }
 
 pub fn req_str<'a>(p: &'a Value, key: &str) -> CliResult<&'a str> {
-    p.get(key).and_then(Value::as_str).ok_or_else(|| CliError::invalid(format!("missing string `{key}`")))
+    p.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::invalid(format!("missing string `{key}`")))
 }
 
 pub fn opt_str<'a>(p: &'a Value, key: &str) -> Option<&'a str> {

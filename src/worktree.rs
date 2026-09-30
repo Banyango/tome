@@ -39,17 +39,38 @@ pub fn resolve_base(dir: &Path, base: Option<&str>) -> CliResult<Base> {
     let repo = PathBuf::from(repo.trim());
     let (commit, name) = match base {
         Some(b) => {
-            let commit = git(&repo, &["rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")])
-                .map_err(|_| CliError::invalid(format!("base `{b}` doesn't exist in {}", repo.display())))?;
+            let commit = git(
+                &repo,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{b}^{{commit}}"),
+                ],
+            )
+            .map_err(|_| {
+                CliError::invalid(format!("base `{b}` doesn't exist in {}", repo.display()))
+            })?;
             (commit.trim().to_string(), b.to_string())
         }
         None => {
-            let commit = git(&repo, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).map_err(|_| {
-                CliError::invalid(format!("{} has no commits yet", repo.display())).with_hint("commit something first, or pass --base")
+            let commit = git(
+                &repo,
+                &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+            )
+            .map_err(|_| {
+                CliError::invalid(format!("{} has no commits yet", repo.display()))
+                    .with_hint("commit something first, or pass --base")
             })?;
             let commit = commit.trim().to_string();
-            let name = git(&repo, &["symbolic-ref", "--short", "-q", "HEAD"]).map(|b| b.trim().to_string()).unwrap_or_default();
-            let name = if name.is_empty() { commit.clone() } else { name };
+            let name = git(&repo, &["symbolic-ref", "--short", "-q", "HEAD"])
+                .map(|b| b.trim().to_string())
+                .unwrap_or_default();
+            let name = if name.is_empty() {
+                commit.clone()
+            } else {
+                name
+            };
             (commit, name)
         }
     };
@@ -61,15 +82,42 @@ pub fn create(base: &Base, run_id: i64, name: &str) -> CliResult<Created> {
     let path = base.repo.join(DIR).join(format!("{run_id}-{name}"));
     let branch = format!("tome/{run_id}/{name}");
     if path.exists() {
-        return Err(CliError::invalid(format!("{} already exists", path.display())));
+        return Err(CliError::invalid(format!(
+            "{} already exists",
+            path.display()
+        )));
     }
-    if git(&base.repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok() {
-        return Err(CliError::invalid(format!("branch `{branch}` already exists in {}", base.repo.display())));
+    if git(
+        &base.repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
+    {
+        return Err(CliError::invalid(format!(
+            "branch `{branch}` already exists in {}",
+            base.repo.display()
+        )));
     }
     ensure_ignored(&base.repo)?;
     let target = path.to_string_lossy();
-    git(&base.repo, &["worktree", "add", "-q", "-b", &branch, &target, &base.commit])
-        .map_err(|e| CliError::internal(format!("git couldn't create worktree {target}: {e}")))?;
+    git(
+        &base.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &branch,
+            &target,
+            &base.commit,
+        ],
+    )
+    .map_err(|e| CliError::internal(format!("git couldn't create worktree {target}: {e}")))?;
     Ok(Created { path, branch })
 }
 
@@ -77,13 +125,20 @@ pub fn create(base: &Base, run_id: i64, name: &str) -> CliResult<Created> {
 /// ignored.
 fn ensure_ignored(repo: &Path) -> CliResult<()> {
     let probe = format!("{DIR}/probe");
-    let ignored = Command::new("git").arg("-C").arg(repo).args(["check-ignore", "-q", &probe]).status();
+    let ignored = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["check-ignore", "-q", &probe])
+        .status();
     if ignored.is_ok_and(|s| s.success()) {
         return Ok(());
     }
     let file = repo.join(".gitignore");
     let existing = fs::read_to_string(&file).unwrap_or_default();
-    let mut out = fs::OpenOptions::new().create(true).append(true).open(&file)?;
+    let mut out = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)?;
     if !existing.is_empty() && !existing.ends_with('\n') {
         writeln!(out)?;
     }
@@ -110,7 +165,12 @@ pub fn merged(repo: &Path, branch: &str, base: &str) -> Option<bool> {
 
 /// Run git in `dir`; stdout, or stderr as the error.
 pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().map_err(|e| format!("running git: {e}"))?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("running git: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -127,7 +187,21 @@ mod tests {
         let repo = dir.path().canonicalize().unwrap().join("r");
         fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]).unwrap();
-        git(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]).unwrap();
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        )
+        .unwrap();
         (dir, repo)
     }
 
@@ -142,11 +216,23 @@ mod tests {
         assert_eq!(wt.path, repo.join(".tome/worktrees/3-a"));
         assert_eq!(wt.branch, "tome/3/a");
         assert!(wt.path.join(".git").is_file());
-        assert!(!wt.path.join("dirty.txt").exists(), "branches from the HEAD commit");
-        assert_eq!(fs::read_to_string(repo.join(".gitignore")).unwrap(), "target\n.tome/worktrees/\n");
+        assert!(
+            !wt.path.join("dirty.txt").exists(),
+            "branches from the HEAD commit"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.join(".gitignore")).unwrap(),
+            "target\n.tome/worktrees/\n"
+        );
         // Already ignored: not added twice; the name is taken.
         create(&base, 3, "b").unwrap();
-        assert_eq!(fs::read_to_string(repo.join(".gitignore")).unwrap().matches(".tome").count(), 1);
+        assert_eq!(
+            fs::read_to_string(repo.join(".gitignore"))
+                .unwrap()
+                .matches(".tome")
+                .count(),
+            1
+        );
         assert!(create(&base, 3, "a").is_err());
         assert_eq!(merged(&repo, "tome/3/a", "main"), Some(true));
     }
@@ -158,6 +244,9 @@ mod tests {
         assert_eq!(err.kind, crate::output::ErrorKind::Invalid);
         let outside = d.path().join("plain");
         fs::create_dir_all(&outside).unwrap();
-        assert_eq!(resolve_base(&outside, None).unwrap_err().kind, crate::output::ErrorKind::Invalid);
+        assert_eq!(
+            resolve_base(&outside, None).unwrap_err().kind,
+            crate::output::ErrorKind::Invalid
+        );
     }
 }

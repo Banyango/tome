@@ -602,14 +602,21 @@ fn main() {
         Ok(cli) => cli,
         Err(e) => {
             // Help/version go to stdout with exit 0; usage errors exit 2.
-            let code = if e.use_stderr() { output::exit::INVALID } else { output::exit::OK };
+            let code = if e.use_stderr() {
+                output::exit::INVALID
+            } else {
+                output::exit::OK
+            };
             let _ = e.print();
             std::process::exit(code);
         }
     };
     let mode = Mode::resolve(cli.json);
 
-    if let Command::Daemon { command: DaemonCommand::Run } = cli.command {
+    if let Command::Daemon {
+        command: DaemonCommand::Run,
+    } = cli.command
+    {
         if let Err(e) = daemon::run_foreground() {
             eprintln!("tome daemon: {e:#}");
             std::process::exit(output::exit::FAILURE);
@@ -637,17 +644,45 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             DaemonCommand::Run => unreachable!("handled in main"),
         },
         Command::Workflow { command } => match command {
-            WorkflowCommand::New { name, description, global, force } => {
-                scaffold::new(&current_dir()?, &name, description.as_deref(), global, force)
-            }
-            WorkflowCommand::Rm { workflow, global, force } => scaffold::rm(&current_dir()?, &workflow, global, force),
+            WorkflowCommand::New {
+                name,
+                description,
+                global,
+                force,
+            } => scaffold::new(
+                &current_dir()?,
+                &name,
+                description.as_deref(),
+                global,
+                force,
+            ),
+            WorkflowCommand::Rm {
+                workflow,
+                global,
+                force,
+            } => scaffold::rm(&current_dir()?, &workflow, global, force),
         },
-        Command::Validate { workflow, params } => validate::run(&current_dir()?, workflow.as_deref(), &params),
-        Command::Run { command: Some(command), .. } => match command {
-            RunCommand::Finish { status, summary, run } => runcmd::finish(run, &status, summary),
+        Command::Validate { workflow, params } => {
+            validate::run(&current_dir()?, workflow.as_deref(), &params)
+        }
+        Command::Run {
+            command: Some(command),
+            ..
+        } => match command {
+            RunCommand::Finish {
+                status,
+                summary,
+                run,
+            } => runcmd::finish(run, &status, summary),
             RunCommand::Cancel { id } => runcmd::cancel(id),
         },
-        Command::Run { command: None, workflow, params, detach, placement } => {
+        Command::Run {
+            command: None,
+            workflow,
+            params,
+            detach,
+            placement,
+        } => {
             let workflow = workflow.expect("clap requires a workflow");
             let placement = placement.settings()?;
             if detach {
@@ -658,9 +693,15 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
         }
         Command::Ready => runcmd::ready(),
         Command::Step { command } => match command {
-            StepCommand::Start { name, report } => runcmd::step("start", Some(name), report.message, report.run),
-            StepCommand::Done { name, report } => runcmd::step("done", name, report.message, report.run),
-            StepCommand::Fail { name, report } => runcmd::step("fail", name, report.message, report.run),
+            StepCommand::Start { name, report } => {
+                runcmd::step("start", Some(name), report.message, report.run)
+            }
+            StepCommand::Done { name, report } => {
+                runcmd::step("done", name, report.message, report.run)
+            }
+            StepCommand::Fail { name, report } => {
+                runcmd::step("fail", name, report.message, report.run)
+            }
         },
         Command::Worker { command } => match command {
             WorkerCommand::Spawn {
@@ -688,24 +729,40 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 prompt_file,
                 command,
             }),
-            WorkerCommand::Done { summary, name, run } => primitives::report("done", summary, name, run.run),
-            WorkerCommand::Fail { summary, name, run } => primitives::report("fail", summary, name, run.run),
-            WorkerCommand::Wait { name, run } => primitives::worker_status(Some(name), true, run.run),
+            WorkerCommand::Done { summary, name, run } => {
+                primitives::report("done", summary, name, run.run)
+            }
+            WorkerCommand::Fail { summary, name, run } => {
+                primitives::report("fail", summary, name, run.run)
+            }
+            WorkerCommand::Wait { name, run } => {
+                primitives::worker_status(Some(name), true, run.run)
+            }
             WorkerCommand::Status { name, run } => primitives::worker_status(name, false, run.run),
             WorkerCommand::Kill { name, run } => primitives::kill(name, run.run),
         },
-        Command::Session { command: SessionCommand::Move { session, placement } } => {
-            primitives::session_move(&session, &placement.settings()?)
-        }
+        Command::Session {
+            command: SessionCommand::Move { session, placement },
+        } => primitives::session_move(&session, &placement.settings()?),
         Command::Group { command } => match command {
-            GroupCommand::Create { name, fail_fast, run } => primitives::group_create(name, fail_fast, run.run),
-            GroupCommand::Close { name, run } => primitives::group("group.close", name, false, run.run),
-            GroupCommand::Wait { name, run } => primitives::group("group.status", name, true, run.run),
-            GroupCommand::Status { name, run } => primitives::group("group.status", name, false, run.run),
+            GroupCommand::Create {
+                name,
+                fail_fast,
+                run,
+            } => primitives::group_create(name, fail_fast, run.run),
+            GroupCommand::Close { name, run } => {
+                primitives::group("group.close", name, false, run.run)
+            }
+            GroupCommand::Wait { name, run } => {
+                primitives::group("group.status", name, true, run.run)
+            }
+            GroupCommand::Status { name, run } => {
+                primitives::group("group.status", name, false, run.run)
+            }
         },
-        Command::Worktree { command: WorktreeCommand::Create { name, base, run } } => {
-            primitives::worktree_create(name, base, run.run)
-        }
+        Command::Worktree {
+            command: WorktreeCommand::Create { name, base, run },
+        } => primitives::worktree_create(name, base, run.run),
         Command::Queue { command } => match command {
             QueueCommand::Push { queue, text, run } => primitives::push(queue, text, run.run),
             QueueCommand::Pull { queue, wait, run } => primitives::pull(queue, wait, run.run),
@@ -714,28 +771,60 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             QueueCommand::Ls { run } => primitives::ls(run.run),
         },
         Command::Runs { command } => match command {
-            RunsCommand::List { status, workflow, limit } => inspect::list(status, workflow, limit),
+            RunsCommand::List {
+                status,
+                workflow,
+                limit,
+            } => inspect::list(status, workflow, limit),
             RunsCommand::Show { id, snapshot } => inspect::show(&id, snapshot),
             RunsCommand::Logs { id, step, tail } => inspect::logs(&id, step, tail),
         },
         Command::Triggers { command } => match command {
             TriggersCommand::Ls => triggerscmd::ls(),
-            TriggersCommand::Enable { project } => triggerscmd::enable(&current_dir()?, project, true),
-            TriggersCommand::Disable { project } => triggerscmd::enable(&current_dir()?, project, false),
-            TriggersCommand::Fire { workflow, index, paths, payload, dry_run } => {
-                triggerscmd::fire(&current_dir()?, &workflow, index, &paths, payload.as_deref(), dry_run)
+            TriggersCommand::Enable { project } => {
+                triggerscmd::enable(&current_dir()?, project, true)
             }
+            TriggersCommand::Disable { project } => {
+                triggerscmd::enable(&current_dir()?, project, false)
+            }
+            TriggersCommand::Fire {
+                workflow,
+                index,
+                paths,
+                payload,
+                dry_run,
+            } => triggerscmd::fire(
+                &current_dir()?,
+                &workflow,
+                index,
+                &paths,
+                payload.as_deref(),
+                dry_run,
+            ),
         },
-        Command::Publish { topic, text, dry_run } => eventscmd::publish(&current_dir()?, &topic, text, dry_run),
+        Command::Publish {
+            topic,
+            text,
+            dry_run,
+        } => eventscmd::publish(&current_dir()?, &topic, text, dry_run),
         Command::Events { command } => match command {
             EventsCommand::Ls => eventscmd::ls(&current_dir()?),
             EventsCommand::Show { topic, all } => eventscmd::show(&current_dir()?, &topic, all),
-            EventsCommand::Retry { event, workflow } => eventscmd::retry(&current_dir()?, event, workflow.as_deref()),
-            EventsCommand::Remove { event, workflow } => eventscmd::remove(&current_dir()?, event, workflow.as_deref()),
+            EventsCommand::Retry { event, workflow } => {
+                eventscmd::retry(&current_dir()?, event, workflow.as_deref())
+            }
+            EventsCommand::Remove { event, workflow } => {
+                eventscmd::remove(&current_dir()?, event, workflow.as_deref())
+            }
         },
-        Command::Layout { command: LayoutCommand::Presets } => placement::presets_report(&current_dir()?),
+        Command::Layout {
+            command: LayoutCommand::Presets,
+        } => placement::presets_report(&current_dir()?),
         Command::Query { sql } => inspect::query(&sql),
-        Command::Gc { older_than, dry_run } => gc::run(&older_than, dry_run),
+        Command::Gc {
+            older_than,
+            dry_run,
+        } => gc::run(&older_than, dry_run),
     }
 }
 

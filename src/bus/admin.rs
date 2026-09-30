@@ -40,7 +40,8 @@ impl Engine {
             }
             Ok((topics, store.project_deliveries(project)?, events))
         })?;
-        let topic_of: BTreeMap<i64, &str> = events.iter().map(|e| (e.id, e.topic.as_str())).collect();
+        let topic_of: BTreeMap<i64, &str> =
+            events.iter().map(|e| (e.id, e.topic.as_str())).collect();
         let topics: Vec<Value> = topics
             .iter()
             .map(|(topic, count, last)| {
@@ -100,7 +101,9 @@ impl Engine {
             })
             .collect();
         let hidden = total - shown.len();
-        Ok(json!({ "project": project, "topic": topic, "all": all, "events": shown, "hidden": hidden }))
+        Ok(
+            json!({ "project": project, "topic": topic, "all": all, "events": shown, "hidden": hidden }),
+        )
     }
 
     /// `events.retry` / `events.remove {event, workflow?, project_path?}`:
@@ -112,7 +115,11 @@ impl Engine {
         let id = req_id_at(p, "event")?;
         let workflow = opt_str(p, "workflow");
         let project = opt_str(p, "project_path");
-        let verb = if to == state::PENDING { "retried" } else { "removed" };
+        let verb = if to == state::PENDING {
+            "retried"
+        } else {
+            "removed"
+        };
         let moved = self.with_store(|store| {
             let event = store
                 .bus_event(id)?
@@ -126,36 +133,66 @@ impl Engine {
             if let Some(wf) = workflow {
                 deliveries.retain(|d| d.workflow == wf);
                 if deliveries.is_empty() {
-                    return Err(CliError::not_found(format!("event {id} wasn't delivered to `{wf}`")));
+                    return Err(CliError::not_found(format!(
+                        "event {id} wasn't delivered to `{wf}`"
+                    )));
                 }
             }
-            let states = || deliveries.iter().map(|d| format!("{} ({})", d.workflow, d.state)).collect::<Vec<_>>().join(", ");
-            let movable: Vec<&Delivery> = deliveries.iter().filter(|d| from.contains(&d.state.as_str())).collect();
+            let states = || {
+                deliveries
+                    .iter()
+                    .map(|d| format!("{} ({})", d.workflow, d.state))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let movable: Vec<&Delivery> = deliveries
+                .iter()
+                .filter(|d| from.contains(&d.state.as_str()))
+                .collect();
             if movable.is_empty() {
-                let what = if deliveries.is_empty() { "no deliveries".to_string() } else { states() };
-                return Err(CliError::invalid(format!("event {id} can't be {verb}: {what}"))
-                    .with_hint(format!("only {} deliveries can be {verb}", from.join(" or "))));
+                let what = if deliveries.is_empty() {
+                    "no deliveries".to_string()
+                } else {
+                    states()
+                };
+                return Err(
+                    CliError::invalid(format!("event {id} can't be {verb}: {what}")).with_hint(
+                        format!("only {} deliveries can be {verb}", from.join(" or ")),
+                    ),
+                );
             }
             if movable.len() > 1 && workflow.is_none() {
-                return Err(CliError::invalid(format!("event {id} went to several workflows: {}", states()))
-                    .with_hint("name one with --workflow <name>"));
+                return Err(CliError::invalid(format!(
+                    "event {id} went to several workflows: {}",
+                    states()
+                ))
+                .with_hint("name one with --workflow <name>"));
             }
             let d = movable[0].clone();
             // A retried delivery starts over: no runs yet.
             let runs: Option<&[i64]> = (to == state::PENDING).then_some(&[]);
             if !store.move_delivery(d.id, &d.state, to, runs)? {
-                return Err(CliError::conflict(format!("event {id}'s delivery to `{}` changed meanwhile; try again", d.workflow)));
+                return Err(CliError::conflict(format!(
+                    "event {id}'s delivery to `{}` changed meanwhile; try again",
+                    d.workflow
+                )));
             }
             Ok((event, Some(store.delivery(d.id)?.unwrap_or(d))))
         })?;
         let (event, delivery) = match moved {
             (event, None) => {
-                eprintln!("tome daemon: event {} removed by hand (no deliveries)", event.id);
+                eprintln!(
+                    "tome daemon: event {} removed by hand (no deliveries)",
+                    event.id
+                );
                 return Ok(json!({ "event": event, "delivery": null, "deleted": true }));
             }
             (event, Some(delivery)) => (event, delivery),
         };
-        eprintln!("tome daemon: delivery {} of event {} to {} {verb} by hand", delivery.id, event.id, delivery.workflow);
+        eprintln!(
+            "tome daemon: delivery {} of event {} to {} {verb} by hand",
+            delivery.id, event.id, delivery.workflow
+        );
         Ok(json!({ "event": event, "delivery": delivery }))
     }
 
@@ -163,18 +200,35 @@ impl Engine {
     /// and the last one a run took.
     pub(crate) fn topic_status(&self, a: &Armed) -> Option<Value> {
         let (project, pattern) = (a.project.as_ref()?, pattern_of(a)?.to_string());
-        let ds = self.with_store(|store| store.project_deliveries(&project.display().to_string())).ok()?;
-        let ours: Vec<&Delivery> = ds.iter().filter(|d| d.workflow == a.name && d.pattern == pattern).collect();
+        let ds = self
+            .with_store(|store| store.project_deliveries(&project.display().to_string()))
+            .ok()?;
+        let ours: Vec<&Delivery> = ds
+            .iter()
+            .filter(|d| d.workflow == a.name && d.pattern == pattern)
+            .collect();
         let pending = ours.iter().filter(|d| d.state == state::PENDING).count();
-        let last = ours.iter().rev().find(|d| !d.run_ids.is_empty()).map(|d| json!({ "event_id": d.event_id, "run_ids": d.run_ids }));
+        let last = ours
+            .iter()
+            .rev()
+            .find(|d| !d.run_ids.is_empty())
+            .map(|d| json!({ "event_id": d.event_id, "run_ids": d.run_ids }));
         Some(json!({ "pending": pending, "last_event": last }))
     }
 
     /// `tome triggers fire` on a topic trigger: take the subscription's next
     /// pending event, or with `payload` publish a test event to this
     /// workflow alone and take that.
-    pub(crate) fn fire_topic(&self, a: &Armed, payload: Option<&str>, dry_run: bool) -> CliResult<Value> {
-        let project = a.project.clone().ok_or_else(|| CliError::invalid("topic triggers belong to project workflows"))?;
+    pub(crate) fn fire_topic(
+        &self,
+        a: &Armed,
+        payload: Option<&str>,
+        dry_run: bool,
+    ) -> CliResult<Value> {
+        let project = a
+            .project
+            .clone()
+            .ok_or_else(|| CliError::invalid("topic triggers belong to project workflows"))?;
         let pattern = pattern_of(a).expect("a topic trigger").clone();
         // Hold off the trigger loop, so it doesn't take the event first.
         let _draining = self.draining.lock().unwrap_or_else(|p| p.into_inner());
@@ -197,7 +251,11 @@ impl Engine {
                 workflow_path: a.workflow_path.clone(),
                 project: Some(project.clone()),
                 index: a.index,
-                event: Event { bus: Some((event, 0)), synthetic: true, ..Default::default() },
+                event: Event {
+                    bus: Some((event, 0)),
+                    synthetic: true,
+                    ..Default::default()
+                },
                 dry_run: true,
             })
         };
@@ -220,14 +278,23 @@ impl Engine {
                     return Ok(respond(dry(event), None));
                 }
                 let published = self.publish(
-                    &Publish { project: &project, topic: &topic, payload, sender: TEST.into(), sender_run: None, depth: 0, only: Some(&a.name) },
+                    &Publish {
+                        project: &project,
+                        topic: &topic,
+                        payload,
+                        sender: TEST.into(),
+                        sender_run: None,
+                        depth: 0,
+                        only: Some(&a.name),
+                    },
                     false,
                 )?;
-                published
-                    .deliveries
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| CliError::internal(format!("the test event on {topic} wasn't delivered to {}", a.name)))?
+                published.deliveries.into_iter().next().ok_or_else(|| {
+                    CliError::internal(format!(
+                        "the test event on {topic} wasn't delivered to {}",
+                        a.name
+                    ))
+                })?
             }
             None => match self.pending_of(a).into_iter().next() {
                 Some(d) => d,
@@ -243,14 +310,21 @@ impl Engine {
             },
         };
         if dry_run {
-            let event = self.with_store(|store| store.bus_event(delivery.event_id))?.ok_or_else(|| CliError::not_found("the event is gone"))?;
+            let event = self
+                .with_store(|store| store.bus_event(delivery.event_id))?
+                .ok_or_else(|| CliError::not_found("the event is gone"))?;
             let mut fired = dry(event);
-            fired.message = fired.message.map(|m| format!("event {}: {m}", delivery.event_id));
+            fired.message = fired
+                .message
+                .map(|m| format!("event {}: {m}", delivery.event_id));
             return Ok(respond(fired, Some(delivery.event_id)));
         }
         match self.take(a, &delivery, true) {
             Some((fired, _)) => Ok(respond(fired, Some(delivery.event_id))),
-            None => Err(CliError::conflict(format!("event {} was taken meanwhile", delivery.event_id))),
+            None => Err(CliError::conflict(format!(
+                "event {} was taken meanwhile",
+                delivery.event_id
+            ))),
         }
     }
 }

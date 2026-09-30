@@ -16,26 +16,31 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
 
     let mut results = Vec::new();
     match target {
-        Some(target) => {
-            match library.locate(target)? {
-                Ok(wf) => {
-                    let check = wf.resolve_params(&overrides, !overrides.is_empty()).err();
-                    let mut r = result_json(wf.name(), &wf.path, None, check.as_ref(), None);
-                    r["warnings"] = warnings_json(&wf, cwd);
-                    results.push(r);
-                }
-                Err(inv) => {
-                    results.push(result_json(inv.name.as_deref().unwrap_or(""), &inv.path, None, Some(&inv), None))
-                }
+        Some(target) => match library.locate(target)? {
+            Ok(wf) => {
+                let check = wf.resolve_params(&overrides, !overrides.is_empty()).err();
+                let mut r = result_json(wf.name(), &wf.path, None, check.as_ref(), None);
+                r["warnings"] = warnings_json(&wf, cwd);
+                results.push(r);
             }
-        }
+            Err(inv) => results.push(result_json(
+                inv.name.as_deref().unwrap_or(""),
+                &inv.path,
+                None,
+                Some(&inv),
+                None,
+            )),
+        },
         None => {
             let entries = library.entries();
             let duplicates = duplicate_names(&entries);
             for entry in &entries {
                 let overridden_by = match entry.scope {
                     Scope::Global => entry.name().and_then(|n| {
-                        entries.iter().find(|e| e.scope == Scope::Project && e.name() == Some(n)).map(|e| &e.path)
+                        entries
+                            .iter()
+                            .find(|e| e.scope == Scope::Project && e.name() == Some(n))
+                            .map(|e| &e.path)
                     }),
                     Scope::Project => None,
                 };
@@ -49,7 +54,11 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
                         match invalid.as_mut() {
                             Some(inv) => inv.errors.insert(0, err),
                             None => {
-                                invalid = Some(Invalid { path: entry.path.clone(), name: Some(name.into()), errors: vec![err] })
+                                invalid = Some(Invalid {
+                                    path: entry.path.clone(),
+                                    name: Some(name.into()),
+                                    errors: vec![err],
+                                })
                             }
                         }
                     }
@@ -86,7 +95,13 @@ fn duplicate_names(entries: &[Entry]) -> HashMap<(Scope, String), usize> {
     counts
 }
 
-fn result_json(name: &str, path: &Path, scope: Option<Scope>, invalid: Option<&Invalid>, overridden_by: Option<&Path>) -> Value {
+fn result_json(
+    name: &str,
+    path: &Path,
+    scope: Option<Scope>,
+    invalid: Option<&Invalid>,
+    overridden_by: Option<&Path>,
+) -> Value {
     let mut v = json!({
         "name": name,
         "path": path,
@@ -104,7 +119,11 @@ fn result_json(name: &str, path: &Path, scope: Option<Scope>, invalid: Option<&I
 }
 
 fn warnings_json(wf: &Workflow, cwd: &Path) -> Value {
-    let mut all: Vec<Value> = wf.warnings().iter().map(|d| json!({ "line": d.line, "message": d.message })).collect();
+    let mut all: Vec<Value> = wf
+        .warnings()
+        .iter()
+        .map(|d| json!({ "line": d.line, "message": d.message }))
+        .collect();
     // Presets depend on the environment, so a missing one only warns.
     for name in placement::undefined_presets(wf.frontmatter.defaults.layout.as_ref(), Some(cwd)) {
         let line = preset_line(wf, &name);
@@ -122,7 +141,10 @@ fn preset_line(wf: &Workflow, name: &str) -> usize {
         .lines()
         .position(|l| {
             let l = l.trim_start().trim_start_matches("- ");
-            l.contains("preset:") && l.split("preset:").nth(1).is_some_and(|v| v.trim().trim_matches(['"', '\'', '}', ',', ' ']) == name)
+            l.contains("preset:")
+                && l.split("preset:")
+                    .nth(1)
+                    .is_some_and(|v| v.trim().trim_matches(['"', '\'', '}', ',', ' ']) == name)
         })
         .map(|i| i + 1)
         .unwrap_or(1)
@@ -134,20 +156,34 @@ fn render_human(results: &[Value], listing: bool) -> String {
     }
     let mut out = String::new();
     for r in results {
-        let name = r["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("<unnamed>");
+        let name = r["name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .unwrap_or("<unnamed>");
         let path = r["path"].as_str().unwrap_or("");
         let status = if r["valid"] == true { "ok" } else { "invalid" };
-        let scope = r["scope"].as_str().map(|s| format!(" [{s}]")).unwrap_or_default();
+        let scope = r["scope"]
+            .as_str()
+            .map(|s| format!(" [{s}]"))
+            .unwrap_or_default();
         out.push_str(&format!("{status:<8}{name}{scope}  {path}\n"));
         if let Some(by) = r["overridden_by"].as_str() {
             out.push_str(&format!("        overridden by {by}\n"));
         }
         // The path is on the header line; errors only need the line number.
         for e in r["errors"].as_array().into_iter().flatten() {
-            out.push_str(&format!("        line {}: {}\n", e["line"], e["message"].as_str().unwrap_or("")));
+            out.push_str(&format!(
+                "        line {}: {}\n",
+                e["line"],
+                e["message"].as_str().unwrap_or("")
+            ));
         }
         for w in r["warnings"].as_array().into_iter().flatten() {
-            out.push_str(&format!("        warning: line {}: {}\n", w["line"], w["message"].as_str().unwrap_or("")));
+            out.push_str(&format!(
+                "        warning: line {}: {}\n",
+                w["line"],
+                w["message"].as_str().unwrap_or("")
+            ));
         }
     }
     if listing {

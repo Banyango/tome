@@ -33,15 +33,24 @@ fn detached_run_records_and_returns_id() {
     let id = v["id"].as_i64().unwrap();
     assert_eq!(v["status"], "running");
     assert_eq!(v["workflow_name"], "build");
-    assert_eq!(v["project_path"], json!(env.project().canonicalize().unwrap()));
+    assert_eq!(
+        v["project_path"],
+        json!(env.project().canonicalize().unwrap())
+    );
 
     let (_, show) = env.json(&["runs", "show", &id.to_string(), "--snapshot"]);
     let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
-    assert!(snap.contains(&format!("Branch off dev as run-{id}.")), "{snap}");
+    assert!(
+        snap.contains(&format!("Branch off dev as run-{id}.")),
+        "{snap}"
+    );
 
     // Human mode says which run started.
     let out = env.run(&["run", "build", "--detach"]);
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("run {} running (build)", id + 1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("run {} running (build)", id + 1)
+    );
 }
 
 #[test]
@@ -49,7 +58,11 @@ fn invalid_workflow_exits_2_without_a_run() {
     let env = Env::new();
     env.start_daemon();
     write_wf(&env, "bad", "---\nname: bad\n---\nUse {{params.nope}}.\n");
-    write_wf(&env, "req", "---\nname: req\nparams:\n  ticket: {type: string}\n---\n{{params.ticket}}\n");
+    write_wf(
+        &env,
+        "req",
+        "---\nname: req\nparams:\n  ticket: {type: string}\n---\n{{params.ticket}}\n",
+    );
 
     let (code, v) = env.json(&["run", "bad", "--detach"]);
     assert_eq!(code, 2, "{v}");
@@ -93,22 +106,49 @@ fn orchestrator_commands_drive_the_run_through_tome_run_id() {
     assert_eq!(v["status"], "done");
     let (code, v) = with_run(&["step", "fail"]);
     assert_eq!(code, 2, "{v}");
-    assert!(v["error"]["message"].as_str().unwrap().contains("no running step"));
+    assert!(v["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("no running step"));
 
     with_run(&["step", "start", "Review"]);
     with_run(&["step", "fail", "Review", "--message", "changes requested"]);
     with_run(&["step", "start", "Implement"]);
     with_run(&["step", "done", "Implement"]);
 
-    let (code, v) = with_run(&["run", "finish", "--status", "succeeded", "--summary", "shipped"]);
+    let (code, v) = with_run(&[
+        "run",
+        "finish",
+        "--status",
+        "succeeded",
+        "--summary",
+        "shipped",
+    ]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["status"], "succeeded");
 
     let (_, show) = env.json(&["runs", "show", &rid]);
     assert_eq!(show["run"]["summary"], "shipped");
-    let steps: Vec<_> = show["steps"].as_array().unwrap().iter().map(|s| (s["name"].clone(), s["status"].clone(), s["attempts"].clone())).collect();
+    let steps: Vec<_> = show["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["name"].clone(),
+                s["status"].clone(),
+                s["attempts"].clone(),
+            )
+        })
+        .collect();
     // Ordered by (latest) start: Implement was retried after Review.
-    assert_eq!(steps, [(json!("Review"), json!("failed"), json!(1)), (json!("Implement"), json!("done"), json!(2))]);
+    assert_eq!(
+        steps,
+        [
+            (json!("Review"), json!("failed"), json!(1)),
+            (json!("Implement"), json!("done"), json!(2))
+        ]
+    );
     assert_eq!(show["history"].as_array().unwrap().len(), 6);
 
     // A finished run takes no more reports.
@@ -141,7 +181,10 @@ fn cancel_marks_run_cancelled() {
 
     let out = env.run(&["run", "cancel", &id.to_string()]);
     assert_eq!(out.status.code(), Some(0));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("run {id} cancelled: user_cancelled"));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("run {id} cancelled: user_cancelled")
+    );
 
     let (_, show) = env.json(&["runs", "show", &id.to_string()]);
     assert_eq!(show["run"]["status"], "cancelled");

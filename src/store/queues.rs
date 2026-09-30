@@ -45,14 +45,21 @@ impl Store {
     fn require_live_run(&self, run_id: i64) -> CliResult<()> {
         let run = self.require_run(run_id)?;
         if run.status.is_finished() {
-            return Err(CliError::invalid(format!("run {run_id} has already finished ({})", run.status.as_str())));
+            return Err(CliError::invalid(format!(
+                "run {run_id} has already finished ({})",
+                run.status.as_str()
+            )));
         }
         Ok(())
     }
 
     fn queue_closed(&self, run_id: i64, queue: &str) -> CliResult<Option<bool>> {
         self.conn
-            .query_row("SELECT closed FROM queues WHERE run_id = ? AND name = ?", params![run_id, queue], |r| r.get(0))
+            .query_row(
+                "SELECT closed FROM queues WHERE run_id = ? AND name = ?",
+                params![run_id, queue],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(internal)
     }
@@ -69,12 +76,21 @@ impl Store {
         }
     }
 
-    pub fn push_message(&mut self, run_id: i64, queue: &str, body: &str, sender: &str) -> CliResult<QueueMessage> {
+    pub fn push_message(
+        &mut self,
+        run_id: i64,
+        queue: &str,
+        body: &str,
+        sender: &str,
+    ) -> CliResult<QueueMessage> {
         check_name("queue", queue)?;
         self.require_live_run(run_id)?;
         if body.len() > MAX_MESSAGE_BYTES {
-            return Err(CliError::invalid(format!("message is {} bytes; the limit is 1 MiB", body.len()))
-                .with_hint("write the data to a file and push its path instead"));
+            return Err(CliError::invalid(format!(
+                "message is {} bytes; the limit is 1 MiB",
+                body.len()
+            ))
+            .with_hint("write the data to a file and push its path instead"));
         }
         if self.ensure_queue(run_id, queue)? {
             return Err(CliError::invalid(format!("queue `{queue}` is closed")));
@@ -117,9 +133,14 @@ impl Store {
         match next {
             Some(id) => {
                 self.conn
-                    .execute("UPDATE queue_messages SET claimed_by = ?, claimed_at = ? WHERE id = ?", params![claimer, now(), id])
+                    .execute(
+                        "UPDATE queue_messages SET claimed_by = ?, claimed_at = ? WHERE id = ?",
+                        params![claimer, now(), id],
+                    )
                     .map_err(internal)?;
-                Ok(Pulled::Message(self.message(run_id, id)?.expect("message exists")))
+                Ok(Pulled::Message(
+                    self.message(run_id, id)?.expect("message exists"),
+                ))
             }
             None if self.queue_closed(run_id, queue)? == Some(true) => Ok(Pulled::Closed),
             None => Ok(Pulled::Empty),
@@ -128,15 +149,25 @@ impl Store {
 
     /// Remove a claimed message.
     pub fn ack_message(&mut self, run_id: i64, id: i64) -> CliResult<QueueMessage> {
-        let msg = self.message(run_id, id)?.ok_or_else(|| CliError::not_found(format!("run {run_id} has no message {id}")))?;
+        let msg = self
+            .message(run_id, id)?
+            .ok_or_else(|| CliError::not_found(format!("run {run_id} has no message {id}")))?;
         let claimed: Option<String> = self
             .conn
-            .query_row("SELECT claimed_by FROM queue_messages WHERE id = ?", params![id], |r| r.get(0))
+            .query_row(
+                "SELECT claimed_by FROM queue_messages WHERE id = ?",
+                params![id],
+                |r| r.get(0),
+            )
             .map_err(internal)?;
         if claimed.is_none() {
-            return Err(CliError::invalid(format!("message {id} isn't claimed")).with_hint("pull it first"));
+            return Err(
+                CliError::invalid(format!("message {id} isn't claimed")).with_hint("pull it first")
+            );
         }
-        self.conn.execute("DELETE FROM queue_messages WHERE id = ?", params![id]).map_err(internal)?;
+        self.conn
+            .execute("DELETE FROM queue_messages WHERE id = ?", params![id])
+            .map_err(internal)?;
         Ok(msg)
     }
 
@@ -146,9 +177,16 @@ impl Store {
         self.require_live_run(run_id)?;
         self.ensure_queue(run_id, queue)?;
         self.conn
-            .execute("UPDATE queues SET closed = true WHERE run_id = ? AND name = ?", params![run_id, queue])
+            .execute(
+                "UPDATE queues SET closed = true WHERE run_id = ? AND name = ?",
+                params![run_id, queue],
+            )
             .map_err(internal)?;
-        Ok(self.queues(run_id)?.into_iter().find(|q| q.name == queue).expect("queue exists"))
+        Ok(self
+            .queues(run_id)?
+            .into_iter()
+            .find(|q| q.name == queue)
+            .expect("queue exists"))
     }
 
     pub fn queues(&self, run_id: i64) -> CliResult<Vec<QueueInfo>> {
@@ -163,7 +201,14 @@ impl Store {
             )
             .map_err(internal)?;
         let rows = stmt
-            .query_map(params![run_id], |r| Ok(QueueInfo { name: r.get(0)?, closed: r.get(1)?, pending: r.get(2)?, claimed: r.get(3)? }))
+            .query_map(params![run_id], |r| {
+                Ok(QueueInfo {
+                    name: r.get(0)?,
+                    closed: r.get(1)?,
+                    pending: r.get(2)?,
+                    claimed: r.get(3)?,
+                })
+            })
             .map_err(internal)?;
         rows.collect::<Result<_, _>>().map_err(internal)
     }
@@ -195,31 +240,62 @@ mod tests {
     fn claim_ack_release_and_close() {
         let (_d, mut store) = store();
         let run = new_run(&mut store, "wf").id;
-        assert!(matches!(store.pull_message(run, "q", "a").unwrap(), Pulled::Empty));
+        assert!(matches!(
+            store.pull_message(run, "q", "a").unwrap(),
+            Pulled::Empty
+        ));
         let m1 = store.push_message(run, "q", "one", "orchestrator").unwrap();
         let m2 = store.push_message(run, "q", "two", "orchestrator").unwrap();
-        assert_eq!(pulled_id(store.pull_message(run, "q", "a").unwrap()), Some(m1.id));
-        assert_eq!(pulled_id(store.pull_message(run, "q", "b").unwrap()), Some(m2.id));
-        assert!(matches!(store.pull_message(run, "q", "c").unwrap(), Pulled::Empty));
+        assert_eq!(
+            pulled_id(store.pull_message(run, "q", "a").unwrap()),
+            Some(m1.id)
+        );
+        assert_eq!(
+            pulled_id(store.pull_message(run, "q", "b").unwrap()),
+            Some(m2.id)
+        );
+        assert!(matches!(
+            store.pull_message(run, "q", "c").unwrap(),
+            Pulled::Empty
+        ));
 
         store.ack_message(run, m2.id).unwrap();
-        assert_eq!(store.ack_message(run, m2.id).unwrap_err().kind, crate::output::ErrorKind::NotFound);
+        assert_eq!(
+            store.ack_message(run, m2.id).unwrap_err().kind,
+            crate::output::ErrorKind::NotFound
+        );
         // a goes away without acking: m1 is back.
         assert_eq!(store.release_claims(run, "a").unwrap(), 1);
         let q = &store.queues(run).unwrap()[0];
         assert_eq!((q.pending, q.claimed, q.closed), (1, 0, false));
 
         store.close_queue(run, "q").unwrap();
-        assert!(store.push_message(run, "q", "late", "orchestrator").unwrap_err().message.contains("closed"));
-        assert_eq!(pulled_id(store.pull_message(run, "q", "c").unwrap()), Some(m1.id), "closed queues still drain");
-        assert!(matches!(store.pull_message(run, "q", "c").unwrap(), Pulled::Closed));
+        assert!(store
+            .push_message(run, "q", "late", "orchestrator")
+            .unwrap_err()
+            .message
+            .contains("closed"));
+        assert_eq!(
+            pulled_id(store.pull_message(run, "q", "c").unwrap()),
+            Some(m1.id),
+            "closed queues still drain"
+        );
+        assert!(matches!(
+            store.pull_message(run, "q", "c").unwrap(),
+            Pulled::Closed
+        ));
     }
 
     #[test]
     fn big_messages_are_refused() {
         let (_d, mut store) = store();
         let run = new_run(&mut store, "wf").id;
-        let err = store.push_message(run, "q", &"x".repeat(MAX_MESSAGE_BYTES + 1), "w1").unwrap_err();
-        assert!(err.hint.as_deref().unwrap_or("").contains("file"), "{err:?}");
+        let err = store
+            .push_message(run, "q", &"x".repeat(MAX_MESSAGE_BYTES + 1), "w1")
+            .unwrap_err();
+        assert!(
+            err.hint.as_deref().unwrap_or("").contains("file"),
+            "{err:?}"
+        );
     }
 }

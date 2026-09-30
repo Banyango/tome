@@ -11,14 +11,30 @@ fn seed(env: &Env) -> (i64, i64) {
     env.start_daemon();
     let path = env.project().join("build.md");
     fs::write(&path, WF).unwrap();
-    let a = env.rpc_ok("run.create", json!({ "workflow_path": path }))["id"].as_i64().unwrap();
-    env.rpc_ok("step.report", json!({ "run_id": a, "step": "Build", "event": "start" }));
-    env.rpc_ok("step.report", json!({ "run_id": a, "step": "Build", "event": "done", "message": "built" }));
-    env.rpc_ok("worktree.add", json!({ "run_id": a, "path": "/tmp/wt-a", "branch": "run-a" }));
+    let a = env.rpc_ok("run.create", json!({ "workflow_path": path }))["id"]
+        .as_i64()
+        .unwrap();
+    env.rpc_ok(
+        "step.report",
+        json!({ "run_id": a, "step": "Build", "event": "start" }),
+    );
+    env.rpc_ok(
+        "step.report",
+        json!({ "run_id": a, "step": "Build", "event": "done", "message": "built" }),
+    );
+    env.rpc_ok(
+        "worktree.add",
+        json!({ "run_id": a, "path": "/tmp/wt-a", "branch": "run-a" }),
+    );
     let log: String = (1..=30).map(|i| format!("line {i}\n")).collect();
     fs::write(env.home().join(format!("runs/{a}/Build.log")), log).unwrap();
     env.rpc_ok("run.finish", json!({ "id": a, "status": "succeeded" }));
-    let b = env.rpc_ok("run.create", json!({ "workflow_path": path, "params": ["base=dev"] }))["id"].as_i64().unwrap();
+    let b = env.rpc_ok(
+        "run.create",
+        json!({ "workflow_path": path, "params": ["base=dev"] }),
+    )["id"]
+        .as_i64()
+        .unwrap();
     (a, b)
 }
 
@@ -29,7 +45,12 @@ fn runs_list_filters_and_renders() {
 
     let (code, v) = env.json(&["runs", "list"]);
     assert_eq!(code, 0);
-    let ids: Vec<i64> = v["runs"].as_array().unwrap().iter().map(|r| r["id"].as_i64().unwrap()).collect();
+    let ids: Vec<i64> = v["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_i64().unwrap())
+        .collect();
     assert_eq!(ids, [b, a]);
 
     let (_, v) = env.json(&["runs", "list", "--status", "running"]);
@@ -66,11 +87,17 @@ fn runs_show_includes_steps_history_worktrees_logs() {
     assert!(v["logs"][0]["tail"].as_str().unwrap().ends_with("line 30"));
 
     let (_, v) = env.json(&["runs", "show", &a.to_string(), "--snapshot"]);
-    assert!(v["run"]["workflow_snapshot"].as_str().unwrap().contains("Branch off main."));
+    assert!(v["run"]["workflow_snapshot"]
+        .as_str()
+        .unwrap()
+        .contains("Branch off main."));
 
     let out = env.run(&["runs", "show", &format!("#{a}")]);
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("[succeeded]") && text.contains("steps:") && text.contains("Build"), "{text}");
+    assert!(
+        text.contains("[succeeded]") && text.contains("steps:") && text.contains("Build"),
+        "{text}"
+    );
 
     let (code, v) = env.json(&["runs", "show", "999"]);
     assert_eq!(code, 4);
@@ -88,7 +115,10 @@ fn runs_logs_prints_content_and_tail() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "line 29\nline 30\n");
 
     let (_, v) = env.json(&["runs", "logs", &id]);
-    assert_eq!(v["logs"][0]["content"].as_str().unwrap().lines().count(), 30);
+    assert_eq!(
+        v["logs"][0]["content"].as_str().unwrap().lines().count(),
+        30
+    );
 
     let (code, _) = env.json(&["runs", "logs", &id, "--step", "Nope"]);
     assert_eq!(code, 4);
@@ -111,7 +141,11 @@ fn query_is_read_only() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert_eq!(text, "n\n1\n(1 row)\n");
 
-    for sql in ["delete from runs", "select 1; drop table runs", "update runs set status = 'x'"] {
+    for sql in [
+        "delete from runs",
+        "select 1; drop table runs",
+        "update runs set status = 'x'",
+    ] {
         let (code, v) = env.json(&["query", sql]);
         assert_eq!(code, 2, "{sql}: {v}");
         assert_eq!(v["error"]["kind"], "invalid");

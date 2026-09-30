@@ -18,7 +18,10 @@ fn canonical(p: &Path) -> PathBuf {
 /// projects of their own.
 pub fn project_of(cwd: &Path) -> Option<PathBuf> {
     let root = canonical(&Library::discover(cwd).project_root()?);
-    (!root.components().any(|c| c == Component::Normal(".tome".as_ref()))).then_some(root)
+    (!root
+        .components()
+        .any(|c| c == Component::Normal(".tome".as_ref())))
+    .then_some(root)
 }
 
 /// Register the current project with the daemon, if there is one and the
@@ -36,7 +39,14 @@ pub fn register(cwd: &Path) {
 /// `tome triggers fire <wf> [--index N] [--path p]... [--payload text]
 /// [--dry-run]`: send a synthetic event down the real firing path. A topic
 /// trigger takes its next pending event, or a test event with `--payload`.
-pub fn fire(cwd: &Path, target: &str, index: Option<usize>, paths: &[String], payload: Option<&str>, dry_run: bool) -> CliResult<Report> {
+pub fn fire(
+    cwd: &Path,
+    target: &str,
+    index: Option<usize>,
+    paths: &[String],
+    payload: Option<&str>,
+    dry_run: bool,
+) -> CliResult<Report> {
     let library = Library::discover(cwd);
     // An invalid workflow still fires, so the daemon records the error.
     let path = match library.locate(target)? {
@@ -77,7 +87,11 @@ pub fn fire(cwd: &Path, target: &str, index: Option<usize>, paths: &[String], pa
     )?;
     let outcome = out["outcome"].as_str().unwrap_or("?");
     let message = out["message"].as_str().unwrap_or("");
-    let mut human = if dry_run { format!("dry run: {message}") } else { format!("{outcome}: {message}") };
+    let mut human = if dry_run {
+        format!("dry run: {message}")
+    } else {
+        format!("{outcome}: {message}")
+    };
     if dry_run {
         if let Some(params) = out["params"].as_object() {
             for (k, v) in params {
@@ -92,7 +106,11 @@ pub fn fire(cwd: &Path, target: &str, index: Option<usize>, paths: &[String], pa
     if let Some(hint) = out["hint"].as_str() {
         human.push_str(&format!("\n  {hint}"));
     }
-    let code = if matches!(outcome, "error" | "rejected") { exit::FAILURE } else { exit::OK };
+    let code = if matches!(outcome, "error" | "rejected") {
+        exit::FAILURE
+    } else {
+        exit::OK
+    };
     Ok(Report::new(out, human).with_exit(code))
 }
 
@@ -101,20 +119,32 @@ fn project_arg(cwd: &Path, project: Option<PathBuf>) -> CliResult<PathBuf> {
         Some(p) => {
             let p = cwd.join(p);
             if !p.is_dir() {
-                return Err(CliError::not_found(format!("no directory at {}", p.display())));
+                return Err(CliError::not_found(format!(
+                    "no directory at {}",
+                    p.display()
+                )));
             }
             Ok(canonical(&p))
         }
-        None => project_of(cwd)
-            .ok_or_else(|| CliError::invalid("not inside a project").with_hint("run this in a project, or pass --project <path>")),
+        None => project_of(cwd).ok_or_else(|| {
+            CliError::invalid("not inside a project")
+                .with_hint("run this in a project, or pass --project <path>")
+        }),
     }
 }
 
 /// `tome triggers enable|disable [--project <path>]`
 pub fn enable(cwd: &Path, project: Option<PathBuf>, enabled: bool) -> CliResult<Report> {
     let path = project_arg(cwd, project)?;
-    let p = call("triggers.enable", json!({ "project": path, "enabled": enabled }))?;
-    let human = format!("triggers {} for {}", if enabled { "enabled" } else { "disabled" }, path.display());
+    let p = call(
+        "triggers.enable",
+        json!({ "project": path, "enabled": enabled }),
+    )?;
+    let human = format!(
+        "triggers {} for {}",
+        if enabled { "enabled" } else { "disabled" },
+        path.display()
+    );
     Ok(Report::new(p, human))
 }
 
@@ -144,28 +174,56 @@ pub fn ls() -> CliResult<Report> {
                     ]
                 })
                 .collect();
-            for line in table(&["WORKFLOW", "TRIGGER", "TO", "LAST FIRED", "RESULT"], rows).lines() {
+            for line in table(&["WORKFLOW", "TRIGGER", "TO", "LAST FIRED", "RESULT"], rows).lines()
+            {
                 out.push_str(&format!("  {line}\n"));
             }
         }
         for t in triggers.iter().filter(|t| t["polling"].is_string()) {
-            out.push_str(&format!("  {}: {} is polling: {}\n", text(&t["workflow"]), text(&t["trigger"]), text(&t["polling"])));
+            out.push_str(&format!(
+                "  {}: {} is polling: {}\n",
+                text(&t["workflow"]),
+                text(&t["trigger"]),
+                text(&t["polling"])
+            ));
         }
         for t in triggers.iter().filter(|t| t["topic"].is_object()) {
             let topic = &t["topic"];
-            let mut line = format!("  {}: {} has {} pending", text(&t["workflow"]), text(&t["trigger"]), topic["pending"]);
+            let mut line = format!(
+                "  {}: {} has {} pending",
+                text(&t["workflow"]),
+                text(&t["trigger"]),
+                topic["pending"]
+            );
             if let Some(last) = topic["last_event"].as_object() {
-                let runs: Vec<String> = last["run_ids"].as_array().into_iter().flatten().map(text).collect();
-                line.push_str(&format!("; last took event {} (run {})", last["event_id"], runs.join(", ")));
+                let runs: Vec<String> = last["run_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(text)
+                    .collect();
+                line.push_str(&format!(
+                    "; last took event {} (run {})",
+                    last["event_id"],
+                    runs.join(", ")
+                ));
             }
             out.push_str(&format!("{line}\n"));
         }
         for e in &errors {
-            out.push_str(&format!("  {}: not armed: {}\n", text(&e["workflow"]), text(&e["message"])));
+            out.push_str(&format!(
+                "  {}: not armed: {}\n",
+                text(&e["workflow"]),
+                text(&e["message"])
+            ));
         }
     };
     for p in data["projects"].as_array().cloned().unwrap_or_default() {
-        let state = if p["enabled"] == true { "" } else { " (disabled)" };
+        let state = if p["enabled"] == true {
+            ""
+        } else {
+            " (disabled)"
+        };
         section(format!("{}{state}", text(&p["path"])), &p);
     }
     section("global".to_string(), &data["global"]);
@@ -181,7 +239,10 @@ fn result(last: &Value) -> String {
     let runs = last["runs"].as_array().cloned().unwrap_or_default();
     let live = matches!(last["outcome"].as_str(), Some("started" | "queued")) && !runs.is_empty();
     if live {
-        let runs: Vec<String> = runs.iter().map(|r| format!("run {} {}", r["id"], text(&r["status"]))).collect();
+        let runs: Vec<String> = runs
+            .iter()
+            .map(|r| format!("run {} {}", r["id"], text(&r["status"])))
+            .collect();
         return format!("{} ({})", text(&last["outcome"]), runs.join(", "));
     }
     match last["message"].as_str() {

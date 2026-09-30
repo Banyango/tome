@@ -10,7 +10,9 @@ use crate::api::{opt_str, req_id_at, req_str};
 use crate::arming::{self, Armed};
 use crate::engine::Engine;
 use crate::output::{CliError, CliResult};
-use crate::store::{delivery_state as state, BusEvent, Delivery, NewEvent, Run, RunStatus, Subscriber};
+use crate::store::{
+    delivery_state as state, BusEvent, Delivery, NewEvent, Run, RunStatus, Subscriber,
+};
 use crate::topic;
 use crate::triggers::{self, outcome, Event, FireRequest, Fired};
 use crate::workflow::{Target, TriggerKind};
@@ -21,7 +23,13 @@ use std::sync::Arc;
 mod admin;
 mod lifecycle;
 
-pub const METHODS: &[&str] = &["events.publish", "events.ls", "events.show", "events.retry", "events.remove"];
+pub const METHODS: &[&str] = &[
+    "events.publish",
+    "events.ls",
+    "events.show",
+    "events.retry",
+    "events.remove",
+];
 
 /// Who sends the events of `tome triggers fire --payload`.
 pub const TEST: &str = "test";
@@ -55,7 +63,8 @@ pub fn pattern_of(a: &Armed) -> Option<&topic::Pattern> {
 pub fn matching(subs: &[Armed], topic: &str) -> Vec<Armed> {
     let mut out: Vec<Armed> = Vec::new();
     for a in subs {
-        if pattern_of(a).is_some_and(|p| p.matches(topic)) && !out.iter().any(|m| m.name == a.name) {
+        if pattern_of(a).is_some_and(|p| p.matches(topic)) && !out.iter().any(|m| m.name == a.name)
+        {
             out.push(a.clone());
         }
     }
@@ -106,7 +115,9 @@ impl Engine {
             "events.ls" => self.events_ls(p),
             "events.show" => self.events_show(p),
             "events.retry" => self.events_move(p, &[state::FAILED], state::PENDING),
-            "events.remove" => self.events_move(p, &[state::PENDING, state::FAILED], state::DROPPED),
+            "events.remove" => {
+                self.events_move(p, &[state::PENDING, state::FAILED], state::DROPPED)
+            }
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
     }
@@ -119,8 +130,11 @@ impl Engine {
         let payload = opt_str(p, "payload").unwrap_or_default();
         topic::check_name(topic).map_err(CliError::invalid)?;
         if topic::is_reserved(topic) {
-            return Err(CliError::invalid(format!("topic `{topic}` is reserved: `{}.*` events are tome's own", topic::RESERVED))
-                .with_hint("pick another first segment"));
+            return Err(CliError::invalid(format!(
+                "topic `{topic}` is reserved: `{}.*` events are tome's own",
+                topic::RESERVED
+            ))
+            .with_hint("pick another first segment"));
         }
         crate::store::check_payload(payload)?;
         let run = match p.get("run_id").filter(|v| !v.is_null()) {
@@ -134,7 +148,8 @@ impl Engine {
             })?,
             (None, Some(path)) => path.to_string(),
             (None, None) => {
-                return Err(CliError::invalid("not inside a project").with_hint("run `tome publish` in a project (a directory with .tome/)"))
+                return Err(CliError::invalid("not inside a project")
+                    .with_hint("run `tome publish` in a project (a directory with .tome/)"))
             }
         };
         let worker = opt_str(p, "worker").filter(|w| !w.is_empty());
@@ -142,7 +157,9 @@ impl Engine {
             project: Path::new(&project),
             topic,
             payload,
-            sender: run.as_ref().map_or_else(|| "user".to_string(), |r| run_sender(r.id, worker)),
+            sender: run
+                .as_ref()
+                .map_or_else(|| "user".to_string(), |r| run_sender(r.id, worker)),
             sender_run: run.as_ref().map(|r| r.id),
             depth: run.as_ref().map_or(0, depth_from),
             only: None,
@@ -153,7 +170,10 @@ impl Engine {
         }
         let published = self.publish(&publish, dry_run)?;
         let names: Vec<&str> = published.matches.iter().map(|a| a.name.as_str()).collect();
-        let enabled = self.with_store(|store| store.projects())?.iter().any(|p| p.path == project && p.enabled);
+        let enabled = self
+            .with_store(|store| store.projects())?
+            .iter()
+            .any(|p| p.path == project && p.enabled);
         let matches: Vec<Value> = published
             .matches
             .iter()
@@ -188,7 +208,11 @@ impl Engine {
             return Err(self.refuse(e, &project, dry_run));
         }
         if dry_run {
-            return Ok(Published { event: None, deliveries: Vec::new(), matches });
+            return Ok(Published {
+                event: None,
+                deliveries: Vec::new(),
+                matches,
+            });
         }
         let subscribers: Vec<Subscriber> = matches
             .iter()
@@ -213,8 +237,15 @@ impl Engine {
             )?;
             if let Some(run_id) = e.sender_run.filter(|_| e.sender != TOME) {
                 let names: Vec<&str> = published.1.iter().map(|d| d.workflow.as_str()).collect();
-                let to = if names.is_empty() { "no subscribers".to_string() } else { names.join(", ") };
-                let what = format!("{} (event {}) by {} to {to}", e.topic, published.0.id, e.sender);
+                let to = if names.is_empty() {
+                    "no subscribers".to_string()
+                } else {
+                    names.join(", ")
+                };
+                let what = format!(
+                    "{} (event {}) by {} to {to}",
+                    e.topic, published.0.id, e.sender
+                );
                 store.worker_event(run_id, None, None, PUBLISHED, Some(&what))?;
                 self.sync(store, run_id);
             }
@@ -227,7 +258,11 @@ impl Engine {
             e.sender,
             deliveries.len()
         );
-        Ok(Published { event: Some(event), deliveries, matches })
+        Ok(Published {
+            event: Some(event),
+            deliveries,
+            matches,
+        })
     }
 
     /// An event too deep in a chain: recorded as refused (unless it's a dry
@@ -254,10 +289,19 @@ impl Engine {
             )
         });
         match recorded {
-            Ok((event, _)) => eprintln!("tome daemon: event {} on {} from {} refused: {why}", event.id, e.topic, e.sender),
-            Err(err) => eprintln!("tome daemon: recording a refused event on {} failed: {}", e.topic, err.message),
+            Ok((event, _)) => eprintln!(
+                "tome daemon: event {} on {} from {} refused: {why}",
+                event.id, e.topic, e.sender
+            ),
+            Err(err) => eprintln!(
+                "tome daemon: recording a refused event on {} failed: {}",
+                e.topic, err.message
+            ),
         }
-        crate::orchestrator::notify_delivery(&format!("refused an event on {}", e.topic), &format!("from {}: {why}", e.sender));
+        crate::orchestrator::notify_delivery(
+            &format!("refused an event on {}", e.topic),
+            &format!("from {}: {why}", e.sender),
+        );
         err
     }
 
@@ -272,15 +316,24 @@ impl Engine {
                 .filter(|a| a.project.as_deref() == Some(root.as_path()))
                 .filter_map(|a| pattern_of(a).map(|p| (a.name.clone(), p.to_string())))
                 .collect();
-            let keep: Vec<String> =
-                scan.broken.iter().filter(|b| b.project.as_deref() == Some(root.as_path())).map(|b| b.name.clone()).collect();
-            match self.with_store(|store| store.drop_unsubscribed(&root.display().to_string(), &live, &keep)) {
+            let keep: Vec<String> = scan
+                .broken
+                .iter()
+                .filter(|b| b.project.as_deref() == Some(root.as_path()))
+                .map(|b| b.name.clone())
+                .collect();
+            match self.with_store(|store| {
+                store.drop_unsubscribed(&root.display().to_string(), &live, &keep)
+            }) {
                 Ok(dropped) => {
                     for d in dropped {
                         eprintln!("tome daemon: dropped delivery {} of event {} to {} ({}): no longer subscribed", d.id, d.event_id, d.workflow, d.pattern);
                     }
                 }
-                Err(e) => eprintln!("tome daemon: dropping stale deliveries failed: {}", e.message),
+                Err(e) => eprintln!(
+                    "tome daemon: dropping stale deliveries failed: {}",
+                    e.message
+                ),
             }
         }
     }
@@ -292,14 +345,21 @@ impl Engine {
         if !enabled {
             return "would wait: the project's triggers are disabled".into();
         }
-        if let Some(why) = self.stalled.lock().unwrap_or_else(|p| p.into_inner()).get(&a.key()) {
+        if let Some(why) = self
+            .stalled
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&a.key())
+        {
             return format!("would wait: {why}");
         }
         let wf = match triggers::load(&a.workflow_path, a.project.as_deref()) {
             Ok(wf) => wf,
             Err(inv) => return format!("would wait: {}", triggers::first_errors(&inv)),
         };
-        let active = self.active_runs(&a.name, &a.workflow_path).unwrap_or_default();
+        let active = self
+            .active_runs(&a.name, &a.workflow_path)
+            .unwrap_or_default();
         if a.trigger.to != Target::New && !active.is_empty() {
             let ids: Vec<i64> = active.iter().map(|r| r.id).collect();
             return format!("would signal run {}", triggers::join_ids(&ids));
@@ -308,7 +368,9 @@ impl Engine {
             return "would be dropped: no run to signal".into();
         }
         let start = format!("would start a run of {}", a.name);
-        let Some(limit) = wf.frontmatter.concurrency.map(|n| n as usize) else { return start };
+        let Some(limit) = wf.frontmatter.concurrency.map(|n| n as usize) else {
+            return start;
+        };
         let active = active.len();
         let ahead = self.pending_of(a).len();
         if active + ahead < limit {
@@ -335,8 +397,17 @@ impl Engine {
                         }
                     }
                 }
-                let Some(run) = ended.into_iter().min_by(|a, b| a.finished_at.cmp(&b.finished_at)) else { continue };
-                let to = if run.status == RunStatus::Succeeded { state::DONE } else { state::FAILED };
+                let Some(run) = ended
+                    .into_iter()
+                    .min_by(|a, b| a.finished_at.cmp(&b.finished_at))
+                else {
+                    continue;
+                };
+                let to = if run.status == RunStatus::Succeeded {
+                    state::DONE
+                } else {
+                    state::FAILED
+                };
                 if store.move_delivery(d.id, state::CLAIMED, to, None)? && to == state::FAILED {
                     let event = store.bus_event(d.event_id)?;
                     failed.push((d, event, run));
@@ -349,7 +420,12 @@ impl Engine {
                 for (d, event, run) in failed {
                     let (topic, payload) = event.map(|e| (e.topic, e.payload)).unwrap_or_default();
                     let first = payload.lines().next().unwrap_or("").trim();
-                    let why = run.reason.as_ref().or(run.summary.as_ref()).map(|r| format!(" ({r})")).unwrap_or_default();
+                    let why = run
+                        .reason
+                        .as_ref()
+                        .or(run.summary.as_ref())
+                        .map(|r| format!(" ({r})"))
+                        .unwrap_or_default();
                     crate::orchestrator::notify_delivery(
                         &format!("{} didn't handle {topic}", d.workflow),
                         &format!("run {} {}{why}; event {} \"{first}\" is parked: `tome events retry {}`", run.id, run.status.as_str(), d.event_id, d.event_id),
@@ -358,7 +434,9 @@ impl Engine {
             }
             Err(e) => eprintln!("tome daemon: settling deliveries failed: {}", e.message),
         }
-        let Ok(ids) = self.with_store(|store| store.unannounced_ends()) else { return };
+        let Ok(ids) = self.with_store(|store| store.unannounced_ends()) else {
+            return;
+        };
         for id in ids {
             self.announce_ended(id);
         }
@@ -366,9 +444,16 @@ impl Engine {
 
     /// A subscription's pending deliveries, oldest first.
     pub(crate) fn pending_of(&self, a: &Armed) -> Vec<Delivery> {
-        let (Some(project), Some(pattern)) = (&a.project, pattern_of(a)) else { return Vec::new() };
+        let (Some(project), Some(pattern)) = (&a.project, pattern_of(a)) else {
+            return Vec::new();
+        };
         self.with_store(|store| {
-            store.subscription_deliveries(&project.display().to_string(), &a.name, &pattern.to_string(), state::PENDING)
+            store.subscription_deliveries(
+                &project.display().to_string(),
+                &a.name,
+                &pattern.to_string(),
+                state::PENDING,
+            )
         })
         .unwrap_or_default()
     }
@@ -377,13 +462,19 @@ impl Engine {
     /// caller's thread. One drain at a time; a tick that finds one going
     /// skips.
     pub(crate) fn drain_all(self: &Arc<Self>, armed: &[Armed]) {
-        let topics: Vec<Armed> = armed.iter().filter(|a| pattern_of(a).is_some() && a.project.is_some()).cloned().collect();
+        let topics: Vec<Armed> = armed
+            .iter()
+            .filter(|a| pattern_of(a).is_some() && a.project.is_some())
+            .cloned()
+            .collect();
         if topics.is_empty() {
             return;
         }
         let engine = Arc::clone(self);
         std::thread::spawn(move || {
-            let Ok(_draining) = engine.draining.try_lock() else { return };
+            let Ok(_draining) = engine.draining.try_lock() else {
+                return;
+            };
             for a in &topics {
                 engine.drain(a);
             }
@@ -396,7 +487,12 @@ impl Engine {
     /// With `to: running` it's claimed by the running runs it's signalled
     /// to, or `done` if there are none; `running-or-new` starts a run then.
     fn drain(&self, a: &Armed) {
-        if self.stalled.lock().unwrap_or_else(|p| p.into_inner()).contains_key(&a.key()) {
+        if self
+            .stalled
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(&a.key())
+        {
             return;
         }
         let pending = self.pending_of(a);
@@ -404,23 +500,38 @@ impl Engine {
             return;
         }
         // An invalid workflow claims nothing; re-arming records why.
-        let Ok(wf) = triggers::load(&a.workflow_path, a.project.as_deref()) else { return };
+        let Ok(wf) = triggers::load(&a.workflow_path, a.project.as_deref()) else {
+            return;
+        };
         // Signalling running runs isn't held to the limit; starting them is.
-        let limit = wf.frontmatter.concurrency.map(|n| n as usize).filter(|_| a.trigger.to == Target::New);
+        let limit = wf
+            .frontmatter
+            .concurrency
+            .map(|n| n as usize)
+            .filter(|_| a.trigger.to == Target::New);
         for d in pending {
             if let Some(limit) = limit {
-                let active = self.active_runs(&a.name, &a.workflow_path).map_or(usize::MAX, |r| r.len());
+                let active = self
+                    .active_runs(&a.name, &a.workflow_path)
+                    .map_or(usize::MAX, |r| r.len());
                 if active >= limit {
                     return;
                 }
             }
-            let Some((fired, held)) = self.take(a, &d, false) else { continue };
+            let Some((fired, held)) = self.take(a, &d, false) else {
+                continue;
+            };
             if held {
                 continue;
             }
             if fired.outcome == outcome::ERROR {
-                let why = fired.message.unwrap_or_else(|| "the run couldn't be started".into());
-                self.stalled.lock().unwrap_or_else(|p| p.into_inner()).insert(a.key(), why);
+                let why = fired
+                    .message
+                    .unwrap_or_else(|| "the run couldn't be started".into());
+                self.stalled
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(a.key(), why);
             }
             return;
         }
@@ -432,22 +543,43 @@ impl Engine {
     /// want of a run to signal. Otherwise it's pending again. `None` if it
     /// was taken meanwhile.
     pub(crate) fn take(&self, a: &Armed, d: &Delivery, synthetic: bool) -> Option<(Fired, bool)> {
-        let event = self.with_store(|store| store.bus_event(d.event_id)).ok().flatten()?;
-        if !self.with_store(|store| store.move_delivery(d.id, state::PENDING, state::CLAIMED, Some(&[]))).unwrap_or(false) {
+        let event = self
+            .with_store(|store| store.bus_event(d.event_id))
+            .ok()
+            .flatten()?;
+        if !self
+            .with_store(|store| {
+                store.move_delivery(d.id, state::PENDING, state::CLAIMED, Some(&[]))
+            })
+            .unwrap_or(false)
+        {
             return None;
         }
         let fired = self.fire(&FireRequest {
             workflow_path: a.workflow_path.clone(),
             project: a.project.clone(),
             index: a.index,
-            event: Event { bus: Some((event, d.id)), synthetic, ..Default::default() },
+            event: Event {
+                bus: Some((event, d.id)),
+                synthetic,
+                ..Default::default()
+            },
             dry_run: false,
         });
-        let held = self.with_store(|store| store.delivery(d.id)).ok().flatten().is_some_and(|d| !d.run_ids.is_empty());
+        let held = self
+            .with_store(|store| store.delivery(d.id))
+            .ok()
+            .flatten()
+            .is_some_and(|d| !d.run_ids.is_empty());
         if !held {
             // No run to signal: nothing more to do with it.
-            let to = if fired.outcome == outcome::NO_TARGET { state::DONE } else { state::PENDING };
-            let _ = self.with_store(|store| store.move_delivery(d.id, state::CLAIMED, to, Some(&[])));
+            let to = if fired.outcome == outcome::NO_TARGET {
+                state::DONE
+            } else {
+                state::PENDING
+            };
+            let _ =
+                self.with_store(|store| store.move_delivery(d.id, state::CLAIMED, to, Some(&[])));
             return Some((fired, to == state::DONE));
         }
         Some((fired, held))
@@ -470,12 +602,23 @@ mod tests {
     fn armed(name: &str, on: &str, index: usize) -> Armed {
         let text = format!("---\nname: {name}\ntriggers:\n  - on: {on}\n---\n");
         let wf = crate::workflow::parse(Path::new("w.md"), &text).unwrap();
-        Armed { workflow_path: "w.md".into(), name: name.into(), project: Some("/p".into()), index, trigger: wf.frontmatter.triggers[0].clone() }
+        Armed {
+            workflow_path: "w.md".into(),
+            name: name.into(),
+            project: Some("/p".into()),
+            index,
+            trigger: wf.frontmatter.triggers[0].clone(),
+        }
     }
 
     #[test]
     fn each_workflow_gets_its_first_matching_trigger() {
-        let subs = [armed("a", "review.*", 0), armed("a", "review.requested", 1), armed("b", "review.**", 0), armed("c", "deploy", 0)];
+        let subs = [
+            armed("a", "review.*", 0),
+            armed("a", "review.requested", 1),
+            armed("b", "review.**", 0),
+            armed("c", "deploy", 0),
+        ];
         let m = matching(&subs, "review.requested");
         let got: Vec<(&str, usize)> = m.iter().map(|a| (a.name.as_str(), a.index)).collect();
         assert_eq!(got, [("a", 0), ("b", 0)]);
@@ -501,7 +644,10 @@ mod tests {
         };
         assert_eq!(depth_from(&run(None)), 0);
         assert_eq!(depth_from(&run(Some(json!({ "kind": "cron" })))), 0);
-        assert_eq!(depth_from(&run(Some(json!({ "event_id": 4, "depth": 2 })))), 3);
+        assert_eq!(
+            depth_from(&run(Some(json!({ "event_id": 4, "depth": 2 })))),
+            3
+        );
         assert_eq!(run_sender(3, Some("w1")), "run 3 worker w1");
     }
 }

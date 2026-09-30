@@ -11,14 +11,16 @@
 use crate::api::{self, internal, opt_str, req_id, req_id_at, req_str};
 use crate::handshake::{self, Agent, Pending};
 use crate::orchestrator;
-use crate::placement;
 use crate::output::{CliError, CliResult};
+use crate::placement;
 use crate::session;
-use crate::store::{self, Run, RunStatus, StepEvent, StepHistory, Store, WorkerHistory, WorkerStatus};
+use crate::store::{
+    self, Run, RunStatus, StepEvent, StepHistory, Store, WorkerHistory, WorkerStatus,
+};
 use crate::triggers;
 use crate::workers;
-use serde_json::{json, Value};
 use crate::workflow::{self, OnConflict};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -51,7 +53,13 @@ struct Watchers {
     status: RunStatus,
 }
 
-const METHODS: &[&str] = &["run.start", "run.finish", "run.cancel", "step.report", "session.move"];
+const METHODS: &[&str] = &[
+    "run.start",
+    "run.finish",
+    "run.cancel",
+    "step.report",
+    "session.move",
+];
 
 pub struct Engine {
     /// `None` only once shutdown has closed the database.
@@ -109,7 +117,12 @@ impl Engine {
         match method {
             "run.start" => self.start(p).map(|run| json!(run)),
             "run.finish" => self.finish(p).map(|run| json!(run)),
-            "run.cancel" => self.cancel(req_id(p)?, opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED)).map(|run| json!(run)),
+            "run.cancel" => self
+                .cancel(
+                    req_id(p)?,
+                    opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED),
+                )
+                .map(|run| json!(run)),
             "step.report" => self.step(p),
             "session.move" => self.move_session(p),
             m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
@@ -134,7 +147,11 @@ impl Engine {
         let project = opt_str(p, "project_path").map(std::path::Path::new);
         orchestrator::harness_for(fm, project)?;
         let kind = session::Kind::choose(fm.defaults.backend.as_deref(), project)?;
-        let flags = p.get("placement").filter(|v| !v.is_null()).map(placement::Settings::from_json).transpose()?;
+        let flags = p
+            .get("placement")
+            .filter(|v| !v.is_null())
+            .map(placement::Settings::from_json)
+            .transpose()?;
         if let Some(flags) = &flags {
             placement::check_flag_preset(flags, "`tome run` flags", project)?;
         }
@@ -147,12 +164,16 @@ impl Engine {
             false => session::focused(kind),
         };
         // The cmux pane that ran `tome run`, for `from: caller`.
-        let caller = match (by_trigger, p.get("cmux_caller").filter(|c| c["surface"].is_string())) {
+        let caller = match (
+            by_trigger,
+            p.get("cmux_caller").filter(|c| c["surface"].is_string()),
+        ) {
             (true, _) => json!({ "unknown": "the run was started by a trigger" }),
             (false, None) => json!({ "unknown": "`tome run` wasn't run from a cmux pane" }),
             (false, Some(c)) => {
                 let mut c = c.clone();
-                if let Some(Ok((anchor, pane))) = c["surface"].as_str().map(session::caller_anchor) {
+                if let Some(Ok((anchor, pane))) = c["surface"].as_str().map(session::caller_anchor)
+                {
                     c["workspace"] = json!(anchor.handle);
                     c["pane"] = json!(pane);
                 }
@@ -209,10 +230,16 @@ impl Engine {
     pub(crate) fn promote(&self, workflow: &str) {
         loop {
             let next = self.with_store(|store| {
-                let Some(run) = store.next_queued(workflow).map_err(internal)? else { return Ok(None) };
+                let Some(run) = store.next_queued(workflow).map_err(internal)? else {
+                    return Ok(None);
+                };
                 let idle = triggers::waits_for_idle(run.trigger.as_ref());
                 if let Some(limit) = if idle { Some(1) } else { snapshot_limit(&run) } {
-                    if store.count_runs(workflow, RunStatus::Running).map_err(internal)? >= limit {
+                    if store
+                        .count_runs(workflow, RunStatus::Running)
+                        .map_err(internal)?
+                        >= limit
+                    {
                         return Ok(None);
                     }
                 }
@@ -224,7 +251,10 @@ impl Engine {
                 Ok(Some(run))
             });
             let Ok(Some(run)) = next else { return };
-            eprintln!("tome daemon: run {} ({}) dequeued", run.id, run.workflow_name);
+            eprintln!(
+                "tome daemon: run {} ({}) dequeued",
+                run.id, run.workflow_name
+            );
             // A failed launch frees its slot again; the loop moves on.
             let _ = self.launch(run);
         }
@@ -233,8 +263,14 @@ impl Engine {
     /// Start the queued runs that survived a daemon restart, as far as each
     /// workflow has room. Call once at startup, after recovery.
     pub fn resume_queued(&self) {
-        let Ok(runs) = self.with_store(|store| store.in_progress_runs().map_err(internal)) else { return };
-        let mut workflows: Vec<String> = runs.into_iter().filter(|r| r.status == RunStatus::Queued).map(|r| r.workflow_name).collect();
+        let Ok(runs) = self.with_store(|store| store.in_progress_runs().map_err(internal)) else {
+            return;
+        };
+        let mut workflows: Vec<String> = runs
+            .into_iter()
+            .filter(|r| r.status == RunStatus::Queued)
+            .map(|r| r.workflow_name)
+            .collect();
         workflows.sort();
         workflows.dedup();
         for workflow in workflows {
@@ -246,13 +282,21 @@ impl Engine {
     /// handshake. If that fails the run is marked failed (`launch_failed`)
     /// and the error returned.
     fn launch(&self, run: Run) -> CliResult<Run> {
-        self.launching.lock().unwrap_or_else(|p| p.into_inner()).insert(run.id);
+        self.launching
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(run.id);
         let agent: Agent = (run.id, None);
         let mut waited = false;
         let result = orchestrator::plan(&run).and_then(|plan| {
             waited = plan.start_timeout.is_some();
-            self.expect_start(agent.clone(), plan.start_timeout, orchestrator::prompt_file(run.id));
-            let (session, note) = orchestrator::launch(&run, &plan, &self.recorded_sessions(run.id))?;
+            self.expect_start(
+                agent.clone(),
+                plan.start_timeout,
+                orchestrator::prompt_file(run.id),
+            );
+            let (session, note) =
+                orchestrator::launch(&run, &plan, &self.recorded_sessions(run.id))?;
             // Recorded before the monitor may look (it skips launching runs).
             self.with_store(|store| {
                 store.add_session(&session).map_err(internal)?;
@@ -265,7 +309,10 @@ impl Engine {
                 session::kill(&session);
             })
         });
-        self.launching.lock().unwrap_or_else(|p| p.into_inner()).remove(&run.id);
+        self.launching
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&run.id);
         match result {
             Ok(()) => {
                 // Without a handshake to wait for, it has started now.
@@ -277,7 +324,12 @@ impl Engine {
             Err(e) => {
                 self.forget_start(&agent);
                 let _ = self.with_store(|store| {
-                    let failed = store.abort_run(run.id, RunStatus::Failed, orchestrator::LAUNCH_FAILED, Some(&e.message));
+                    let failed = store.abort_run(
+                        run.id,
+                        RunStatus::Failed,
+                        orchestrator::LAUNCH_FAILED,
+                        Some(&e.message),
+                    );
                     self.sync(store, run.id);
                     failed
                 });
@@ -304,7 +356,11 @@ impl Engine {
         let status = req_str(p, "status")?;
         let status = RunStatus::parse(status)
             .filter(|s| s.is_finished())
-            .ok_or_else(|| CliError::invalid(format!("invalid status `{status}` (use succeeded, failed or cancelled)")))?;
+            .ok_or_else(|| {
+                CliError::invalid(format!(
+                    "invalid status `{status}` (use succeeded, failed or cancelled)"
+                ))
+            })?;
         if status == RunStatus::Cancelled {
             return self.cancel(id, opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED));
         }
@@ -342,7 +398,8 @@ impl Engine {
     }
 
     pub(crate) fn recorded_sessions(&self, run_id: i64) -> Vec<store::Session> {
-        self.with_store(|store| store.sessions(run_id).map_err(internal)).unwrap_or_default()
+        self.with_store(|store| store.sessions(run_id).map_err(internal))
+            .unwrap_or_default()
     }
 
     /// `session.move {run_id, name, placement, cmux_caller?}`: move a live
@@ -360,29 +417,43 @@ impl Engine {
             .transpose()?
             .filter(|f| !f.is_empty())
             .ok_or_else(|| {
-                CliError::invalid("say where to move it").with_hint("give placement flags, e.g. --layout split or --preset <name>")
+                CliError::invalid("say where to move it")
+                    .with_hint("give placement flags, e.g. --layout split or --preset <name>")
             })?;
         let run = self.with_store(|store| {
-            store.get_run(run_id, false).map_err(internal)?.ok_or_else(|| CliError::not_found(format!("run {run_id} not found")))
+            store
+                .get_run(run_id, false)
+                .map_err(internal)?
+                .ok_or_else(|| CliError::not_found(format!("run {run_id} not found")))
         })?;
         let recorded = self.recorded_sessions(run_id);
         let orch = session::run_session_name(run.id, &run.workflow_name, orchestrator::ROLE);
         let name_of = |s: &store::Session| -> String {
             match s.role.as_str() {
                 orchestrator::ROLE => orchestrator::ROLE.to_string(),
-                _ => s.name.strip_prefix(&format!("{orch}-")).unwrap_or(&s.name).to_string(),
+                _ => s
+                    .name
+                    .strip_prefix(&format!("{orch}-"))
+                    .unwrap_or(&s.name)
+                    .to_string(),
             }
         };
-        let s = recorded.iter().find(|s| name_of(s) == name).cloned().ok_or_else(|| {
-            let names: Vec<String> = recorded.iter().map(name_of).collect();
-            let hint = match names.is_empty() {
-                true => "it has no sessions".to_string(),
-                false => format!("its sessions: {}", names.join(", ")),
-            };
-            CliError::not_found(format!("run {run_id} has no session `{name}`")).with_hint(hint)
-        })?;
+        let s = recorded
+            .iter()
+            .find(|s| name_of(s) == name)
+            .cloned()
+            .ok_or_else(|| {
+                let names: Vec<String> = recorded.iter().map(name_of).collect();
+                let hint = match names.is_empty() {
+                    true => "it has no sessions".to_string(),
+                    false => format!("its sessions: {}", names.join(", ")),
+                };
+                CliError::not_found(format!("run {run_id} has no session `{name}`")).with_hint(hint)
+            })?;
         if session::is_alive(&s) != Some(true) {
-            return Err(CliError::invalid(format!("session `{name}` of run {run_id} isn't running")));
+            return Err(CliError::invalid(format!(
+                "session `{name}` of run {run_id} isn't running"
+            )));
         }
         let project = orchestrator::run_project(&run);
         placement::check_flag_preset(&flags, "`tome session move` flags", project.as_deref())?;
@@ -392,15 +463,25 @@ impl Engine {
             .and_then(placement::Placement::from_json)
             .unwrap_or_else(|| placement::Placement::of_layout(session::Layout::of(&s)));
         let mut placement = placement::moved(&current, &flags, project.as_deref())?;
-        let others: Vec<store::Session> = recorded.iter().filter(|o| o.name != s.name).cloned().collect();
-        let mut split = session::Split::new(placement.direction, placement.size, placement.from, &others);
+        let others: Vec<store::Session> = recorded
+            .iter()
+            .filter(|o| o.name != s.name)
+            .cloned()
+            .collect();
+        let mut split =
+            session::Split::new(placement.direction, placement.size, placement.from, &others);
         // `focused` is the workspace focused now, not when the run started.
         let mut warnings = Vec::new();
         let target = match &placement.workspace {
-            placement::Workspace::Focused => match session::Kind::parse(&s.backend).ok_or("its backend is unknown".to_string()).and_then(session::focused) {
+            placement::Workspace::Focused => match session::Kind::parse(&s.backend)
+                .ok_or("its backend is unknown".to_string())
+                .and_then(session::focused)
+            {
                 Ok(id) => session::Target::Focused(id),
                 Err(why) => {
-                    warnings.push(format!("workspace: focused: {why}; used the project workspace"));
+                    warnings.push(format!(
+                        "workspace: focused: {why}; used the project workspace"
+                    ));
                     session::Target::Project
                 }
             },
@@ -410,22 +491,36 @@ impl Engine {
         let mut target = target;
         let mut layout = placement.layout;
         if placement.from == Some(placement::From::Caller) {
-            let found = match (s.role.as_str(), p.get("cmux_caller").filter(|c| c["surface"].is_string())) {
-                (orchestrator::ROLE, None) => Err("`tome session move` wasn't run from a cmux pane".to_string()),
+            let found = match (
+                s.role.as_str(),
+                p.get("cmux_caller").filter(|c| c["surface"].is_string()),
+            ) {
+                (orchestrator::ROLE, None) => {
+                    Err("`tome session move` wasn't run from a cmux pane".to_string())
+                }
                 (orchestrator::ROLE, Some(c)) => {
                     let kind = session::Kind::parse(&s.backend).unwrap_or(session::Kind::Tmux);
-                    orchestrator::caller_anchor(kind, Some(c))
-                        .and_then(|found| match s.pane.as_deref() == Some(found.0.pane.as_str()) {
+                    orchestrator::caller_anchor(kind, Some(c)).and_then(|found| {
+                        match s.pane.as_deref() == Some(found.0.pane.as_str()) {
                             true => Err("that's the session's own pane".to_string()),
                             false => Ok(found),
-                        })
+                        }
+                    })
                 }
                 _ => Err(placement::CALLER_IS_FOR_THE_ORCHESTRATOR.to_string()),
             };
             if let Err(why) = &found {
-                return Err(CliError::invalid(format!("can't move `{name}` next to the caller: {why}; it was left where it was")));
+                return Err(CliError::invalid(format!(
+                    "can't move `{name}` next to the caller: {why}; it was left where it was"
+                )));
             }
-            layout = orchestrator::use_caller(&mut placement, found, &mut split, &mut target, &mut warnings);
+            layout = orchestrator::use_caller(
+                &mut placement,
+                found,
+                &mut split,
+                &mut target,
+                &mut warnings,
+            );
         }
         let title = match s.role.as_str() {
             orchestrator::ROLE => format!("tome: {} #{}", run.workflow_name, run.id),
@@ -433,11 +528,20 @@ impl Engine {
         };
         let (moved, more) = session::move_to(
             &s,
-            &session::Move { title: &title, layout, split: &split, target: &target, project: project.as_deref() },
+            &session::Move {
+                title: &title,
+                layout,
+                split: &split,
+                target: &target,
+                project: project.as_deref(),
+            },
         )?;
         warnings.extend(more);
         placement.warnings = warnings;
-        let moved = store::Session { placement: Some(placement.to_json()), ..moved };
+        let moved = store::Session {
+            placement: Some(placement.to_json()),
+            ..moved
+        };
         self.with_store(|store| store.add_session(&moved).map_err(internal))?;
         let mut out = json!(moved);
         out["attach_command"] = json!(session::attach_command(&moved));
@@ -456,11 +560,18 @@ impl Engine {
         loop {
             std::thread::sleep(MONITOR_POLL);
             self.check_workers();
-            let Ok(sessions) = self.with_store(|store| store.running_orchestrators().map_err(internal)) else {
+            let Ok(sessions) =
+                self.with_store(|store| store.running_orchestrators().map_err(internal))
+            else {
                 return;
             };
             for s in sessions {
-                if self.launching.lock().unwrap_or_else(|p| p.into_inner()).contains(&s.run_id) {
+                if self
+                    .launching
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .contains(&s.run_id)
+                {
                     continue;
                 }
                 // Alive, or can't tell right now: look again next time.
@@ -472,13 +583,23 @@ impl Engine {
                     if store.require_run(s.run_id)?.status != RunStatus::Running {
                         return Ok(None);
                     }
-                    let cut = store.end_active_workers(s.run_id, WorkerStatus::Cancelled, orchestrator::EXITED)?;
-                    let run = store.abort_run(s.run_id, RunStatus::Failed, orchestrator::EXITED, None)?;
+                    let cut = store.end_active_workers(
+                        s.run_id,
+                        WorkerStatus::Cancelled,
+                        orchestrator::EXITED,
+                    )?;
+                    let run =
+                        store.abort_run(s.run_id, RunStatus::Failed, orchestrator::EXITED, None)?;
                     self.sync(store, s.run_id);
                     Ok(Some((run, cut)))
                 });
                 if let Ok(Some((run, cut))) = ended {
-                    eprintln!("tome daemon: run {} ({}) failed: {}", run.id, run.workflow_name, orchestrator::EXITED);
+                    eprintln!(
+                        "tome daemon: run {} ({}) failed: {}",
+                        run.id,
+                        run.workflow_name,
+                        orchestrator::EXITED
+                    );
                     // Its workers have no one to report to.
                     let recorded = self.recorded_sessions(run.id);
                     orchestrator::kill_sessions(run.id, &recorded);
@@ -495,17 +616,28 @@ impl Engine {
     fn step(&self, p: &Value) -> CliResult<Value> {
         let run_id = req_id_at(p, "run_id")?;
         let event = req_str(p, "event")?;
-        let event = StepEvent::parse(event)
-            .ok_or_else(|| CliError::invalid(format!("invalid event `{event}` (use start, done or fail)")))?;
+        let event = StepEvent::parse(event).ok_or_else(|| {
+            CliError::invalid(format!("invalid event `{event}` (use start, done or fail)"))
+        })?;
         self.with_store(|store| {
-            let step = match (opt_str(p, "step").map(str::trim).filter(|s| !s.is_empty()), event) {
+            let step = match (
+                opt_str(p, "step").map(str::trim).filter(|s| !s.is_empty()),
+                event,
+            ) {
                 (Some(step), _) => step.to_string(),
-                (None, StepEvent::Start) => return Err(CliError::invalid("`tome step start` needs a step name")),
+                (None, StepEvent::Start) => {
+                    return Err(CliError::invalid("`tome step start` needs a step name"))
+                }
                 (None, _) => {
                     store.require_run(run_id)?;
-                    store.current_step(run_id).map_err(internal)?.ok_or_else(|| {
-                        CliError::invalid(format!("run {run_id} has no running step; name the step to report"))
-                    })?
+                    store
+                        .current_step(run_id)
+                        .map_err(internal)?
+                        .ok_or_else(|| {
+                            CliError::invalid(format!(
+                                "run {run_id} has no running step; name the step to report"
+                            ))
+                        })?
                 }
             };
             let step = store.report_step(run_id, &step, event, opt_str(p, "message"))?;
@@ -520,7 +652,12 @@ impl Engine {
     /// status and step history, then each transition as it happens. Returns
     /// the finished run, or `None` if the caller went away first (which
     /// cancels the run when `cancel_on_disconnect`).
-    pub fn watch(&self, id: i64, cancel_on_disconnect: bool, sink: &mut dyn Sink) -> Option<CliResult<Run>> {
+    pub fn watch(
+        &self,
+        id: i64,
+        cancel_on_disconnect: bool,
+        sink: &mut dyn Sink,
+    ) -> Option<CliResult<Run>> {
         let (tx, rx) = mpsc::channel();
         let replay = self.with_store(|store| {
             let run = store.require_run(id)?;
@@ -560,7 +697,13 @@ impl Engine {
         self.pump(id, &rx, cancel_on_disconnect, sink)
     }
 
-    fn pump(&self, id: i64, rx: &Receiver<Value>, cancel_on_disconnect: bool, sink: &mut dyn Sink) -> Option<CliResult<Run>> {
+    fn pump(
+        &self,
+        id: i64,
+        rx: &Receiver<Value>,
+        cancel_on_disconnect: bool,
+        sink: &mut dyn Sink,
+    ) -> Option<CliResult<Run>> {
         let mut last_sync = Instant::now();
         loop {
             match rx.recv_timeout(WATCH_POLL) {
@@ -569,7 +712,10 @@ impl Engine {
                         return self.caller_gone(id, cancel_on_disconnect);
                     }
                     let finished = event["type"] == "run"
-                        && event["status"].as_str().and_then(RunStatus::parse).is_some_and(RunStatus::is_finished);
+                        && event["status"]
+                            .as_str()
+                            .and_then(RunStatus::parse)
+                            .is_some_and(RunStatus::is_finished);
                     if finished {
                         return Some(self.with_store(|store| store.require_run(id)));
                     }
@@ -589,7 +735,9 @@ impl Engine {
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Some(Err(CliError::internal("the daemon stopped watching the run")));
+                    return Some(Err(CliError::internal(
+                        "the daemon stopped watching the run",
+                    )));
                 }
             }
         }
@@ -599,7 +747,12 @@ impl Engine {
         if cancel {
             // Already finished is fine: nothing left to cancel.
             if let Ok(run) = self.cancel(id, reason::CALLER_EXITED) {
-                eprintln!("tome daemon: run {} ({}) cancelled: {}", run.id, run.workflow_name, reason::CALLER_EXITED);
+                eprintln!(
+                    "tome daemon: run {} ({}) cancelled: {}",
+                    run.id,
+                    run.workflow_name,
+                    reason::CALLER_EXITED
+                );
             }
         }
         None
@@ -609,9 +762,18 @@ impl Engine {
     /// synced. Call with the store locked, after changing the run.
     pub(crate) fn sync(&self, store: &Store, run_id: i64) {
         let mut watchers = self.watchers.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(w) = watchers.get_mut(&run_id) else { return };
-        let (Ok(history), Ok(Some(run))) = (history(store, run_id, w.last_event), store.get_run(run_id, false)) else { return };
-        w.last_event = history.last().map_or(w.last_event, |(id, _)| (*id).max(w.last_event));
+        let Some(w) = watchers.get_mut(&run_id) else {
+            return;
+        };
+        let (Ok(history), Ok(Some(run))) = (
+            history(store, run_id, w.last_event),
+            store.get_run(run_id, false),
+        ) else {
+            return;
+        };
+        w.last_event = history
+            .last()
+            .map_or(w.last_event, |(id, _)| (*id).max(w.last_event));
         let mut events: Vec<Value> = history.into_iter().map(|(_, e)| e).collect();
         if run.status != w.status {
             w.status = run.status;
@@ -636,7 +798,13 @@ fn history(store: &Store, run_id: i64, after: i64) -> CliResult<Vec<(i64, Value)
         .filter(|h| h.id > after)
         .map(|h| (h.id, step_event(run_id, h)))
         .collect();
-    out.extend(store.worker_history(run_id)?.iter().filter(|h| h.id > after).map(|h| (h.id, worker_event(run_id, h))));
+    out.extend(
+        store
+            .worker_history(run_id)?
+            .iter()
+            .filter(|h| h.id > after)
+            .map(|h| (h.id, worker_event(run_id, h))),
+    );
     out.sort_by_key(|(id, _)| *id);
     Ok(out)
 }
@@ -646,21 +814,35 @@ fn history(store: &Store, run_id: i64, after: i64) -> CliResult<Vec<(i64, Value)
 /// (see [`Workflow::template_snapshot`](crate::workflow::Workflow::template_snapshot)),
 /// from its params and the trigger event recorded in its cause.
 fn render_deferred(store: &mut Store, run: &mut Run) {
-    let Some(template) = &run.workflow_snapshot else { return };
+    let Some(template) = &run.workflow_snapshot else {
+        return;
+    };
     let path = PathBuf::from(run.workflow_path.as_deref().unwrap_or_default());
     let wf = match workflow::parse(&path, template) {
         Ok(wf) => wf,
         Err(inv) => {
-            eprintln!("tome daemon: run {}: can't fill in its placeholders: {}", run.id, triggers::first_errors(&inv));
+            eprintln!(
+                "tome daemon: run {}: can't fill in its placeholders: {}",
+                run.id,
+                triggers::first_errors(&inv)
+            );
             return;
         }
     };
     let params = run.params.as_object().cloned().unwrap_or_default();
-    let event = run.trigger.as_ref().and_then(|c| c["event"].as_object()).cloned().unwrap_or_default();
+    let event = run
+        .trigger
+        .as_ref()
+        .and_then(|c| c["event"].as_object())
+        .cloned()
+        .unwrap_or_default();
     let snapshot = wf.render_snapshot(&params, &run.id.to_string(), &event);
     match store.set_snapshot(run.id, &snapshot) {
         Ok(()) => run.workflow_snapshot = Some(snapshot),
-        Err(e) => eprintln!("tome daemon: run {}: saving its snapshot failed: {e:#}", run.id),
+        Err(e) => eprintln!(
+            "tome daemon: run {}: saving its snapshot failed: {e:#}",
+            run.id
+        ),
     }
 }
 

@@ -13,7 +13,17 @@ use chrono::{DateTime, NaiveDate, NaiveTime};
 use duckdb::types::Value as Db;
 use serde_json::{json, Value};
 
-const READ_KEYWORDS: &[&str] = &["select", "with", "from", "values", "show", "describe", "summarize", "explain", "table"];
+const READ_KEYWORDS: &[&str] = &[
+    "select",
+    "with",
+    "from",
+    "values",
+    "show",
+    "describe",
+    "summarize",
+    "explain",
+    "table",
+];
 
 #[derive(Debug)]
 pub struct QueryResult {
@@ -134,8 +144,12 @@ fn to_json(v: Db) -> Value {
         Db::UInt(n) => json!(n),
         Db::UBigInt(n) => json!(n),
         // 128-bit integers don't fit JSON numbers reliably.
-        Db::HugeInt(n) => i64::try_from(n).map(|n| json!(n)).unwrap_or_else(|_| json!(n.to_string())),
-        Db::UHugeInt(n) => u64::try_from(n).map(|n| json!(n)).unwrap_or_else(|_| json!(n.to_string())),
+        Db::HugeInt(n) => i64::try_from(n)
+            .map(|n| json!(n))
+            .unwrap_or_else(|_| json!(n.to_string())),
+        Db::UHugeInt(n) => u64::try_from(n)
+            .map(|n| json!(n))
+            .unwrap_or_else(|_| json!(n.to_string())),
         Db::Float(f) => json!(f),
         Db::Double(f) => json!(f),
         Db::Decimal(d) => json!(d.to_string()),
@@ -153,17 +167,32 @@ fn to_json(v: Db) -> Value {
             .unwrap_or(json!(days)),
         Db::Time64(unit, n) => {
             let micros = unit.to_micros(n);
-            NaiveTime::from_num_seconds_from_midnight_opt((micros / 1_000_000) as u32, ((micros % 1_000_000) * 1000) as u32)
-                .map(|t| json!(t.to_string()))
-                .unwrap_or(json!(micros))
+            NaiveTime::from_num_seconds_from_midnight_opt(
+                (micros / 1_000_000) as u32,
+                ((micros % 1_000_000) * 1000) as u32,
+            )
+            .map(|t| json!(t.to_string()))
+            .unwrap_or(json!(micros))
         }
-        Db::Interval { months, days, nanos } => json!({ "months": months, "days": days, "nanos": nanos }),
-        Db::List(items) | Db::Array(items) => Value::Array(items.into_iter().map(to_json).collect()),
-        Db::Struct(fields) => {
-            Value::Object(fields.iter().map(|(k, v)| (k.clone(), to_json(v.clone()))).collect())
+        Db::Interval {
+            months,
+            days,
+            nanos,
+        } => json!({ "months": months, "days": days, "nanos": nanos }),
+        Db::List(items) | Db::Array(items) => {
+            Value::Array(items.into_iter().map(to_json).collect())
         }
+        Db::Struct(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), to_json(v.clone())))
+                .collect(),
+        ),
         Db::Map(entries) => Value::Array(
-            entries.iter().map(|(k, v)| json!({ "key": to_json(k.clone()), "value": to_json(v.clone()) })).collect(),
+            entries
+                .iter()
+                .map(|(k, v)| json!({ "key": to_json(k.clone()), "value": to_json(v.clone()) }))
+                .collect(),
         ),
         Db::Union(inner) => to_json(*inner),
         // `Value` is non-exhaustive; show anything newer as its debug form.
@@ -214,11 +243,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.columns, ["n", "s", "b", "t", "d", "z"]);
-        assert_eq!(r.rows[0], vec![json!(1), json!("a"), json!(true), json!("2026-01-02T03:04:05.000Z"), json!("2026-01-02"), Value::Null]);
+        assert_eq!(
+            r.rows[0],
+            vec![
+                json!(1),
+                json!("a"),
+                json!(true),
+                json!("2026-01-02T03:04:05.000Z"),
+                json!("2026-01-02"),
+                Value::Null
+            ]
+        );
 
         let e = run(&mut store, "select * from no_such_table").unwrap_err();
         assert!(e.message.contains("query failed"));
         assert!(run(&mut store, "select * from read_csv('/etc/passwd')").is_err());
-        assert_eq!(run(&mut store, "select count(*) from runs").unwrap().rows[0][0], json!(0));
+        assert_eq!(
+            run(&mut store, "select count(*) from runs").unwrap().rows[0][0],
+            json!(0)
+        );
     }
 }

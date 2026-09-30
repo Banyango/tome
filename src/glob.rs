@@ -23,7 +23,10 @@ enum Token {
     One,
     /// `*`
     Star,
-    Class { negated: bool, ranges: Vec<(char, char)> },
+    Class {
+        negated: bool,
+        ranges: Vec<(char, char)>,
+    },
 }
 
 impl Glob {
@@ -47,27 +50,38 @@ impl Glob {
                         segments.push(Segment::Any);
                     }
                 } else if seg.contains("**") {
-                    return Err(format!("invalid glob `{pattern}`: `**` must be a whole path segment"));
+                    return Err(format!(
+                        "invalid glob `{pattern}`: `**` must be a whole path segment"
+                    ));
                 } else {
-                    segments.push(Segment::Pattern(tokens(seg).map_err(|e| format!("invalid glob `{pattern}`: {e}"))?));
+                    segments.push(Segment::Pattern(
+                        tokens(seg).map_err(|e| format!("invalid glob `{pattern}`: {e}"))?,
+                    ));
                 }
             }
             alternatives.push(segments);
         }
-        Ok(Glob { source: pattern.to_string(), alternatives })
+        Ok(Glob {
+            source: pattern.to_string(),
+            alternatives,
+        })
     }
 
     /// Whether `path` (`/`-separated, no trailing slash) matches.
     pub fn matches(&self, path: &str) -> bool {
         let parts = split(path);
-        self.alternatives.iter().any(|segs| match_segments(segs, &parts))
+        self.alternatives
+            .iter()
+            .any(|segs| match_segments(segs, &parts))
     }
 
     /// Whether some path inside directory `dir` could match: used to skip
     /// walking directories that can't contain a match.
     pub fn could_contain(&self, dir: &str) -> bool {
         let parts = split(dir);
-        self.alternatives.iter().any(|segs| prefix_possible(segs, &parts))
+        self.alternatives
+            .iter()
+            .any(|segs| prefix_possible(segs, &parts))
     }
 
     /// `/abs/...` or `~/...`.
@@ -81,7 +95,11 @@ fn split(path: &str) -> Vec<&str> {
     if path.is_empty() {
         return Vec::new();
     }
-    path.split('/').enumerate().filter(|(i, p)| *i == 0 || !p.is_empty()).map(|(_, p)| p).collect()
+    path.split('/')
+        .enumerate()
+        .filter(|(i, p)| *i == 0 || !p.is_empty())
+        .map(|(_, p)| p)
+        .collect()
 }
 
 fn prefix_possible(segs: &[Segment], dir: &[&str]) -> bool {
@@ -89,16 +107,24 @@ fn prefix_possible(segs: &[Segment], dir: &[&str]) -> bool {
         (_, None) => true,
         (None, Some(_)) => false,
         (Some(Segment::Any), Some(_)) => true,
-        (Some(Segment::Pattern(t)), Some(d)) => match_tokens(t, &d.chars().collect::<Vec<_>>()) && prefix_possible(&segs[1..], &dir[1..]),
+        (Some(Segment::Pattern(t)), Some(d)) => {
+            match_tokens(t, &d.chars().collect::<Vec<_>>())
+                && prefix_possible(&segs[1..], &dir[1..])
+        }
     }
 }
 
 fn match_segments(segs: &[Segment], parts: &[&str]) -> bool {
     match segs.first() {
         None => parts.is_empty(),
-        Some(Segment::Any) => (0..=parts.len()).any(|skip| match_segments(&segs[1..], &parts[skip..])),
+        Some(Segment::Any) => {
+            (0..=parts.len()).any(|skip| match_segments(&segs[1..], &parts[skip..]))
+        }
         Some(Segment::Pattern(t)) => match parts.first() {
-            Some(p) => match_tokens(t, &p.chars().collect::<Vec<_>>()) && match_segments(&segs[1..], &parts[1..]),
+            Some(p) => {
+                match_tokens(t, &p.chars().collect::<Vec<_>>())
+                    && match_segments(&segs[1..], &parts[1..])
+            }
             None => false,
         },
     }
@@ -114,7 +140,9 @@ fn match_tokens(tokens: &[Token], s: &[char]) -> bool {
                 let ok = match t {
                     Token::Char(x) => *x == c,
                     Token::One => true,
-                    Token::Class { negated, ranges } => ranges.iter().any(|&(a, b)| a <= c && c <= b) != *negated,
+                    Token::Class { negated, ranges } => {
+                        ranges.iter().any(|&(a, b)| a <= c && c <= b) != *negated
+                    }
                     Token::Star => unreachable!(),
                 };
                 ok && match_tokens(&tokens[1..], &s[1..])
@@ -144,12 +172,15 @@ fn tokens(seg: &str) -> Result<Vec<Token>, String> {
                 let mut ranges = Vec::new();
                 let mut first = true;
                 loop {
-                    let Some(&c) = chars.get(j) else { return Err("unclosed `[`".into()) };
+                    let Some(&c) = chars.get(j) else {
+                        return Err("unclosed `[`".into());
+                    };
                     if c == ']' && !first {
                         break;
                     }
                     first = false;
-                    if chars.get(j + 1) == Some(&'-') && chars.get(j + 2).is_some_and(|&e| e != ']') {
+                    if chars.get(j + 1) == Some(&'-') && chars.get(j + 2).is_some_and(|&e| e != ']')
+                    {
                         let end = chars[j + 2];
                         if end < c {
                             return Err(format!("invalid range `{c}-{end}`"));
@@ -204,7 +235,9 @@ fn expand_braces(pattern: &str) -> Result<Vec<String>, String> {
             _ => {}
         }
     }
-    let Some(close) = close else { return Err(format!("invalid glob `{pattern}`: unclosed `{{`")) };
+    let Some(close) = close else {
+        return Err(format!("invalid glob `{pattern}`: unclosed `{{`"));
+    };
     let (head, tail) = (&pattern[..open], &pattern[close + 1..]);
     let mut bounds = vec![open];
     bounds.extend(&commas);

@@ -8,8 +8,8 @@
 use crate::harness::{self, Harness, Vars};
 use crate::output::{CliError, CliResult};
 use crate::paths;
-use crate::recovery::RecoveryHooks;
 use crate::placement::{self, From, Inputs, Placement, Role, Settings, Workspace};
+use crate::recovery::RecoveryHooks;
 use crate::session::{self, Anchor, Backend, Cmux, Kind, Launch, Layout, Split, Target, Tmux};
 use crate::store::{Run, Session, Worker};
 use crate::workflow::{self, Frontmatter, Workflow};
@@ -30,12 +30,27 @@ pub const LAUNCH_FAILED: &str = "launch_failed";
 /// `defaults.orchestrator_harness`, else `defaults.harness`, else `claude`.
 pub fn harness_for(fm: &Frontmatter, project: Option<&Path>) -> CliResult<Harness> {
     let d = &fm.defaults;
-    harness::resolve(d.orchestrator_harness.as_deref().or(d.harness.as_deref()).unwrap_or(harness::DEFAULT), project)
+    harness::resolve(
+        d.orchestrator_harness
+            .as_deref()
+            .or(d.harness.as_deref())
+            .unwrap_or(harness::DEFAULT),
+        project,
+    )
 }
 
 /// Where a run's orchestrator goes.
-pub fn placement(fm: &Frontmatter, flags: Option<&Settings>, project: Option<&Path>) -> CliResult<Placement> {
-    let inputs = Inputs { role: Role::Orchestrator, flags, run_flags: None, spec: fm.defaults.layout.as_ref() };
+pub fn placement(
+    fm: &Frontmatter,
+    flags: Option<&Settings>,
+    project: Option<&Path>,
+) -> CliResult<Placement> {
+    let inputs = Inputs {
+        role: Role::Orchestrator,
+        flags,
+        run_flags: None,
+        spec: fm.defaults.layout.as_ref(),
+    };
     placement::resolve(&inputs, project)
 }
 
@@ -51,8 +66,15 @@ pub fn target(run: &Run, placement: &Placement) -> (Target, Option<String>) {
             match focused.and_then(|f| f["id"].as_str()) {
                 Some(id) => (Target::Focused(id.to_string()), None),
                 None => {
-                    let why = focused.and_then(|f| f["unknown"].as_str()).unwrap_or("it wasn't recorded");
-                    (Target::Project, Some(format!("workspace: focused: {why}; used the project workspace")))
+                    let why = focused
+                        .and_then(|f| f["unknown"].as_str())
+                        .unwrap_or("it wasn't recorded");
+                    (
+                        Target::Project,
+                        Some(format!(
+                            "workspace: focused: {why}; used the project workspace"
+                        )),
+                    )
                 }
             }
         }
@@ -63,14 +85,20 @@ pub fn target(run: &Run, placement: &Placement) -> (Target, Option<String>) {
 /// Where `from: caller` opens a session on `backend`: next to the cmux
 /// surface `caller` recorded (`{surface}`, else `{unknown: why}`), found
 /// where it is now. Returns the anchor and its pane, or why it can't.
-pub fn caller_anchor(backend: Kind, caller: Option<&serde_json::Value>) -> Result<(Anchor, String), String> {
+pub fn caller_anchor(
+    backend: Kind,
+    caller: Option<&serde_json::Value>,
+) -> Result<(Anchor, String), String> {
     if backend == Kind::Tmux {
         return Err("`from: caller` is cmux only, and this session is on tmux".into());
     }
     let caller = caller.ok_or("no caller was recorded")?;
-    let surface = caller["surface"]
-        .as_str()
-        .ok_or_else(|| caller["unknown"].as_str().unwrap_or("no caller was recorded").to_string())?;
+    let surface = caller["surface"].as_str().ok_or_else(|| {
+        caller["unknown"]
+            .as_str()
+            .unwrap_or("no caller was recorded")
+            .to_string()
+    })?;
     session::caller_anchor(surface)
 }
 
@@ -91,16 +119,24 @@ pub fn use_caller(
     }
     match found {
         Ok((anchor, pane)) => {
-            placement.caller = Some(format!("pane {pane} (surface {}) in workspace {}", anchor.pane, anchor.handle));
+            placement.caller = Some(format!(
+                "pane {pane} (surface {}) in workspace {}",
+                anchor.pane, anchor.handle
+            ));
             *target = Target::Caller(anchor.handle.clone());
             split.anchors = vec![anchor];
             if placement.layout == Layout::Workspace {
                 placement.layout = Layout::Tab;
-                placement.sources.insert("layout".into(), "`from: caller` (its workspace wins over `workspace: own`)".into());
+                placement.sources.insert(
+                    "layout".into(),
+                    "`from: caller` (its workspace wins over `workspace: own`)".into(),
+                );
             }
         }
         Err(why) => {
-            warnings.push(format!("from: caller: {why}; opened where it would go without `from`"));
+            warnings.push(format!(
+                "from: caller: {why}; opened where it would go without `from`"
+            ));
             split.from = None;
         }
     }
@@ -109,7 +145,11 @@ pub fn use_caller(
 
 /// The placement flags `tome run` was given for this run, if any.
 pub fn run_flags(run: &Run) -> CliResult<Option<Settings>> {
-    run.placement.as_ref().and_then(|p| p.get("flags")).map(Settings::from_json).transpose()
+    run.placement
+        .as_ref()
+        .and_then(|p| p.get("flags"))
+        .map(Settings::from_json)
+        .transpose()
 }
 
 /// A run's orchestrator, ready to launch.
@@ -143,7 +183,10 @@ pub fn run_cwd(run: &Run) -> PathBuf {
 
 /// A run's project directory, if it has one (and it's still there).
 pub fn run_project(run: &Run) -> Option<PathBuf> {
-    run.project_path.as_ref().map(PathBuf::from).filter(|p| p.is_dir())
+    run.project_path
+        .as_ref()
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
 }
 
 pub fn plan(run: &Run) -> CliResult<Plan> {
@@ -167,7 +210,10 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
 /// workflow and any extra instructions the workflow gives its orchestrator.
 pub fn bootstrap(run: &Run, fm: &Frontmatter, body: &str) -> String {
     let mut out = String::from(PROMPT.trim_end());
-    out.push_str(&format!("\n\n## This run\n\nRun #{} of workflow `{}`", run.id, run.workflow_name));
+    out.push_str(&format!(
+        "\n\n## This run\n\nRun #{} of workflow `{}`",
+        run.id, run.workflow_name
+    ));
     if let Some(desc) = &fm.description {
         out.push_str(&format!(" ({desc})"));
     }
@@ -175,11 +221,19 @@ pub fn bootstrap(run: &Run, fm: &Frontmatter, body: &str) -> String {
     if let Some(params) = run.params.as_object().filter(|p| !p.is_empty()) {
         out.push_str("Parameters:\n");
         for (k, v) in params {
-            let v = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+            let v = v
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v.to_string());
             out.push_str(&format!("- {k} = {v}\n"));
         }
     }
-    if let Some(extra) = fm.orchestrator.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(extra) = fm
+        .orchestrator
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         out.push_str(&format!("\n## Instructions for this workflow\n\n{extra}\n"));
     }
     out.push_str(&format!("\n## The workflow\n\n{}\n", body.trim()));
@@ -188,13 +242,19 @@ pub fn bootstrap(run: &Run, fm: &Frontmatter, body: &str) -> String {
 
 /// Where a run's orchestrator prompt is written.
 pub fn prompt_file(run_id: i64) -> PathBuf {
-    paths::runs_dir().join(run_id.to_string()).join("orchestrator-prompt.md")
+    paths::runs_dir()
+        .join(run_id.to_string())
+        .join("orchestrator-prompt.md")
 }
 
 /// Start the orchestrator's session and return its record. The launcher
 /// script, the bootstrap prompt and the session's output all go in the
 /// run's directory. Also returns a note to record on the run, if any.
-pub fn launch(run: &Run, plan: &Plan, recorded: &[Session]) -> CliResult<(Session, Option<String>)> {
+pub fn launch(
+    run: &Run,
+    plan: &Plan,
+    recorded: &[Session],
+) -> CliResult<(Session, Option<String>)> {
     let backend = Backend::new(plan.backend);
     let dir = paths::runs_dir().join(run.id.to_string());
     fs::create_dir_all(&dir)?;
@@ -214,10 +274,18 @@ pub fn launch(run: &Run, plan: &Plan, recorded: &[Session]) -> CliResult<(Sessio
     let (mut target, note) = target(run, p);
     let mut warnings = Vec::new();
     let found = match p.from {
-        Some(From::Caller) => caller_anchor(plan.backend, run.placement.as_ref().map(|r| &r["caller"])),
+        Some(From::Caller) => {
+            caller_anchor(plan.backend, run.placement.as_ref().map(|r| &r["caller"]))
+        }
         _ => Err(String::new()),
     };
-    let layout = use_caller(&mut placement, found, &mut split, &mut target, &mut warnings);
+    let layout = use_caller(
+        &mut placement,
+        found,
+        &mut split,
+        &mut target,
+        &mut warnings,
+    );
     let (session, more) = backend.launch(&Launch {
         name: &plan.session,
         title: &plan.title,
@@ -249,7 +317,10 @@ pub fn session_env(run_id: i64) -> Vec<(String, String)> {
     let mut env = vec![
         ("TOME_RUN_ID".to_string(), run_id.to_string()),
         ("TOME_OUTPUT".to_string(), "json".to_string()),
-        ("TOME_HOME".to_string(), paths::tome_home().to_string_lossy().into_owned()),
+        (
+            "TOME_HOME".to_string(),
+            paths::tome_home().to_string_lossy().into_owned(),
+        ),
     ];
     // So that the agent's tome commands reach the same daemon and servers.
     for key in ["TOME_TMUX_SOCKET", "TOME_BACKEND", "TOME_LAYOUT"] {
@@ -259,8 +330,14 @@ pub fn session_env(run_id: i64) -> Vec<(String, String)> {
     }
     // Make sure `tome` resolves to this tome.
     let path = std::env::var("PATH").unwrap_or_default();
-    let path = match std::env::current_exe().ok().as_deref().and_then(Path::parent) {
-        Some(bin) if !path.split(':').any(|p| Path::new(p) == bin) => format!("{}:{path}", bin.display()),
+    let path = match std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(Path::parent)
+    {
+        Some(bin) if !path.split(':').any(|p| Path::new(p) == bin) => {
+            format!("{}:{path}", bin.display())
+        }
         _ => path,
     };
     env.push(("PATH".to_string(), path));
@@ -288,10 +365,20 @@ pub fn notify(run: &Run, sessions: &[Session], cut: &[Worker]) {
         let names: Vec<&str> = cut.iter().map(|w| w.name.as_str()).collect();
         message.push_str(&format!("; workers cut off: {}", names.join(", ")));
     }
-    eprintln!("tome daemon: notify: run {} ({}) {}: {message}", run.id, run.workflow_name, run.status.as_str());
+    eprintln!(
+        "tome daemon: notify: run {} ({}) {}: {message}",
+        run.id,
+        run.workflow_name,
+        run.status.as_str()
+    );
     let in_cmux = sessions.iter().any(|s| s.backend == Kind::Cmux.as_str());
     if in_cmux && std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
-        let title = format!("tome: {} #{} {}", run.workflow_name, run.id, run.status.as_str());
+        let title = format!(
+            "tome: {} #{} {}",
+            run.workflow_name,
+            run.id,
+            run.status.as_str()
+        );
         Cmux.notify(&title, &message);
     }
 }

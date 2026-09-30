@@ -13,30 +13,57 @@ fn validates_all_and_project_overrides_global() {
     let env = Env::new();
     let global = env.home().join("workflows");
     let project = env.project().join(".tome/workflows");
-    write(&global, "review.md", "---\nname: review\ndescription: global\n---\nbody\n");
-    write(&project, "review.md", "---\nname: review\ndescription: project\n---\nbody\n");
+    write(
+        &global,
+        "review.md",
+        "---\nname: review\ndescription: global\n---\nbody\n",
+    );
+    write(
+        &project,
+        "review.md",
+        "---\nname: review\ndescription: project\n---\nbody\n",
+    );
 
     let (code, v) = env.json(&["validate"]);
     assert_eq!(code, 0, "{v}");
     let wfs = v["workflows"].as_array().unwrap();
     assert_eq!(wfs.len(), 2);
     assert_eq!(wfs[0]["scope"], "global");
-    assert!(wfs[0]["overridden_by"].as_str().unwrap().ends_with(".tome/workflows/review.md"));
+    assert!(wfs[0]["overridden_by"]
+        .as_str()
+        .unwrap()
+        .ends_with(".tome/workflows/review.md"));
 
     // Lookup by name resolves the project copy.
     let (code, v) = env.json(&["validate", "review"]);
     assert_eq!(code, 0);
-    assert!(v["workflows"][0]["path"].as_str().unwrap().contains("/p/.tome/"));
+    assert!(v["workflows"][0]["path"]
+        .as_str()
+        .unwrap()
+        .contains("/p/.tome/"));
 }
 
 #[test]
 fn project_lookup_walks_up_from_subdirectories() {
     let env = Env::new();
-    write(&env.project().join(".tome/workflows"), "a.md", "---\nname: a\n---\n");
+    write(
+        &env.project().join(".tome/workflows"),
+        "a.md",
+        "---\nname: a\n---\n",
+    );
     let sub = env.project().join("src/deep");
     fs::create_dir_all(&sub).unwrap();
-    let out = env.cmd(&["--json", "validate", "a"]).current_dir(&sub).output().unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let out = env
+        .cmd(&["--json", "validate", "a"])
+        .current_dir(&sub)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 #[test]
@@ -53,7 +80,10 @@ fn invalid_workflow_exits_2_with_line_numbers() {
     let errors = v["workflows"][0]["errors"].as_array().unwrap();
     assert_eq!(errors.len(), 2);
     assert_eq!(errors[0]["line"], 3);
-    assert!(errors[0]["message"].as_str().unwrap().contains("concurency"));
+    assert!(errors[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("concurency"));
     assert_eq!(errors[1]["line"], 6);
 
     // Human output: the path on the header, line numbers under it.
@@ -61,14 +91,21 @@ fn invalid_workflow_exits_2_with_line_numbers() {
     assert_eq!(out.status.code(), Some(2));
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("bad.md\n"), "{text}");
-    assert!(text.contains("        line 3: unknown frontmatter key `concurency`"), "{text}");
+    assert!(
+        text.contains("        line 3: unknown frontmatter key `concurency`"),
+        "{text}"
+    );
 }
 
 #[test]
 fn validate_does_not_need_the_daemon_and_checks_params() {
     let env = Env::new();
     let path = env.project().join("wf.md");
-    fs::write(&path, "---\nname: wf\nparams:\n  n: {type: int}\n---\n{{params.n}}\n").unwrap();
+    fs::write(
+        &path,
+        "---\nname: wf\nparams:\n  n: {type: int}\n---\n{{params.n}}\n",
+    )
+    .unwrap();
     let (code, _) = env.json(&["validate", "./wf.md"]);
     assert_eq!(code, 0);
     let (code, v) = env.json(&["validate", "./wf.md", "--param", "n=abc"]);
@@ -103,9 +140,15 @@ fn trigger_validation() {
     let env = Env::new();
     let global = env.home().join("workflows");
     let project = env.project().join(".tome/workflows");
-    let wf = |name: &str, triggers: &str| format!("---\nname: {name}\ntriggers:\n{triggers}---\nfired by {{{{trigger.kind}}}} at {{{{trigger.time}}}}\n");
+    let wf = |name: &str, triggers: &str| {
+        format!("---\nname: {name}\ntriggers:\n{triggers}---\nfired by {{{{trigger.kind}}}} at {{{{trigger.time}}}}\n")
+    };
     write(&project, "ok.md", &wf("ok", "  - manual\n  - file: \"specs/**/*.md\"\n  - cron: \"0 9 * * 1-5\"\n    to: running-or-new\n"));
-    write(&global, "home.md", &wf("home", "  - file: \"~/inbox/*.md\"\n"));
+    write(
+        &global,
+        "home.md",
+        &wf("home", "  - file: \"~/inbox/*.md\"\n"),
+    );
     let (code, v) = env.json(&["validate"]);
     assert_eq!(code, 0, "{v}");
 
@@ -115,12 +158,23 @@ fn trigger_validation() {
     assert_eq!(code, 2, "{v}");
     let err = &v["workflows"][0]["errors"][0];
     assert_eq!(err["line"], 4);
-    assert!(err["message"].as_str().unwrap().contains("absolute or `~/`"), "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("absolute or `~/`"),
+        "{err}"
+    );
 
     write(&project, "bad.md", &wf("bad", "  - cron: \"0 25 * * *\"\n  - file: \"*.md\"\n    to: running\n    while_running: mute\n"));
     let (code, v) = env.json(&["validate", "bad"]);
     assert_eq!(code, 2);
-    let lines: Vec<i64> = v["workflows"][0]["errors"].as_array().unwrap().iter().map(|e| e["line"].as_i64().unwrap()).collect();
+    let lines: Vec<i64> = v["workflows"][0]["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["line"].as_i64().unwrap())
+        .collect();
     assert_eq!(lines, vec![4, 5], "{v}");
 }
 
@@ -139,14 +193,31 @@ fn topic_triggers_validate_with_warnings_and_need_a_project() {
     assert_eq!(warnings[0]["line"], 5);
     let out = env.run(&["validate", "impl"]);
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("warning: line 6:") && text.contains("tome.run.impl.*"), "{text}");
+    assert!(
+        text.contains("warning: line 6:") && text.contains("tome.run.impl.*"),
+        "{text}"
+    );
 
-    write(&env.home().join("workflows"), "g.md", "---\nname: g\ntriggers:\n  - on: review.requested\n---\n");
+    write(
+        &env.home().join("workflows"),
+        "g.md",
+        "---\nname: g\ntriggers:\n  - on: review.requested\n---\n",
+    );
     let (code, v) = env.json(&["validate", "g"]);
     assert_eq!(code, 2, "{v}");
-    assert!(v["workflows"][0]["errors"][0]["message"].as_str().unwrap().contains("no project bus"), "{v}");
+    assert!(
+        v["workflows"][0]["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no project bus"),
+        "{v}"
+    );
 
-    write(&env.project().join(".tome/workflows"), "bad.md", "---\nname: bad\ntriggers:\n  - on: Bad.Topic\n---\n");
+    write(
+        &env.project().join(".tome/workflows"),
+        "bad.md",
+        "---\nname: bad\ntriggers:\n  - on: Bad.Topic\n---\n",
+    );
     let (code, _) = env.json(&["validate", "bad"]);
     assert_eq!(code, 2);
 }

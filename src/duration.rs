@@ -4,7 +4,12 @@
 use std::time::Duration;
 
 pub fn parse(input: &str) -> Result<Duration, String> {
-    parse_inner(input).map_err(|detail| format!("invalid duration `{}`: {detail} (examples: 30m, 12h, 7d, 1h30m)", input.trim()))
+    parse_inner(input).map_err(|detail| {
+        format!(
+            "invalid duration `{}`: {detail} (examples: 30m, 12h, 7d, 1h30m)",
+            input.trim()
+        )
+    })
 }
 
 fn parse_inner(input: &str) -> Result<Duration, String> {
@@ -34,7 +39,9 @@ fn parse_inner(input: &str) -> Result<Duration, String> {
         if digits.is_empty() {
             return Err("expected a number followed by a unit".into());
         }
-        let n: u64 = digits.parse().map_err(|_| "number is too large".to_string())?;
+        let n: u64 = digits
+            .parse()
+            .map_err(|_| "number is too large".to_string())?;
         total = n
             .checked_mul(unit)
             .and_then(|v| total.checked_add(v))
@@ -68,6 +75,9 @@ mod tests {
             assert!(parse(bad).is_err(), "{bad} should fail");
         }
         let msg = parse("soon").unwrap_err();
-        assert!(msg.starts_with("invalid duration `soon`: expected a number") && msg.contains("7d"), "{msg}");
+        assert!(
+            msg.starts_with("invalid duration `soon`: expected a number") && msg.contains("7d"),
+            "{msg}"
+        );
     }
 }

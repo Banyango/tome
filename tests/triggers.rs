@@ -7,7 +7,11 @@ use std::fs;
 fn write_wf(env: &Env, name: &str, frontmatter: &str, body: &str) {
     let dir = env.project().join(".tome/workflows");
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join(format!("{name}.md")), format!("---\nname: {name}\n{frontmatter}---\n{body}")).unwrap();
+    fs::write(
+        dir.join(format!("{name}.md")),
+        format!("---\nname: {name}\n{frontmatter}---\n{body}"),
+    )
+    .unwrap();
 }
 
 fn daemon_log(env: &Env) -> String {
@@ -15,7 +19,10 @@ fn daemon_log(env: &Env) -> String {
 }
 
 fn outcomes(env: &Env) -> Vec<String> {
-    fires(env).iter().map(|r| r[0].as_str().unwrap_or("").to_string()).collect()
+    fires(env)
+        .iter()
+        .map(|r| r[0].as_str().unwrap_or("").to_string())
+        .collect()
 }
 
 fn fires(env: &Env) -> Vec<Value> {
@@ -54,24 +61,52 @@ fn a_fired_trigger_starts_a_run_that_records_its_cause() {
     assert_eq!(run["trigger"]["kind"], "cron");
     assert_eq!(run["trigger"]["trigger"], "cron 0 9 * * 1-5");
     assert_eq!(run["trigger"]["synthetic"], true);
-    assert!(run["workflow_snapshot"].as_str().unwrap().contains("Review nightly (cron, scheduled) []"), "{run}");
-    let human = String::from_utf8_lossy(&env.run(&["runs", "show", &id.to_string()]).stdout).to_string();
-    assert!(human.contains("trigger   cron 0 9 * * 1-5 [fired by hand]"), "{human}");
+    assert!(
+        run["workflow_snapshot"]
+            .as_str()
+            .unwrap()
+            .contains("Review nightly (cron, scheduled) []"),
+        "{run}"
+    );
+    let human =
+        String::from_utf8_lossy(&env.run(&["runs", "show", &id.to_string()]).stdout).to_string();
+    assert!(
+        human.contains("trigger   cron 0 9 * * 1-5 [fired by hand]"),
+        "{human}"
+    );
 
     // A file trigger reports its paths, relative to the project root. While
     // the cron run is active it queues a run, which starts once that ends.
     fs::create_dir_all(env.project().join("specs")).unwrap();
-    let (code, v) = env.json(&["triggers", "fire", "review", "--index", "2", "--path", "specs/a.md"]);
+    let (code, v) = env.json(&[
+        "triggers",
+        "fire",
+        "review",
+        "--index",
+        "2",
+        "--path",
+        "specs/a.md",
+    ]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["outcome"], "queued", "{v}");
     let queued = v["run_ids"][0].to_string();
 
-    let (code, _) = env.json(&["run", "finish", "--status", "succeeded", "--run", &id.to_string()]);
+    let (code, _) = env.json(&[
+        "run",
+        "finish",
+        "--status",
+        "succeeded",
+        "--run",
+        &id.to_string(),
+    ]);
     assert_eq!(code, 0);
     let (_, show) = env.json(&["runs", "show", &queued, "--snapshot"]);
     assert_eq!(show["run"]["status"], "running");
     let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
-    assert!(snap.contains("Review specs (file, modified) [specs/a.md (modified)]"), "{snap}");
+    assert!(
+        snap.contains("Review specs (file, modified) [specs/a.md (modified)]"),
+        "{snap}"
+    );
 
     assert_eq!(outcomes(&env), ["started", "queued"]);
 }
@@ -79,40 +114,81 @@ fn a_fired_trigger_starts_a_run_that_records_its_cause() {
 #[test]
 fn file_trigger_paths_render_into_the_run() {
     let env = Env::new();
-    write_wf(&env, "lint", "triggers:\n  - file: \"src/*.rs\"\n    on: [created]\n", "## Lint\nLint {{trigger.paths}} on {{trigger.event}}.\n");
+    write_wf(
+        &env,
+        "lint",
+        "triggers:\n  - file: \"src/*.rs\"\n    on: [created]\n",
+        "## Lint\nLint {{trigger.paths}} on {{trigger.event}}.\n",
+    );
     env.start_daemon();
-    let (code, v) = env.json(&["triggers", "fire", "lint", "--path", "src/a.rs", "--path", "src/b.rs"]);
+    let (code, v) = env.json(&[
+        "triggers", "fire", "lint", "--path", "src/a.rs", "--path", "src/b.rs",
+    ]);
     assert_eq!(code, 0, "{v}");
     let id = v["run_ids"][0].to_string();
     let (_, show) = env.json(&["runs", "show", &id, "--snapshot"]);
     let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
-    assert!(snap.contains("Lint src/a.rs (created), src/b.rs (created) on created."), "{snap}");
+    assert!(
+        snap.contains("Lint src/a.rs (created), src/b.rs (created) on created."),
+        "{snap}"
+    );
 }
 
 #[test]
 fn rejected_and_invalid_fires_are_recorded() {
     let env = Env::new();
-    write_wf(&env, "build", "concurrency: 1\non_conflict: reject\ntriggers:\n  - cron: \"* * * * *\"\n", "## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "concurrency: 1\non_conflict: reject\ntriggers:\n  - cron: \"* * * * *\"\n",
+        "## Build\nGo.\n",
+    );
     env.start_daemon();
 
-    assert_eq!(env.json(&["triggers", "fire", "build"]).1["outcome"], "started");
+    assert_eq!(
+        env.json(&["triggers", "fire", "build"]).1["outcome"],
+        "started"
+    );
     let (code, v) = env.json(&["triggers", "fire", "build"]);
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["outcome"], "rejected");
-    assert!(v["message"].as_str().unwrap().contains("concurrency limit"), "{v}");
-    assert!(!daemon_log(&env).contains("notify: trigger"), "rejections aren't notified");
+    assert!(
+        v["message"].as_str().unwrap().contains("concurrency limit"),
+        "{v}"
+    );
+    assert!(
+        !daemon_log(&env).contains("notify: trigger"),
+        "rejections aren't notified"
+    );
 
     // No such trigger.
     let (code, v) = env.json(&["triggers", "fire", "build", "--index", "5"]);
     assert_eq!(code, 1);
-    assert!(v["message"].as_str().unwrap().contains("no trigger at index 5"), "{v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap()
+            .contains("no trigger at index 5"),
+        "{v}"
+    );
 
     // An invalid workflow is still fired, and the error recorded.
-    write_wf(&env, "build", "triggers:\n  - cron: \"nope\"\n", "## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "triggers:\n  - cron: \"nope\"\n",
+        "## Build\nGo.\n",
+    );
     let (code, v) = env.json(&["triggers", "fire", "build", "--index", "0"]);
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["outcome"], "error");
-    assert!(v["message"].as_str().unwrap().contains("invalid cron expression"), "{v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid cron expression"),
+        "{v}"
+    );
     common::eventually("failure notified", || {
         daemon_log(&env).contains("notify: trigger for build failed")
     });
@@ -152,16 +228,25 @@ fn running_targets_are_signalled_through_the_events_queue() {
     let (code, v) = env.json(&["triggers", "fire", "watch", "--index", "0"]);
     assert_eq!(code, 0, "{v}");
     assert_eq!(v["outcome"], "no_target");
-    assert_eq!(env.json(&["triggers", "fire", "watch", "--index", "3"]).1["outcome"], "no_target");
+    assert_eq!(
+        env.json(&["triggers", "fire", "watch", "--index", "3"]).1["outcome"],
+        "no_target"
+    );
 
     // running-or-new with nothing running starts one.
     let (_, v) = env.json(&["triggers", "fire", "watch", "--index", "1"]);
     assert_eq!(v["outcome"], "started", "{v}");
     let run = v["run_ids"][0].as_i64().unwrap();
-    common::eventually("orchestrator up", || env.has_session(&format!("tome-{run}-watch")));
+    common::eventually("orchestrator up", || {
+        env.has_session(&format!("tome-{run}-watch"))
+    });
 
     let (_, v) = env.json(&["triggers", "fire", "watch", "--index", "0", "--dry-run"]);
-    assert_eq!((v["outcome"].as_str(), &v["runs"]), (Some("signalled"), &serde_json::json!([run])), "{v}");
+    assert_eq!(
+        (v["outcome"].as_str(), &v["runs"]),
+        (Some("signalled"), &serde_json::json!([run])),
+        "{v}"
+    );
 
     // Now both signal the run instead.
     for index in ["0", "1"] {
@@ -172,17 +257,34 @@ fn running_targets_are_signalled_through_the_events_queue() {
     }
     // File triggers signal too, with the changed paths.
     for index in ["2", "3"] {
-        let (_, v) = env.json(&["triggers", "fire", "watch", "--index", index, "--path", "docs/new.md"]);
-        assert_eq!((v["outcome"].as_str(), &v["run_ids"]), (Some("signalled"), &serde_json::json!([run])), "{v}");
+        let (_, v) = env.json(&[
+            "triggers",
+            "fire",
+            "watch",
+            "--index",
+            index,
+            "--path",
+            "docs/new.md",
+        ]);
+        assert_eq!(
+            (v["outcome"].as_str(), &v["run_ids"]),
+            (Some("signalled"), &serde_json::json!([run])),
+            "{v}"
+        );
     }
 
     let typed = env.home().join("typed.txt");
     common::eventually("nudge typed", || {
-        fs::read_to_string(&typed).is_ok_and(|t| t.contains("[tome] trigger cron fired. Details: tome queue pull events"))
+        fs::read_to_string(&typed)
+            .is_ok_and(|t| t.contains("[tome] trigger cron fired. Details: tome queue pull events"))
     });
 
     let pull = |env: &Env| {
-        let out = env.cmd(&["--json", "queue", "pull", "events"]).env("TOME_RUN_ID", run.to_string()).output().unwrap();
+        let out = env
+            .cmd(&["--json", "queue", "pull", "events"])
+            .env("TOME_RUN_ID", run.to_string())
+            .output()
+            .unwrap();
         serde_json::from_slice::<Value>(&out.stdout).unwrap()["message"].clone()
     };
     let msg = pull(&env);
@@ -195,12 +297,32 @@ fn running_targets_are_signalled_through_the_events_queue() {
     pull(&env);
     let msg = pull(&env);
     let body: Value = serde_json::from_str(msg["body"].as_str().unwrap()).unwrap();
-    assert_eq!((body["kind"].as_str(), body["trigger"].as_str()), (Some("file"), Some("file docs/*.md")));
-    assert_eq!(body["paths"], serde_json::json!([{ "path": "docs/new.md", "event": "modified" }]));
+    assert_eq!(
+        (body["kind"].as_str(), body["trigger"].as_str()),
+        (Some("file"), Some("file docs/*.md"))
+    );
+    assert_eq!(
+        body["paths"],
+        serde_json::json!([{ "path": "docs/new.md", "event": "modified" }])
+    );
 
-    let (_, v) = env.json(&["query", "SELECT count(*) FROM worker_events WHERE event = 'trigger'"]);
+    let (_, v) = env.json(&[
+        "query",
+        "SELECT count(*) FROM worker_events WHERE event = 'trigger'",
+    ]);
     assert_eq!(v["rows"][0][0], 4, "{v}");
-    assert_eq!(outcomes(&env), ["no_target", "no_target", "started", "signalled", "signalled", "signalled", "signalled"]);
+    assert_eq!(
+        outcomes(&env),
+        [
+            "no_target",
+            "no_target",
+            "started",
+            "signalled",
+            "signalled",
+            "signalled",
+            "signalled"
+        ]
+    );
 }
 
 fn ls(env: &Env) -> Value {
@@ -216,10 +338,19 @@ fn canonical(p: std::path::PathBuf) -> String {
 #[test]
 fn projects_register_themselves_and_their_triggers_are_listed() {
     let env = Env::new();
-    write_wf(&env, "nightly", "triggers:\n  - manual\n  - cron: \"0 2 * * *\"\n", "## Go\nGo.\n");
+    write_wf(
+        &env,
+        "nightly",
+        "triggers:\n  - manual\n  - cron: \"0 2 * * *\"\n",
+        "## Go\nGo.\n",
+    );
     let global = env.home().join("workflows");
     fs::create_dir_all(&global).unwrap();
-    fs::write(global.join("inbox.md"), "---\nname: inbox\ntriggers:\n  - file: \"~/inbox/*.txt\"\n---\n## Go\nGo.\n").unwrap();
+    fs::write(
+        global.join("inbox.md"),
+        "---\nname: inbox\ntriggers:\n  - file: \"~/inbox/*.txt\"\n---\n## Go\nGo.\n",
+    )
+    .unwrap();
     env.start_daemon();
 
     // Any command in the project registers it.
@@ -228,21 +359,37 @@ fn projects_register_themselves_and_their_triggers_are_listed() {
     assert_eq!(v["projects"][0]["path"], project.as_str(), "{v}");
     assert_eq!(v["projects"][0]["enabled"], true);
     let t = &v["projects"][0]["triggers"];
-    assert_eq!(t.as_array().unwrap().len(), 1, "manual triggers aren't armed: {v}");
-    assert_eq!((t[0]["workflow"].as_str(), t[0]["trigger"].as_str()), (Some("nightly"), Some("cron 0 2 * * *")));
+    assert_eq!(
+        t.as_array().unwrap().len(),
+        1,
+        "manual triggers aren't armed: {v}"
+    );
+    assert_eq!(
+        (t[0]["workflow"].as_str(), t[0]["trigger"].as_str()),
+        (Some("nightly"), Some("cron 0 2 * * *"))
+    );
     assert!(t[0]["last"].is_null());
     assert_eq!(v["global"]["triggers"][0]["trigger"], "file ~/inbox/*.txt");
 
     // The last fire shows up.
     env.json(&["triggers", "fire", "nightly"]);
     let v = ls(&env);
-    assert_eq!(v["projects"][0]["triggers"][0]["last"]["outcome"], "started", "{v}");
+    assert_eq!(
+        v["projects"][0]["triggers"][0]["last"]["outcome"], "started",
+        "{v}"
+    );
     let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
-    assert!(human.contains("nightly") && human.contains("started (run 1"), "{human}");
+    assert!(
+        human.contains("nightly") && human.contains("started (run 1"),
+        "{human}"
+    );
     // The result shows the run as it is now, not as it was when it fired.
     assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
     let v = ls(&env);
-    assert_eq!(v["projects"][0]["triggers"][0]["last"]["runs"][0]["status"], "cancelled", "{v}");
+    assert_eq!(
+        v["projects"][0]["triggers"][0]["last"]["runs"][0]["status"], "cancelled",
+        "{v}"
+    );
     let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
     assert!(human.contains("started (run 1 cancelled)"), "{human}");
 
@@ -259,27 +406,62 @@ fn projects_register_themselves_and_their_triggers_are_listed() {
 #[test]
 fn workflows_that_turn_invalid_are_disarmed_and_recorded() {
     let env = Env::new();
-    write_wf(&env, "nightly", "triggers:\n  - cron: \"0 2 * * *\"\n", "## Go\nGo.\n");
+    write_wf(
+        &env,
+        "nightly",
+        "triggers:\n  - cron: \"0 2 * * *\"\n",
+        "## Go\nGo.\n",
+    );
     env.start_daemon();
-    assert_eq!(ls(&env)["projects"][0]["triggers"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        ls(&env)["projects"][0]["triggers"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 
-    write_wf(&env, "nightly", "triggers:\n  - cron: \"0 25 * * *\"\n", "## Go\nGo.\n");
+    write_wf(
+        &env,
+        "nightly",
+        "triggers:\n  - cron: \"0 25 * * *\"\n",
+        "## Go\nGo.\n",
+    );
     common::eventually("error recorded", || {
-        let (_, v) = env.json(&["query", "SELECT message FROM trigger_fires WHERE trigger_index = -1"]);
-        v["rows"][0][0].as_str().is_some_and(|m| m.contains("hour `25` is out of range"))
+        let (_, v) = env.json(&[
+            "query",
+            "SELECT message FROM trigger_fires WHERE trigger_index = -1",
+        ]);
+        v["rows"][0][0]
+            .as_str()
+            .is_some_and(|m| m.contains("hour `25` is out of range"))
     });
     let v = ls(&env);
-    assert!(v["projects"][0]["triggers"].as_array().unwrap().is_empty(), "{v}");
+    assert!(
+        v["projects"][0]["triggers"].as_array().unwrap().is_empty(),
+        "{v}"
+    );
     let e = &v["projects"][0]["errors"][0];
     assert_eq!(e["workflow"], "nightly");
     assert_eq!(e["last"]["outcome"], "error");
     let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
-    assert!(human.contains("nightly: not armed: workflow is invalid"), "{human}");
+    assert!(
+        human.contains("nightly: not armed: workflow is invalid"),
+        "{human}"
+    );
 
     // Fixed again: re-armed.
-    write_wf(&env, "nightly", "triggers:\n  - cron: \"0 3 * * *\"\n", "## Go\nGo.\n");
+    write_wf(
+        &env,
+        "nightly",
+        "triggers:\n  - cron: \"0 3 * * *\"\n",
+        "## Go\nGo.\n",
+    );
     let v = ls(&env);
-    assert_eq!(v["projects"][0]["triggers"][0]["trigger"], "cron 0 3 * * *", "{v}");
+    assert_eq!(
+        v["projects"][0]["triggers"][0]["trigger"], "cron 0 3 * * *",
+        "{v}"
+    );
 }
 
 #[test]
@@ -291,27 +473,50 @@ fn missing_projects_are_dropped() {
     let (code, v) = env.json(&["triggers", "disable", "--project", other.to_str().unwrap()]);
     assert_eq!(code, 0, "{v}");
     let listed = |env: &Env| -> Vec<String> {
-        ls(env)["projects"].as_array().unwrap().iter().map(|p| p["path"].as_str().unwrap().to_string()).collect()
+        ls(env)["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["path"].as_str().unwrap().to_string())
+            .collect()
     };
     assert!(listed(&env).contains(&canonical(other.clone())));
     fs::remove_dir_all(&other).unwrap();
     assert!(!listed(&env).iter().any(|p| p.ends_with("/other")));
-    assert!(daemon_log(&env).contains("notify: trigger for project failed: project directory"), "{}", daemon_log(&env));
+    assert!(
+        daemon_log(&env).contains("notify: trigger for project failed: project directory"),
+        "{}",
+        daemon_log(&env)
+    );
 
     // Worktrees inside `.tome/` never register as projects.
     let wt = env.project().join(".tome/worktrees/1-a");
     fs::create_dir_all(wt.join(".tome/workflows")).unwrap();
-    env.cmd(&["runs", "list"]).current_dir(&wt).output().unwrap();
+    env.cmd(&["runs", "list"])
+        .current_dir(&wt)
+        .output()
+        .unwrap();
     assert!(!listed(&env).iter().any(|p| p.contains("worktrees")));
 }
 
 fn start_fast_daemon(env: &Env) {
-    let out = env.cmd(&["daemon", "start"]).env("TOME_TRIGGER_TICK_MS", "100").output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = env
+        .cmd(&["daemon", "start"])
+        .env("TOME_TRIGGER_TICK_MS", "100")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 fn runs(env: &Env) -> Vec<Value> {
-    env.json(&["runs", "list"]).1["runs"].as_array().cloned().unwrap_or_default()
+    env.json(&["runs", "list"]).1["runs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
 }
 
 #[test]
@@ -328,7 +533,10 @@ fn file_changes_start_runs_in_the_project() {
     fs::create_dir_all(env.project().join("specs")).unwrap();
     start_fast_daemon(&env);
     // Registers the project; the glob matches nothing yet.
-    assert_eq!(ls(&env)["projects"][0]["triggers"][0]["trigger"], "file specs/**/*.md");
+    assert_eq!(
+        ls(&env)["projects"][0]["triggers"][0]["trigger"],
+        "file specs/**/*.md"
+    );
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     fs::create_dir_all(env.project().join("specs/drafts")).unwrap();
@@ -337,16 +545,30 @@ fn file_changes_start_runs_in_the_project() {
     fs::write(env.project().join("specs/drafts/x.md"), "x").unwrap();
     common::eventually("a triggered run", || !runs(&env).is_empty());
     let run = &runs(&env)[0];
-    assert_eq!(canonical(env.project()), run["project_path"].as_str().unwrap(), "runs start in the project root");
+    assert_eq!(
+        canonical(env.project()),
+        run["project_path"].as_str().unwrap(),
+        "runs start in the project root"
+    );
     let (_, show) = env.json(&["runs", "show", &run["id"].to_string(), "--snapshot"]);
     let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
-    assert!(snap.contains("Changed: specs/a.md (created), specs/b.md (created)"), "one batched event: {snap}");
+    assert!(
+        snap.contains("Changed: specs/a.md (created), specs/b.md (created)"),
+        "one batched event: {snap}"
+    );
     assert_eq!(show["run"]["trigger"]["synthetic"], false);
 
     // Muted while that run is active: this change is dropped, not queued.
     fs::write(env.project().join("specs/a.md"), "edited by an agent").unwrap();
     std::thread::sleep(std::time::Duration::from_millis(1500));
-    let (code, _) = env.json(&["run", "finish", "--status", "succeeded", "--run", &run["id"].to_string()]);
+    let (code, _) = env.json(&[
+        "run",
+        "finish",
+        "--status",
+        "succeeded",
+        "--run",
+        &run["id"].to_string(),
+    ]);
     assert_eq!(code, 0);
     std::thread::sleep(std::time::Duration::from_millis(1500));
     assert_eq!(runs(&env).len(), 1, "muted changes don't fire later");
@@ -362,7 +584,12 @@ fn file_changes_start_runs_in_the_project() {
 #[test]
 fn tome_file_watch_poll_forces_polling() {
     let env = Env::new();
-    write_wf(&env, "specs", "triggers:\n  - file: \"specs/*.md\"\n    debounce: 0\n", "## Go\nChanged: {{trigger.paths}}\n");
+    write_wf(
+        &env,
+        "specs",
+        "triggers:\n  - file: \"specs/*.md\"\n    debounce: 0\n",
+        "## Go\nChanged: {{trigger.paths}}\n",
+    );
     fs::create_dir_all(env.project().join("specs")).unwrap();
     let out = env
         .cmd(&["daemon", "start"])
@@ -370,13 +597,24 @@ fn tome_file_watch_poll_forces_polling() {
         .env("TOME_FILE_WATCH", "poll")
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     common::eventually("the trigger to be polling", || {
         ls(&env)["projects"][0]["triggers"][0]["polling"] == "forced by TOME_FILE_WATCH=poll"
     });
     let human = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
-    assert!(human.contains("specs: file specs/*.md is polling: forced by TOME_FILE_WATCH=poll"), "{human}");
-    assert!(daemon_log(&env).contains("is polling: forced by TOME_FILE_WATCH=poll"), "{}", daemon_log(&env));
+    assert!(
+        human.contains("specs: file specs/*.md is polling: forced by TOME_FILE_WATCH=poll"),
+        "{human}"
+    );
+    assert!(
+        daemon_log(&env).contains("is polling: forced by TOME_FILE_WATCH=poll"),
+        "{}",
+        daemon_log(&env)
+    );
 
     fs::write(env.project().join("specs/a.md"), "a").unwrap();
     common::eventually("a triggered run", || !runs(&env).is_empty());
@@ -385,7 +623,12 @@ fn tome_file_watch_poll_forces_polling() {
 #[test]
 fn parallel_file_triggers_start_a_run_per_batch() {
     let env = Env::new();
-    write_wf(&env, "free", "triggers:\n  - file: \"docs/*.md\"\n    while_running: parallel\n", "## Go\nGo.\n");
+    write_wf(
+        &env,
+        "free",
+        "triggers:\n  - file: \"docs/*.md\"\n    while_running: parallel\n",
+        "## Go\nGo.\n",
+    );
     write_wf(
         &env,
         "limited",
@@ -396,7 +639,10 @@ fn parallel_file_triggers_start_a_run_per_batch() {
     let fire = |wf: &str, path: &str| env.json(&["triggers", "fire", wf, "--path", path]).1;
 
     // Without a limit, each batch runs right away.
-    let runs: Vec<Value> = ["docs/a.md", "docs/b.md"].iter().map(|p| fire("free", p)).collect();
+    let runs: Vec<Value> = ["docs/a.md", "docs/b.md"]
+        .iter()
+        .map(|p| fire("free", p))
+        .collect();
     for v in &runs {
         assert_eq!(v["outcome"], "started", "{v}");
         assert_eq!(v["run"]["status"], "running", "{v}");
@@ -405,7 +651,11 @@ fn parallel_file_triggers_start_a_run_per_batch() {
     // Under `on_conflict: queue`, each batch gets its own queued run.
     assert_eq!(fire("limited", "docs/a.md")["run"]["status"], "running");
     let (b, c) = (fire("limited", "docs/b.md"), fire("limited", "docs/c.md"));
-    assert_eq!((b["run"]["status"].as_str(), c["run"]["status"].as_str()), (Some("queued"), Some("queued")), "{b} {c}");
+    assert_eq!(
+        (b["run"]["status"].as_str(), c["run"]["status"].as_str()),
+        (Some("queued"), Some("queued")),
+        "{b} {c}"
+    );
     assert_ne!(b["run_ids"], c["run_ids"], "batches don't merge");
 }
 
@@ -414,7 +664,14 @@ fn run_status(env: &Env, id: &Value) -> Value {
 }
 
 fn finish(env: &Env, id: &Value) {
-    let (code, out) = env.json(&["run", "finish", "--status", "succeeded", "--run", &id.to_string()]);
+    let (code, out) = env.json(&[
+        "run",
+        "finish",
+        "--status",
+        "succeeded",
+        "--run",
+        &id.to_string(),
+    ]);
     assert_eq!(code, 0, "{out}");
 }
 
@@ -429,7 +686,9 @@ fn queued_file_triggers_merge_until_the_workflow_is_idle() {
     );
     env.start_daemon();
     let fire = |index: &str, path: &str, dry_run: bool| {
-        let mut args = vec!["triggers", "fire", "specs", "--index", index, "--path", path];
+        let mut args = vec![
+            "triggers", "fire", "specs", "--index", index, "--path", path,
+        ];
         if dry_run {
             args.push("--dry-run");
         }
@@ -445,7 +704,10 @@ fn queued_file_triggers_merge_until_the_workflow_is_idle() {
     assert_eq!(manual["status"], "running", "no concurrency limit");
 
     // A change during a run queues one, whatever the concurrency.
-    assert_eq!(fire("0", "specs/b.md", true)["message"], "would queue a new run of specs");
+    assert_eq!(
+        fire("0", "specs/b.md", true)["message"],
+        "would queue a new run of specs"
+    );
     let queued = fire("0", "specs/b.md", false);
     assert_eq!(queued["outcome"], "queued", "{queued}");
     let queued = queued["run_ids"][0].clone();
@@ -453,14 +715,27 @@ fn queued_file_triggers_merge_until_the_workflow_is_idle() {
 
     // Later batches from the same trigger merge into it; another trigger's don't.
     let dry = fire("0", "specs/a.md", true);
-    assert_eq!((dry["outcome"].as_str(), dry["message"].as_str()), (Some("merged"), Some(&*format!("would merge into run {queued}"))));
+    assert_eq!(
+        (dry["outcome"].as_str(), dry["message"].as_str()),
+        (
+            Some("merged"),
+            Some(&*format!("would merge into run {queued}"))
+        )
+    );
     let merged = fire("0", "specs/a.md", false);
-    assert_eq!((merged["outcome"].as_str(), &merged["run_ids"]), (Some("merged"), &serde_json::json!([queued])), "{merged}");
+    assert_eq!(
+        (merged["outcome"].as_str(), &merged["run_ids"]),
+        (Some("merged"), &serde_json::json!([queued])),
+        "{merged}"
+    );
     let other = fire("1", "docs/x.md", false);
     assert_eq!(other["outcome"], "queued", "{other}");
     assert_ne!(other["run_ids"][0], queued);
     let listed = String::from_utf8_lossy(&env.run(&["triggers", "ls"]).stdout).to_string();
-    assert!(listed.contains(&format!("merged (merged into run {queued})")), "{listed}");
+    assert!(
+        listed.contains(&format!("merged (merged into run {queued})")),
+        "{listed}"
+    );
 
     // A cancelled queued run takes no more merges: the next change queues anew.
     let (code, v) = env.json(&["run", "cancel", &other["run_ids"][0].to_string()]);
@@ -474,17 +749,34 @@ fn queued_file_triggers_merge_until_the_workflow_is_idle() {
     assert_eq!(run_status(&env, &queued), "queued");
     finish(&env, &manual["id"]);
     assert_eq!(run_status(&env, &queued), "running");
-    assert_eq!(run_status(&env, &again["run_ids"][0]), "queued", "the next one waits its turn");
+    assert_eq!(
+        run_status(&env, &again["run_ids"][0]),
+        "queued",
+        "the next one waits its turn"
+    );
     let (_, show) = env.json(&["runs", "show", &queued.to_string(), "--snapshot"]);
     let snap = show["run"]["workflow_snapshot"].as_str().unwrap();
-    assert!(snap.contains("Changed: specs/b.md (modified), specs/a.md (modified) (modified)"), "{snap}");
-    assert_eq!(show["run"]["trigger"]["event"]["paths"].as_array().map(Vec::len), Some(2));
+    assert!(
+        snap.contains("Changed: specs/b.md (modified), specs/a.md (modified) (modified)"),
+        "{snap}"
+    );
+    assert_eq!(
+        show["run"]["trigger"]["event"]["paths"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
 }
 
 #[test]
 fn file_changes_during_a_run_queue_a_follow_up() {
     let env = Env::new();
-    write_wf(&env, "specs", "triggers:\n  - file: \"specs/*.md\"\n    debounce: 1\n", "## Go\nChanged: {{trigger.paths}}\n");
+    write_wf(
+        &env,
+        "specs",
+        "triggers:\n  - file: \"specs/*.md\"\n    debounce: 1\n",
+        "## Go\nChanged: {{trigger.paths}}\n",
+    );
     // The glob's base exists: files written into a base as it appears don't fire.
     fs::create_dir_all(env.project().join("specs")).unwrap();
     start_fast_daemon(&env);
@@ -497,7 +789,9 @@ fn file_changes_during_a_run_queue_a_follow_up() {
 
     // A run's own edit isn't dropped: it queues a follow-up.
     fs::write(env.project().join("specs/a.md"), "edited by an agent").unwrap();
-    common::eventually("a queued run", || runs(&env).iter().any(|r| r["status"] == "queued"));
+    common::eventually("a queued run", || {
+        runs(&env).iter().any(|r| r["status"] == "queued")
+    });
     let queued = runs(&env).iter().find(|r| r["status"] == "queued").unwrap()["id"].clone();
     finish(&env, &first);
     assert_eq!(run_status(&env, &queued), "running");

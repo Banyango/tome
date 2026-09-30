@@ -84,7 +84,9 @@ impl Store {
             )
             .map_err(internal)?;
         let sql = format!("SELECT {FIRE_COLUMNS} FROM trigger_fires WHERE id = ?");
-        self.conn.query_row(&sql, params![id], fire_from_row).map_err(internal)
+        self.conn
+            .query_row(&sql, params![id], fire_from_row)
+            .map_err(internal)
     }
 
     /// The latest fire of each (workflow file, trigger index, project).
@@ -100,7 +102,8 @@ impl Store {
     }
 
     pub fn fires(&self, limit: usize) -> CliResult<Vec<Fire>> {
-        let sql = format!("SELECT {FIRE_COLUMNS} FROM trigger_fires ORDER BY id DESC LIMIT {limit}");
+        let sql =
+            format!("SELECT {FIRE_COLUMNS} FROM trigger_fires ORDER BY id DESC LIMIT {limit}");
         let mut stmt = self.conn.prepare(&sql).map_err(internal)?;
         let rows = stmt.query_map([], fire_from_row).map_err(internal)?;
         rows.collect::<Result<_, _>>().map_err(internal)
@@ -122,17 +125,34 @@ impl Store {
 
     pub fn project(&self, path: &str) -> CliResult<Option<Project>> {
         self.conn
-            .query_row("SELECT path, enabled, registered_at FROM projects WHERE path = ?", params![path], |r| {
-                Ok(Project { path: r.get(0)?, enabled: r.get(1)?, registered_at: fmt_ts(r.get(2)?) })
-            })
+            .query_row(
+                "SELECT path, enabled, registered_at FROM projects WHERE path = ?",
+                params![path],
+                |r| {
+                    Ok(Project {
+                        path: r.get(0)?,
+                        enabled: r.get(1)?,
+                        registered_at: fmt_ts(r.get(2)?),
+                    })
+                },
+            )
             .optional()
             .map_err(internal)
     }
 
     pub fn projects(&self) -> CliResult<Vec<Project>> {
-        let mut stmt = self.conn.prepare("SELECT path, enabled, registered_at FROM projects ORDER BY path").map_err(internal)?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, enabled, registered_at FROM projects ORDER BY path")
+            .map_err(internal)?;
         let rows = stmt
-            .query_map([], |r| Ok(Project { path: r.get(0)?, enabled: r.get(1)?, registered_at: fmt_ts(r.get(2)?) }))
+            .query_map([], |r| {
+                Ok(Project {
+                    path: r.get(0)?,
+                    enabled: r.get(1)?,
+                    registered_at: fmt_ts(r.get(2)?),
+                })
+            })
             .map_err(internal)?;
         rows.collect::<Result<_, _>>().map_err(internal)
     }
@@ -140,12 +160,19 @@ impl Store {
     /// Enable or disable a project's triggers, registering it if needed.
     pub fn set_project_enabled(&mut self, path: &str, enabled: bool) -> CliResult<Project> {
         self.register_project(path)?;
-        self.conn.execute("UPDATE projects SET enabled = ? WHERE path = ?", params![enabled, path]).map_err(internal)?;
+        self.conn
+            .execute(
+                "UPDATE projects SET enabled = ? WHERE path = ?",
+                params![enabled, path],
+            )
+            .map_err(internal)?;
         Ok(self.project(path)?.expect("project just registered"))
     }
 
     pub fn drop_project(&mut self, path: &str) -> CliResult<()> {
-        self.conn.execute("DELETE FROM projects WHERE path = ?", params![path]).map_err(internal)?;
+        self.conn
+            .execute("DELETE FROM projects WHERE path = ?", params![path])
+            .map_err(internal)?;
         Ok(())
     }
 }
@@ -176,7 +203,10 @@ mod tests {
         let f = store.record_fire(&fire("started", 2, &[3, 4])).unwrap();
         assert_eq!(f.run_ids, vec![3, 4]);
         let last = store.last_fires().unwrap();
-        let summary: Vec<(i64, &str)> = last.iter().map(|f| (f.trigger_index, f.outcome.as_str())).collect();
+        let summary: Vec<(i64, &str)> = last
+            .iter()
+            .map(|f| (f.trigger_index, f.outcome.as_str()))
+            .collect();
         assert_eq!(summary, vec![(1, "rejected"), (2, "started")]);
         assert_eq!(store.fires(10).unwrap().len(), 3);
     }
@@ -187,7 +217,10 @@ mod tests {
         assert!(store.register_project("/p").unwrap());
         assert!(!store.register_project("/p").unwrap());
         assert!(!store.set_project_enabled("/p", false).unwrap().enabled);
-        assert!(!store.register_project("/p").unwrap(), "registering again keeps it disabled");
+        assert!(
+            !store.register_project("/p").unwrap(),
+            "registering again keeps it disabled"
+        );
         assert!(!store.project("/p").unwrap().unwrap().enabled);
         assert!(store.set_project_enabled("/q", true).unwrap().enabled);
         assert_eq!(store.projects().unwrap().len(), 2);

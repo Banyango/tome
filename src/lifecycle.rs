@@ -45,7 +45,10 @@ pub fn status() -> CliResult<Report> {
 pub fn start() -> CliResult<Report> {
     if let Some(status) = probe()? {
         let human = format!("tome daemon is already running (pid {})", status["pid"]);
-        return Ok(Report::new(json!({ "started": false, "already_running": true, "status": status }), human));
+        return Ok(Report::new(
+            json!({ "started": false, "already_running": true, "status": status }),
+            human,
+        ));
     }
 
     // With a service installed, let the service manager own the process so
@@ -62,7 +65,10 @@ pub fn start() -> CliResult<Report> {
     };
     let status = wait_until_up()?;
     let human = format!("tome daemon started (pid {})", status["pid"]);
-    Ok(Report::new(json!({ "started": true, "already_running": false, "via": via, "status": status }), human))
+    Ok(Report::new(
+        json!({ "started": true, "already_running": false, "via": via, "status": status }),
+        human,
+    ))
 }
 
 /// Start `tome daemon run` in its own process group, detached from this
@@ -71,7 +77,10 @@ fn spawn_detached() -> CliResult<()> {
     let home = paths::tome_home();
     std::fs::create_dir_all(&home)?;
     let log_path = paths::daemon_log_path();
-    let log = OpenOptions::new().create(true).append(true).open(&log_path)?;
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
     let exe = std::env::current_exe()?;
     Command::new(exe)
         .args(["daemon", "run"])
@@ -91,10 +100,12 @@ pub fn wait_until_up() -> CliResult<Value> {
             return Ok(status);
         }
         if Instant::now() >= deadline {
-            return Err(CliError::internal("the daemon did not come up in time").with_hint(format!(
-                "check {} for errors",
-                paths::daemon_log_path().display()
-            )));
+            return Err(
+                CliError::internal("the daemon did not come up in time").with_hint(format!(
+                    "check {} for errors",
+                    paths::daemon_log_path().display()
+                )),
+            );
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -127,5 +138,8 @@ pub fn stop() -> CliResult<Report> {
         std::thread::sleep(Duration::from_millis(100));
     }
     let human = format!("tome daemon stopped (was pid {})", status["pid"]);
-    Ok(Report::new(json!({ "stopped": true, "was_running": true, "pid": status["pid"] }), human))
+    Ok(Report::new(
+        json!({ "stopped": true, "was_running": true, "pid": status["pid"] }),
+        human,
+    ))
 }

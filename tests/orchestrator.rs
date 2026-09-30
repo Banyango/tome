@@ -38,7 +38,11 @@ fn summary(events: &[Value]) -> Vec<String> {
     events
         .iter()
         .map(|e| match e["type"].as_str() {
-            Some("step") => format!("{} {}", e["step"].as_str().unwrap(), e["event"].as_str().unwrap()),
+            Some("step") => format!(
+                "{} {}",
+                e["step"].as_str().unwrap(),
+                e["event"].as_str().unwrap()
+            ),
             _ => format!("run {}", e["status"].as_str().unwrap()),
         })
         .collect()
@@ -70,21 +74,37 @@ fn stub_orchestrator_drives_the_run_to_success() {
     assert_eq!(code, 0, "{events:?}");
     assert_eq!(
         summary(&events),
-        ["run running", "Build start", "Build done", "Ship start", "Ship done", "run succeeded"]
+        [
+            "run running",
+            "Build start",
+            "Build done",
+            "Ship start",
+            "Ship done",
+            "run succeeded"
+        ]
     );
     assert_eq!(events.last().unwrap()["summary"], "stub shipped");
 
     // The bootstrap: built-in prompt, run details, extra instructions, resolved body.
     let prompt = fs::read_to_string(env.home().join("seen-prompt.md")).unwrap();
-    assert!(prompt.starts_with("You are the orchestrator of a tome workflow run."), "{prompt}");
+    assert!(
+        prompt.starts_with("You are the orchestrator of a tome workflow run."),
+        "{prompt}"
+    );
     assert!(prompt.contains("Run #1 of workflow `build`"), "{prompt}");
     assert!(prompt.contains("- target = api"), "{prompt}");
-    assert!(prompt.contains("Keep step messages under five words."), "{prompt}");
+    assert!(
+        prompt.contains("Keep step messages under five words."),
+        "{prompt}"
+    );
     assert!(prompt.contains("Build api for run 1."), "{prompt}");
 
     let seen = fs::read_to_string(env.home().join("seen-env.txt")).unwrap();
     let project = env.project().canonicalize().unwrap();
-    assert_eq!(seen.trim(), format!("run=1 output=json cwd={}", project.display()));
+    assert_eq!(
+        seen.trim(),
+        format!("run=1 output=json cwd={}", project.display())
+    );
 
     // The session was recorded (with the harness it ran) and its output logged.
     let (_, shown) = env.json(&["runs", "show", "1"]);
@@ -93,19 +113,37 @@ fn stub_orchestrator_drives_the_run_to_success() {
     assert_eq!(sessions[0]["name"], "tome-1-build");
     assert_eq!(sessions[0]["role"], "orchestrator");
     assert_eq!(sessions[0]["harness"], "stub");
-    assert!(shown["logs"].as_array().unwrap().iter().any(|l| l["step"] == "orchestrator"), "{shown}");
+    assert!(
+        shown["logs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["step"] == "orchestrator"),
+        "{shown}"
+    );
 }
 
 #[test]
 fn orchestrator_exiting_early_fails_the_run() {
     let env = Env::new();
-    stub_harness(&env, "quitter", "tome step start Build >/dev/null\nexit 0\n");
-    write_wf(&env, "build", "---\nname: build\ndefaults:\n  harness: quitter\n---\n## Build\nGo.\n");
+    stub_harness(
+        &env,
+        "quitter",
+        "tome step start Build >/dev/null\nexit 0\n",
+    );
+    write_wf(
+        &env,
+        "build",
+        "---\nname: build\ndefaults:\n  harness: quitter\n---\n## Build\nGo.\n",
+    );
     env.start_daemon();
 
     let (code, events) = run_attached(&env, &["build"]);
     assert_eq!(code, 1, "{events:?}");
-    assert_eq!(summary(&events), ["run running", "Build start", "Build fail", "run failed"]);
+    assert_eq!(
+        summary(&events),
+        ["run running", "Build start", "Build fail", "run failed"]
+    );
     assert_eq!(events[2]["message"], "orchestrator_exited");
     assert_eq!(events[3]["reason"], "orchestrator_exited");
 
@@ -125,7 +163,14 @@ fn cancel_kills_the_session_and_keeps_the_run_quiet() {
     assert_eq!(code, 0, "{run}");
     assert!(env.has_session("tome-1-build"));
     // A worker session of the same run goes too.
-    env.tmux(&["new-session", "-d", "-s", "tome-1-build-worker", "sleep", "600"]);
+    env.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "tome-1-build-worker",
+        "sleep",
+        "600",
+    ]);
 
     let (code, run) = env.json(&["run", "cancel", "1"]);
     assert_eq!(code, 0, "{run}");
@@ -148,7 +193,9 @@ fn closing_the_orchestrator_pane_fails_the_run() {
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     env.tmux(&["kill-session", "-t", "=tome-1-build"]);
-    eventually("run to fail", || env.json(&["runs", "show", "1"]).1["run"]["status"] == "failed");
+    eventually("run to fail", || {
+        env.json(&["runs", "show", "1"]).1["run"]["status"] == "failed"
+    });
     let (_, shown) = env.json(&["runs", "show", "1"]);
     assert_eq!(shown["run"]["reason"], "orchestrator_exited");
 }
@@ -156,11 +203,21 @@ fn closing_the_orchestrator_pane_fails_the_run() {
 #[test]
 fn unknown_harness_is_refused_without_a_run() {
     let env = Env::new();
-    write_wf(&env, "build", "---\nname: build\ndefaults:\n  harness: nope\n---\n## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "---\nname: build\ndefaults:\n  harness: nope\n---\n## Build\nGo.\n",
+    );
     env.start_daemon();
     let (code, err) = env.json(&["run", "build", "--detach"]);
     assert_eq!(code, 2, "{err}");
-    assert!(err["error"]["message"].as_str().unwrap().contains("unknown harness `nope`"), "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown harness `nope`"),
+        "{err}"
+    );
     let (_, runs) = env.json(&["runs", "list"]);
     assert_eq!(runs["runs"].as_array().unwrap().len(), 0);
 }
@@ -168,11 +225,21 @@ fn unknown_harness_is_refused_without_a_run() {
 #[test]
 fn unknown_backend_is_refused_without_a_run() {
     let env = Env::new();
-    write_wf(&env, "build", "---\nname: build\ndefaults:\n  backend: screen\n---\n## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "---\nname: build\ndefaults:\n  backend: screen\n---\n## Build\nGo.\n",
+    );
     env.start_daemon();
     let (code, err) = env.json(&["run", "build", "--detach"]);
     assert_eq!(code, 2, "{err}");
-    assert!(err["error"]["message"].as_str().unwrap().contains("unknown session backend `screen`"), "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown session backend `screen`"),
+        "{err}"
+    );
     let (_, runs) = env.json(&["runs", "list"]);
     assert_eq!(runs["runs"].as_array().unwrap().len(), 0);
 }
@@ -215,9 +282,15 @@ fn smoke_real_claude_preset() {
     );
     env.start_daemon();
     if env.backend == "tmux" {
-        eprintln!("watch with: tmux -L {} attach -t tome-1-hello", env.tmux_socket());
+        eprintln!(
+            "watch with: tmux -L {} attach -t tome-1-hello",
+            env.tmux_socket()
+        );
     }
     let (code, events) = run_attached(&env, &["hello"]);
     assert_eq!(code, 0, "{events:?}");
-    assert!(summary(&events).contains(&"Greet done".to_string()), "{events:?}");
+    assert!(
+        summary(&events).contains(&"Greet done".to_string()),
+        "{events:?}"
+    );
 }

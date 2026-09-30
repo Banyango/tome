@@ -10,7 +10,9 @@ use serde::Serialize;
 pub const RESERVED: &str = "tome";
 
 fn valid_segment(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
 /// Check a topic name.
@@ -134,7 +136,10 @@ impl Pattern {
 
 /// The lifecycle events tome publishes for runs of `workflow`.
 pub fn lifecycle_topics(workflow: &str) -> Vec<String> {
-    ["started", "succeeded", "failed", "cancelled"].iter().map(|e| format!("{RESERVED}.run.{workflow}.{e}")).collect()
+    ["started", "succeeded", "failed", "cancelled"]
+        .iter()
+        .map(|e| format!("{RESERVED}.run.{workflow}.{e}"))
+        .collect()
 }
 
 #[cfg(test)]

@@ -101,7 +101,12 @@ pub struct CliError {
 
 impl CliError {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        CliError { kind, message: message.into(), hint: None, details: None }
+        CliError {
+            kind,
+            message: message.into(),
+            hint: None,
+            details: None,
+        }
     }
 
     pub fn internal(message: impl Into<String>) -> Self {
@@ -186,13 +191,23 @@ pub struct Report {
 
 impl Report {
     pub fn new(data: Value, human: impl Into<String>) -> Self {
-        Report { data, human: human.into(), exit_code: exit::OK, printed: false }
+        Report {
+            data,
+            human: human.into(),
+            exit_code: exit::OK,
+            printed: false,
+        }
     }
 
     /// Output that was already written as it happened; `emit` only sets the
     /// exit code.
     pub fn printed(data: Value, exit_code: i32) -> Self {
-        Report { data, human: String::new(), exit_code, printed: true }
+        Report {
+            data,
+            human: String::new(),
+            exit_code,
+            printed: true,
+        }
     }
 
     pub fn with_exit(mut self, code: i32) -> Self {
@@ -220,7 +235,9 @@ pub fn emit(mode: Mode, result: CliResult<Report>) -> i32 {
                 Mode::Json => println!("{}", err.to_json()),
                 Mode::Human => {
                     eprintln!("error: {}", err.message);
-                    if let Some(Value::Array(items)) = err.details.as_ref().and_then(|d| d.get("errors")) {
+                    if let Some(Value::Array(items)) =
+                        err.details.as_ref().and_then(|d| d.get("errors"))
+                    {
                         for item in items {
                             if let Some(text) = item.get("display").and_then(Value::as_str) {
                                 eprintln!("  {text}");
@@ -240,7 +257,10 @@ pub fn emit(mode: Mode, result: CliResult<Report>) -> i32 {
 /// Render a left-aligned text table with a header row.
 pub fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
     let clean = |s: &str| s.replace(['\n', '\t'], " ");
-    let rows: Vec<Vec<String>> = rows.into_iter().map(|r| r.iter().map(|c| clean(c)).collect()).collect();
+    let rows: Vec<Vec<String>> = rows
+        .into_iter()
+        .map(|r| r.iter().map(|c| clean(c)).collect())
+        .collect();
     let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
@@ -276,7 +296,13 @@ mod tests {
 
     #[test]
     fn table_aligns_columns() {
-        let t = table(&["ID", "NAME"], vec![vec!["1".into(), "alpha".into()], vec!["10".into(), "b\nc".into()]]);
+        let t = table(
+            &["ID", "NAME"],
+            vec![
+                vec!["1".into(), "alpha".into()],
+                vec!["10".into(), "b\nc".into()],
+            ],
+        );
         assert_eq!(t, "ID  NAME\n1   alpha\n10  b c\n");
     }
 
@@ -285,7 +311,10 @@ mod tests {
         let err = CliError::daemon_not_running();
         let v = err.to_json();
         assert_eq!(v["error"]["kind"], "daemon_not_running");
-        assert!(v["error"]["hint"].as_str().unwrap().contains("tome daemon start"));
+        assert!(v["error"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("tome daemon start"));
         assert_eq!(err.kind.exit_code(), exit::DAEMON_UNAVAILABLE);
     }
 

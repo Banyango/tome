@@ -46,7 +46,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// `TOME_WORKER_ID`).
 pub fn caller_of(req_caller: &Value) -> Option<(i64, Option<String>)> {
     let run_id = req_id_at(req_caller, "run_id").ok()?;
-    let worker = opt_str(req_caller, "worker").filter(|w| !w.is_empty()).map(str::to_string);
+    let worker = opt_str(req_caller, "worker")
+        .filter(|w| !w.is_empty())
+        .map(str::to_string);
     Some((run_id, worker))
 }
 
@@ -68,7 +70,11 @@ fn env_timeout() -> Option<Option<Duration>> {
 /// off. `TOME_START_TIMEOUT` wins over `defaults.start_timeout`, which wins
 /// over the default.
 pub fn timeout(fm: &Frontmatter) -> Option<Duration> {
-    env_timeout().unwrap_or_else(|| fm.defaults.start_timeout.map_or(Some(DEFAULT_TIMEOUT), StartTimeout::duration))
+    env_timeout().unwrap_or_else(|| {
+        fm.defaults
+            .start_timeout
+            .map_or(Some(DEFAULT_TIMEOUT), StartTimeout::duration)
+    })
 }
 
 /// An agent the daemon launched that hasn't made a tome call yet.
@@ -108,28 +114,60 @@ fn record(store: &mut Store, agent: &Agent, state: &str, message: &str) -> CliRe
 impl Engine {
     /// Start the clock on an agent that's about to be launched. Call before
     /// its session starts, so a quick first call isn't missed.
-    pub(crate) fn expect_start(&self, agent: Agent, timeout: Option<Duration>, prompt_file: PathBuf) {
+    pub(crate) fn expect_start(
+        &self,
+        agent: Agent,
+        timeout: Option<Duration>,
+        prompt_file: PathBuf,
+    ) {
         let Some(timeout) = timeout else { return };
         let _ = self.with_store(|store| {
-            record(store, &agent, state::WAITING, &format!("waiting {} for a first tome call", secs(timeout)))?;
+            record(
+                store,
+                &agent,
+                state::WAITING,
+                &format!("waiting {} for a first tome call", secs(timeout)),
+            )?;
             self.sync(store, agent.0);
             Ok(())
         });
-        let pending = Pending { timeout, deadline: Instant::now() + timeout, nudged: false, prompt_file };
-        self.starts.lock().unwrap_or_else(|p| p.into_inner()).insert(agent, pending);
+        let pending = Pending {
+            timeout,
+            deadline: Instant::now() + timeout,
+            nudged: false,
+            prompt_file,
+        };
+        self.starts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(agent, pending);
     }
 
     /// Stop waiting for an agent that won't start after all (its launch
     /// failed).
     pub(crate) fn forget_start(&self, agent: &Agent) {
-        self.starts.lock().unwrap_or_else(|p| p.into_inner()).remove(agent);
+        self.starts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(agent);
     }
 
     /// A tome call came from `agent`: if it was being waited for, it has
     /// started.
     pub(crate) fn seen(&self, agent: Agent) {
-        let Some(pending) = self.starts.lock().unwrap_or_else(|p| p.into_inner()).remove(&agent) else { return };
-        let message = if pending.nudged { "first tome call, after the nudge" } else { "first tome call" };
+        let Some(pending) = self
+            .starts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&agent)
+        else {
+            return;
+        };
+        let message = if pending.nudged {
+            "first tome call, after the nudge"
+        } else {
+            "first tome call"
+        };
         let _ = self.with_store(|store| {
             record(store, &agent, state::READY, message)?;
             self.sync(store, agent.0);
@@ -149,7 +187,10 @@ impl Engine {
         self.with_store(|store| {
             let run = store.require_run(run_id)?;
             if run.status != RunStatus::Running {
-                return Err(CliError::invalid(format!("run {run_id} isn't running ({})", run.status.as_str())));
+                return Err(CliError::invalid(format!(
+                    "run {run_id} isn't running ({})",
+                    run.status.as_str()
+                )));
             }
             if let Some(name) = worker {
                 let w = store.require_worker(run_id, name)?;
@@ -160,7 +201,11 @@ impl Engine {
                     )));
                 }
             }
-            let role = if worker.is_some() { "worker" } else { orchestrator::ROLE };
+            let role = if worker.is_some() {
+                "worker"
+            } else {
+                orchestrator::ROLE
+            };
             Ok(json!({ "run_id": run_id, "role": role, "worker": worker, "ready": true }))
         })
     }
@@ -184,14 +229,22 @@ impl Engine {
                 continue;
             }
             // Not recorded yet (still launching): look again next time.
-            let Some(s) = self.agent_session(&agent) else { continue };
+            let Some(s) = self.agent_session(&agent) else {
+                continue;
+            };
             // Its session is over: the exit handling takes it.
             if session::is_alive(&s) == Some(false) {
                 continue;
             }
             if pending.nudged {
                 // A call may have removed it since we looked.
-                if self.starts.lock().unwrap_or_else(|p| p.into_inner()).remove(&agent).is_none() {
+                if self
+                    .starts
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&agent)
+                    .is_none()
+                {
                     continue;
                 }
                 eprintln!("tome daemon: {} didn't start", describe(&agent));
@@ -202,11 +255,16 @@ impl Engine {
             let message = if session::send_line(&s, &line) {
                 format!("no tome call in {}; typed: {line}", secs(pending.timeout))
             } else {
-                format!("no tome call in {}; its pane is gone, so the nudge was skipped", secs(pending.timeout))
+                format!(
+                    "no tome call in {}; its pane is gone, so the nudge was skipped",
+                    secs(pending.timeout)
+                )
             };
             let mut starts = self.starts.lock().unwrap_or_else(|p| p.into_inner());
             // Started while we were typing: the ready event stands.
-            let Some(p) = starts.get_mut(&agent) else { continue };
+            let Some(p) = starts.get_mut(&agent) else {
+                continue;
+            };
             p.nudged = true;
             p.deadline = Instant::now() + p.timeout;
             drop(starts);
@@ -235,7 +293,9 @@ impl Engine {
         match &agent.1 {
             None => sessions.into_iter().find(|s| s.role == orchestrator::ROLE),
             Some(name) => {
-                let w = self.with_store(|store| store.require_worker(agent.0, name)).ok()?;
+                let w = self
+                    .with_store(|store| store.require_worker(agent.0, name))
+                    .ok()?;
                 let session = w.session?;
                 sessions.into_iter().find(|s| s.name == session)
             }
@@ -260,13 +320,22 @@ impl Engine {
                 return Ok(None);
             }
             record(store, agent, state::NO_START, message)?;
-            let cut = store.end_active_workers(run_id, WorkerStatus::Cancelled, ORCHESTRATOR_NO_START)?;
-            let run = store.abort_run(run_id, RunStatus::Failed, ORCHESTRATOR_NO_START, Some(message))?;
+            let cut =
+                store.end_active_workers(run_id, WorkerStatus::Cancelled, ORCHESTRATOR_NO_START)?;
+            let run = store.abort_run(
+                run_id,
+                RunStatus::Failed,
+                ORCHESTRATOR_NO_START,
+                Some(message),
+            )?;
             self.sync(store, run_id);
             Ok(Some((run, cut)))
         });
         let Ok(Some((run, cut))) = ended else { return };
-        eprintln!("tome daemon: run {} ({}) failed: {ORCHESTRATOR_NO_START}", run.id, run.workflow_name);
+        eprintln!(
+            "tome daemon: run {} ({}) failed: {ORCHESTRATOR_NO_START}",
+            run.id, run.workflow_name
+        );
         let recorded = self.recorded_sessions(run_id);
         orchestrator::kill_sessions(run_id, &recorded);
         orchestrator::notify(&run, &recorded, &cut);
@@ -283,7 +352,15 @@ impl Engine {
                 return Ok(None);
             }
             record(store, agent, state::NO_START, message)?;
-            let end = store.finish_worker(run_id, name, WorkerStatus::Failed, Some(WORKER_NO_START), Some(message), None, true)?;
+            let end = store.finish_worker(
+                run_id,
+                name,
+                WorkerStatus::Failed,
+                Some(WORKER_NO_START),
+                Some(message),
+                None,
+                true,
+            )?;
             self.sync(store, run_id);
             Ok(Some(end))
         });

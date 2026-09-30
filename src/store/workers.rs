@@ -41,7 +41,10 @@ impl WorkerStatus {
     }
 
     pub fn is_final(self) -> bool {
-        matches!(self, WorkerStatus::Done | WorkerStatus::Failed | WorkerStatus::Cancelled)
+        matches!(
+            self,
+            WorkerStatus::Done | WorkerStatus::Failed | WorkerStatus::Cancelled
+        )
     }
 }
 
@@ -114,18 +117,22 @@ pub struct WorkerEnd {
 /// Why fail-fast cancelled a group's remaining members.
 pub const FAIL_FAST: &str = "fail_fast";
 
-const WORKER_COLUMNS: &str = "run_id, name, kind, status, reason, summary, group_name, harness, command, session, \
+const WORKER_COLUMNS: &str =
+    "run_id, name, kind, status, reason, summary, group_name, harness, command, session, \
      worktree, branch, base, keep_open, exit_code, created_at, started_at, finished_at";
 
 /// Worker, group and queue names: letters, digits, `_` and `-`.
 pub fn check_name(what: &str, name: &str) -> CliResult<()> {
     let ok = !name.is_empty()
         && name.len() <= 64
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if ok {
         Ok(())
     } else {
-        Err(CliError::invalid(format!("invalid {what} name `{name}`")).with_hint("use letters, digits, `_` and `-` (at most 64)"))
+        Err(CliError::invalid(format!("invalid {what} name `{name}`"))
+            .with_hint("use letters, digits, `_` and `-` (at most 64)"))
     }
 }
 
@@ -184,17 +191,26 @@ impl Store {
     pub fn reserve_worker(&mut self, run_id: i64, new: &NewWorker<'_>) -> CliResult<Worker> {
         let run = self.require_run(run_id)?;
         if run.status != RunStatus::Running {
-            return Err(CliError::invalid(format!("run {run_id} isn't running ({})", run.status.as_str())));
+            return Err(CliError::invalid(format!(
+                "run {run_id} isn't running ({})",
+                run.status.as_str()
+            )));
         }
         let name = match new.name {
             Some(name) => {
                 check_name("worker", name)?;
                 if name == "orchestrator" {
-                    return Err(CliError::invalid("`orchestrator` is reserved; pick another worker name"));
+                    return Err(CliError::invalid(
+                        "`orchestrator` is reserved; pick another worker name",
+                    ));
                 }
                 if self.worker(run_id, name)?.is_some() {
-                    return Err(CliError::invalid(format!("run {run_id} already has a worker named `{name}`"))
-                        .with_hint("worker names are unique within a run; pick another or leave --name out"));
+                    return Err(CliError::invalid(format!(
+                        "run {run_id} already has a worker named `{name}`"
+                    ))
+                    .with_hint(
+                        "worker names are unique within a run; pick another or leave --name out",
+                    ));
                 }
                 name.to_string()
             }
@@ -204,14 +220,19 @@ impl Store {
             check_name("group", group)?;
             match self.group(run_id, group)? {
                 Some(g) if g.closed => {
-                    return Err(CliError::invalid(format!("group `{group}` is closed ({})", g.status))
-                        .with_hint("closed groups take no new members; use another group"));
+                    return Err(CliError::invalid(format!(
+                        "group `{group}` is closed ({})",
+                        g.status
+                    ))
+                    .with_hint("closed groups take no new members; use another group"));
                 }
                 Some(_) => {}
                 None => self.insert_group(run_id, group, false)?,
             }
         }
-        let command = new.command.map(|c| serde_json::to_string(c).unwrap_or_default());
+        let command = new
+            .command
+            .map(|c| serde_json::to_string(c).unwrap_or_default());
         self.conn
             .execute(
                 "INSERT INTO workers (run_id, name, kind, status, group_name, harness, command, keep_open, created_at)
@@ -236,11 +257,23 @@ impl Store {
 
     /// Forget a worker that never got going (its spawn failed early).
     pub fn delete_worker(&mut self, run_id: i64, name: &str) -> CliResult<()> {
-        self.conn.execute("DELETE FROM workers WHERE run_id = ? AND name = ?", params![run_id, name]).map_err(internal)?;
+        self.conn
+            .execute(
+                "DELETE FROM workers WHERE run_id = ? AND name = ?",
+                params![run_id, name],
+            )
+            .map_err(internal)?;
         Ok(())
     }
 
-    pub fn set_worker_worktree(&mut self, run_id: i64, name: &str, path: &str, branch: &str, base: &str) -> CliResult<()> {
+    pub fn set_worker_worktree(
+        &mut self,
+        run_id: i64,
+        name: &str,
+        path: &str,
+        branch: &str,
+        base: &str,
+    ) -> CliResult<()> {
         self.conn
             .execute(
                 "UPDATE workers SET worktree = ?, branch = ?, base = ? WHERE run_id = ? AND name = ?",
@@ -295,7 +328,13 @@ impl Store {
             if cascade && status == WorkerStatus::Failed && g.fail_fast && g.finished_at.is_none() {
                 for other in self.group_members(run_id, group)? {
                     if !other.status.is_final() {
-                        self.end_worker(&other, WorkerStatus::Cancelled, Some(FAIL_FAST), None, None)?;
+                        self.end_worker(
+                            &other,
+                            WorkerStatus::Cancelled,
+                            Some(FAIL_FAST),
+                            None,
+                            None,
+                        )?;
                         cut.push(self.require_worker(run_id, &other.name)?);
                     }
                 }
@@ -305,7 +344,11 @@ impl Store {
                 group_finished = self.maybe_finish_group(run_id, group)?;
             }
         }
-        Ok(WorkerEnd { worker, cut, group_finished })
+        Ok(WorkerEnd {
+            worker,
+            cut,
+            group_finished,
+        })
     }
 
     fn end_worker(
@@ -323,14 +366,25 @@ impl Store {
             )
             .map_err(internal)?;
         let message = summary.or(reason);
-        self.worker_event(w.run_id, Some(&w.name), w.group.as_deref(), status.as_str(), message)?;
+        self.worker_event(
+            w.run_id,
+            Some(&w.name),
+            w.group.as_deref(),
+            status.as_str(),
+            message,
+        )?;
         self.release_claims(w.run_id, &w.name)?;
         Ok(())
     }
 
     /// End every worker of a run that's still pending or running (the run
     /// is ending). Groups don't cascade. Returns the workers it ended.
-    pub fn end_active_workers(&mut self, run_id: i64, status: WorkerStatus, reason: &str) -> CliResult<Vec<Worker>> {
+    pub fn end_active_workers(
+        &mut self,
+        run_id: i64,
+        status: WorkerStatus,
+        reason: &str,
+    ) -> CliResult<Vec<Worker>> {
         let mut ended = Vec::new();
         for w in self.workers(run_id)? {
             if !w.status.is_final() {
@@ -346,19 +400,30 @@ impl Store {
 
     pub fn worker(&self, run_id: i64, name: &str) -> CliResult<Option<Worker>> {
         let sql = format!("SELECT {WORKER_COLUMNS} FROM workers WHERE run_id = ? AND name = ?");
-        self.conn.query_row(&sql, params![run_id, name], worker_from_row).optional().map_err(internal)
+        self.conn
+            .query_row(&sql, params![run_id, name], worker_from_row)
+            .optional()
+            .map_err(internal)
     }
 
     pub fn require_worker(&self, run_id: i64, name: &str) -> CliResult<Worker> {
-        self.worker(run_id, name)?.ok_or_else(|| CliError::not_found(format!("run {run_id} has no worker named `{name}`")))
+        self.worker(run_id, name)?.ok_or_else(|| {
+            CliError::not_found(format!("run {run_id} has no worker named `{name}`"))
+        })
     }
 
     pub fn workers(&self, run_id: i64) -> CliResult<Vec<Worker>> {
-        self.query_workers("WHERE run_id = ? ORDER BY created_at, name", params![run_id])
+        self.query_workers(
+            "WHERE run_id = ? ORDER BY created_at, name",
+            params![run_id],
+        )
     }
 
     fn group_members(&self, run_id: i64, group: &str) -> CliResult<Vec<Worker>> {
-        self.query_workers("WHERE run_id = ? AND group_name = ? ORDER BY created_at, name", params![run_id, group])
+        self.query_workers(
+            "WHERE run_id = ? AND group_name = ? ORDER BY created_at, name",
+            params![run_id, group],
+        )
     }
 
     /// Running workers of running runs, for the monitor.
@@ -370,7 +435,10 @@ impl Store {
     }
 
     fn query_workers(&self, rest: &str, args: &[&dyn duckdb::ToSql]) -> CliResult<Vec<Worker>> {
-        let mut stmt = self.conn.prepare(&format!("SELECT {WORKER_COLUMNS} FROM workers {rest}")).map_err(internal)?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {WORKER_COLUMNS} FROM workers {rest}"))
+            .map_err(internal)?;
         let rows = stmt.query_map(args, worker_from_row).map_err(internal)?;
         rows.collect::<Result<_, _>>().map_err(internal)
     }
@@ -382,10 +450,15 @@ impl Store {
         check_name("group", name)?;
         let run = self.require_run(run_id)?;
         if run.status != RunStatus::Running {
-            return Err(CliError::invalid(format!("run {run_id} isn't running ({})", run.status.as_str())));
+            return Err(CliError::invalid(format!(
+                "run {run_id} isn't running ({})",
+                run.status.as_str()
+            )));
         }
         if self.group(run_id, name)?.is_some() {
-            return Err(CliError::invalid(format!("run {run_id} already has a group named `{name}`")));
+            return Err(CliError::invalid(format!(
+                "run {run_id} already has a group named `{name}`"
+            )));
         }
         self.insert_group(run_id, name, fail_fast)?;
         self.require_group(run_id, name)
@@ -413,7 +486,8 @@ impl Store {
     }
 
     pub fn require_group(&self, run_id: i64, name: &str) -> CliResult<Group> {
-        self.group(run_id, name)?.ok_or_else(|| CliError::not_found(format!("run {run_id} has no group named `{name}`")))
+        self.group(run_id, name)?
+            .ok_or_else(|| CliError::not_found(format!("run {run_id} has no group named `{name}`")))
     }
 
     pub fn groups(&self, run_id: i64) -> CliResult<Vec<Group>> {
@@ -421,7 +495,9 @@ impl Store {
             .conn
             .prepare("SELECT name, fail_fast, closed, created_at, finished_at FROM worker_groups WHERE run_id = ? ORDER BY created_at, name")
             .map_err(internal)?;
-        let rows = stmt.query_map(params![run_id], group_from_row).map_err(internal)?;
+        let rows = stmt
+            .query_map(params![run_id], group_from_row)
+            .map_err(internal)?;
         rows.collect::<Result<_, _>>().map_err(internal)
     }
 
@@ -436,7 +512,10 @@ impl Store {
         let g = self.require_group(run_id, name)?;
         if !g.closed {
             self.conn
-                .execute("UPDATE worker_groups SET closed = true WHERE run_id = ? AND name = ?", params![run_id, name])
+                .execute(
+                    "UPDATE worker_groups SET closed = true WHERE run_id = ? AND name = ?",
+                    params![run_id, name],
+                )
                 .map_err(internal)?;
         }
         let finished = self.maybe_finish_group(run_id, name)?.is_some();
@@ -522,7 +601,17 @@ mod tests {
 
     fn spawn(store: &mut Store, run: i64, name: Option<&str>, group: Option<&str>) -> Worker {
         let w = store
-            .reserve_worker(run, &NewWorker { name, kind: "agent", group, harness: Some("claude"), command: None, keep_open: false })
+            .reserve_worker(
+                run,
+                &NewWorker {
+                    name,
+                    kind: "agent",
+                    group,
+                    harness: Some("claude"),
+                    command: None,
+                    keep_open: false,
+                },
+            )
             .unwrap();
         store.start_worker(run, &w.name, "sess").unwrap();
         store.require_worker(run, &w.name).unwrap()
@@ -535,9 +624,22 @@ mod tests {
         assert_eq!(spawn(&mut store, run, None, None).name, "w1");
         assert_eq!(spawn(&mut store, run, Some("w3"), None).name, "w3");
         assert_eq!(spawn(&mut store, run, None, None).name, "w4");
-        let new = NewWorker { name: Some("w3"), kind: "agent", group: None, harness: None, command: None, keep_open: false };
-        assert_eq!(store.reserve_worker(run, &new).unwrap_err().kind, crate::output::ErrorKind::Invalid);
-        let bad = NewWorker { name: Some("a b"), ..new };
+        let new = NewWorker {
+            name: Some("w3"),
+            kind: "agent",
+            group: None,
+            harness: None,
+            command: None,
+            keep_open: false,
+        };
+        assert_eq!(
+            store.reserve_worker(run, &new).unwrap_err().kind,
+            crate::output::ErrorKind::Invalid
+        );
+        let bad = NewWorker {
+            name: Some("a b"),
+            ..new
+        };
         assert!(store.reserve_worker(run, &bad).is_err());
     }
 
@@ -546,12 +648,21 @@ mod tests {
         let (_d, mut store) = store();
         let run = new_run(&mut store, "wf").id;
         spawn(&mut store, run, Some("a"), None);
-        let end = store.finish_worker(run, "a", WorkerStatus::Done, None, Some("ok"), None, true).unwrap();
+        let end = store
+            .finish_worker(run, "a", WorkerStatus::Done, None, Some("ok"), None, true)
+            .unwrap();
         assert_eq!(end.worker.status, WorkerStatus::Done);
         assert_eq!(end.worker.summary.as_deref(), Some("ok"));
-        let err = store.finish_worker(run, "a", WorkerStatus::Failed, None, None, None, true).unwrap_err();
+        let err = store
+            .finish_worker(run, "a", WorkerStatus::Failed, None, None, None, true)
+            .unwrap_err();
         assert_eq!(err.kind, crate::output::ErrorKind::Conflict);
-        let events: Vec<_> = store.worker_history(run).unwrap().into_iter().map(|h| h.event).collect();
+        let events: Vec<_> = store
+            .worker_history(run)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.event)
+            .collect();
         assert_eq!(events, ["started", "done"]);
     }
 
@@ -561,20 +672,44 @@ mod tests {
         let run = new_run(&mut store, "wf").id;
         spawn(&mut store, run, Some("a"), Some("g"));
         spawn(&mut store, run, Some("b"), Some("g"));
-        let end = store.finish_worker(run, "a", WorkerStatus::Failed, None, None, None, true).unwrap();
-        assert!(end.group_finished.is_none() && end.cut.is_empty(), "not fail-fast, not closed");
+        let end = store
+            .finish_worker(run, "a", WorkerStatus::Failed, None, None, None, true)
+            .unwrap();
+        assert!(
+            end.group_finished.is_none() && end.cut.is_empty(),
+            "not fail-fast, not closed"
+        );
         let (g, finished) = store.close_group(run, "g").unwrap();
         assert!(!finished);
         assert_eq!(g.status, "closed");
         // Closed: no new members.
-        let new = NewWorker { name: Some("c"), kind: "agent", group: Some("g"), harness: None, command: None, keep_open: false };
-        assert!(store.reserve_worker(run, &new).unwrap_err().message.contains("closed"));
-        let end = store.finish_worker(run, "b", WorkerStatus::Done, None, None, None, true).unwrap();
+        let new = NewWorker {
+            name: Some("c"),
+            kind: "agent",
+            group: Some("g"),
+            harness: None,
+            command: None,
+            keep_open: false,
+        };
+        assert!(store
+            .reserve_worker(run, &new)
+            .unwrap_err()
+            .message
+            .contains("closed"));
+        let end = store
+            .finish_worker(run, "b", WorkerStatus::Done, None, None, None, true)
+            .unwrap();
         let g = end.group_finished.unwrap();
         assert_eq!(g.status, "finished");
         let last = store.worker_history(run).unwrap().pop().unwrap();
-        assert_eq!((last.group.as_deref(), last.event.as_str()), (Some("g"), "finished"));
-        assert_eq!(last.message.as_deref(), Some("1 done, 1 failed, 0 cancelled"));
+        assert_eq!(
+            (last.group.as_deref(), last.event.as_str()),
+            (Some("g"), "finished")
+        );
+        assert_eq!(
+            last.message.as_deref(),
+            Some("1 done, 1 failed, 0 cancelled")
+        );
     }
 
     #[test]
@@ -586,9 +721,16 @@ mod tests {
         spawn(&mut store, run, Some("a"), Some("g"));
         spawn(&mut store, run, Some("b"), Some("g"));
         spawn(&mut store, run, Some("c"), Some("g"));
-        store.finish_worker(run, "c", WorkerStatus::Done, None, None, None, true).unwrap();
-        let end = store.finish_worker(run, "a", WorkerStatus::Failed, None, None, None, true).unwrap();
-        assert_eq!(end.cut.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(), ["b"]);
+        store
+            .finish_worker(run, "c", WorkerStatus::Done, None, None, None, true)
+            .unwrap();
+        let end = store
+            .finish_worker(run, "a", WorkerStatus::Failed, None, None, None, true)
+            .unwrap();
+        assert_eq!(
+            end.cut.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            ["b"]
+        );
         assert_eq!(end.cut[0].status, WorkerStatus::Cancelled);
         assert_eq!(end.cut[0].reason.as_deref(), Some(FAIL_FAST));
         assert_eq!(end.group_finished.unwrap().status, "finished");
@@ -600,8 +742,12 @@ mod tests {
         let run = new_run(&mut store, "wf").id;
         spawn(&mut store, run, Some("a"), None);
         spawn(&mut store, run, Some("b"), None);
-        store.finish_worker(run, "a", WorkerStatus::Done, None, None, None, true).unwrap();
-        let ended = store.end_active_workers(run, WorkerStatus::Cancelled, "user_cancelled").unwrap();
+        store
+            .finish_worker(run, "a", WorkerStatus::Done, None, None, None, true)
+            .unwrap();
+        let ended = store
+            .end_active_workers(run, WorkerStatus::Cancelled, "user_cancelled")
+            .unwrap();
         assert_eq!(ended.len(), 1);
         assert_eq!(ended[0].name, "b");
         assert!(store.running_workers().unwrap().is_empty());

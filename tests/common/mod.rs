@@ -44,7 +44,10 @@ impl Env {
 
     fn with_backend(backend: &'static str) -> Env {
         // Keep paths short: Unix socket paths are limited to ~104 bytes.
-        let dir = tempfile::Builder::new().prefix("tm").tempdir_in("/tmp").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("tm")
+            .tempdir_in("/tmp")
+            .unwrap();
         let vars = vec![
             ("TOME_NOTIFY".into(), "off".into()),
             ("TOME_START_TIMEOUT".into(), "off".into()),
@@ -72,11 +75,19 @@ impl Env {
 
     /// This env's private tmux server (`tmux -L <name>`).
     pub fn tmux_socket(&self) -> String {
-        format!("tome-{}", self.dir.path().file_name().unwrap().to_string_lossy())
+        format!(
+            "tome-{}",
+            self.dir.path().file_name().unwrap().to_string_lossy()
+        )
     }
 
     pub fn tmux(&self, args: &[&str]) -> Output {
-        Command::new("tmux").args(["-L", &self.tmux_socket()]).args(args).env_remove("TMUX").output().unwrap()
+        Command::new("tmux")
+            .args(["-L", &self.tmux_socket()])
+            .args(args)
+            .env_remove("TMUX")
+            .output()
+            .unwrap()
     }
 
     /// The cmux workspace ids recorded for this env's runs.
@@ -88,7 +99,12 @@ impl Env {
             serde_json::from_slice(&self.run(&full).stdout).unwrap_or(Value::Null)
         };
         let runs = json(&["runs", "list"]);
-        let ids: Vec<i64> = runs["runs"].as_array().into_iter().flatten().filter_map(|r| r["id"].as_i64()).collect();
+        let ids: Vec<i64> = runs["runs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["id"].as_i64())
+            .collect();
         ids.iter()
             .flat_map(|id| {
                 let shown = json(&["runs", "show", &id.to_string()]);
@@ -105,7 +121,9 @@ impl Env {
 
     /// Whether a tmux session exists on this env's server.
     pub fn has_session(&self, name: &str) -> bool {
-        self.tmux(&["has-session", "-t", &format!("={name}")]).status.success()
+        self.tmux(&["has-session", "-t", &format!("={name}")])
+            .status
+            .success()
     }
 
     pub fn home(&self) -> PathBuf {
@@ -189,7 +207,10 @@ pub const IDLE_CONFIG: &str = "harnesses:\n  claude: [sleep, \"600\"]\n";
 pub fn eventually(what: &str, mut f: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !f() {
-        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
 }
@@ -204,7 +225,12 @@ impl Drop for Env {
             // And the tome workspaces the `tab` and `split` layouts opened.
             let places = std::fs::read(self.home().join("workspaces.json")).unwrap_or_default();
             let places: Value = serde_json::from_slice(&places).unwrap_or(Value::Null);
-            for p in places.as_array().into_iter().flatten().filter(|p| p["backend"] == "cmux") {
+            for p in places
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|p| p["backend"] == "cmux")
+            {
                 if let Some(id) = p["id"].as_str() {
                     cmux(&["close-workspace", "--workspace", id]);
                 }
@@ -219,7 +245,11 @@ impl Drop for Env {
 
 /// Run the cmux CLI.
 pub fn cmux(args: &[&str]) -> Output {
-    Command::new("cmux").args(args).env("CMUX_QUIET", "1").output().unwrap()
+    Command::new("cmux")
+        .args(args)
+        .env("CMUX_QUIET", "1")
+        .output()
+        .unwrap()
 }
 
 /// Whether a cmux workspace with this id is open.

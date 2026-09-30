@@ -64,7 +64,12 @@ pub struct Response {
 
 impl Response {
     pub fn ok(id: Value, result: Value) -> Self {
-        Response { jsonrpc: JSONRPC.into(), id, result: Some(result), error: None }
+        Response {
+            jsonrpc: JSONRPC.into(),
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
 
     pub fn err(id: Value, code: i64, message: impl Into<String>, data: Option<Value>) -> Self {
@@ -72,7 +77,11 @@ impl Response {
             jsonrpc: JSONRPC.into(),
             id,
             result: None,
-            error: Some(RpcError { code, message: message.into(), data }),
+            error: Some(RpcError {
+                code,
+                message: message.into(),
+                data,
+            }),
         }
     }
 
@@ -127,7 +136,11 @@ impl Client {
             Ok(stream) => {
                 stream.set_read_timeout(Some(Duration::from_secs(300)))?;
                 let writer = stream.try_clone()?;
-                Ok(Client { reader: BufReader::new(stream), writer, next_id: 1 })
+                Ok(Client {
+                    reader: BufReader::new(stream),
+                    writer,
+                    next_id: 1,
+                })
             }
             Err(e) if is_not_running(&e) => Err(CliError::daemon_not_running()),
             Err(e) => Err(CliError::internal(format!(
@@ -145,7 +158,9 @@ impl Client {
             .read_line(&mut buf)
             .map_err(|e| CliError::internal(format!("failed to read daemon response: {e}")))?;
         if n == 0 {
-            return Err(CliError::internal("daemon closed the connection without responding"));
+            return Err(CliError::internal(
+                "daemon closed the connection without responding",
+            ));
         }
         parse_response(buf.as_bytes())
     }
@@ -167,11 +182,16 @@ impl Client {
         let mut buf = Vec::new();
         loop {
             match self.reader.read_until(b'\n', &mut buf) {
-                Ok(0) => return Err(CliError::internal("the daemon closed the connection mid-run")),
+                Ok(0) => {
+                    return Err(CliError::internal(
+                        "the daemon closed the connection mid-run",
+                    ))
+                }
                 Ok(_) if buf.ends_with(b"\n") => {
                     let line = std::mem::take(&mut buf);
-                    let msg: Value = serde_json::from_slice(&line)
-                        .map_err(|e| CliError::internal(format!("malformed daemon message: {e}")))?;
+                    let msg: Value = serde_json::from_slice(&line).map_err(|e| {
+                        CliError::internal(format!("malformed daemon message: {e}"))
+                    })?;
                     if msg["method"] == EVENT {
                         on_event(&msg["params"]);
                     } else {
@@ -179,10 +199,19 @@ impl Client {
                     }
                 }
                 Ok(_) => {}
-                Err(e) if matches!(e.kind(), IoErrorKind::WouldBlock | IoErrorKind::TimedOut | IoErrorKind::Interrupted) => {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        IoErrorKind::WouldBlock | IoErrorKind::TimedOut | IoErrorKind::Interrupted
+                    ) =>
+                {
                     on_idle()?
                 }
-                Err(e) => return Err(CliError::internal(format!("failed to read from the daemon: {e}"))),
+                Err(e) => {
+                    return Err(CliError::internal(format!(
+                        "failed to read from the daemon: {e}"
+                    )))
+                }
             }
         }
     }
@@ -190,8 +219,15 @@ impl Client {
     fn send(&mut self, method: &str, params: Value) -> CliResult<()> {
         let id = self.next_id;
         self.next_id += 1;
-        let req = Request { jsonrpc: JSONRPC.into(), id: json!(id), method: method.into(), params, caller: caller() };
-        let mut line = serde_json::to_string(&req).map_err(|e| CliError::internal(e.to_string()))?;
+        let req = Request {
+            jsonrpc: JSONRPC.into(),
+            id: json!(id),
+            method: method.into(),
+            params,
+            caller: caller(),
+        };
+        let mut line =
+            serde_json::to_string(&req).map_err(|e| CliError::internal(e.to_string()))?;
         line.push('\n');
         self.writer
             .write_all(line.as_bytes())
@@ -201,14 +237,18 @@ impl Client {
 
 /// Who this process is, if tome started it as an agent.
 fn caller() -> Option<Value> {
-    let var = |k| std::env::var(k).ok().filter(|v: &String| !v.trim().is_empty());
+    let var = |k| {
+        std::env::var(k)
+            .ok()
+            .filter(|v: &String| !v.trim().is_empty())
+    };
     let run_id = var("TOME_RUN_ID")?;
     Some(json!({ "run_id": run_id, "worker": var("TOME_WORKER_ID") }))
 }
 
 fn parse_response(line: &[u8]) -> CliResult<Value> {
-    let resp: Response =
-        serde_json::from_slice(line).map_err(|e| CliError::internal(format!("malformed daemon response: {e}")))?;
+    let resp: Response = serde_json::from_slice(line)
+        .map_err(|e| CliError::internal(format!("malformed daemon response: {e}")))?;
     match (resp.result, resp.error) {
         (_, Some(err)) => Err(err.into_cli_error()),
         (Some(result), None) => Ok(result),
@@ -217,7 +257,10 @@ fn parse_response(line: &[u8]) -> CliResult<Value> {
 }
 
 fn is_not_running(e: &std::io::Error) -> bool {
-    matches!(e.kind(), IoErrorKind::NotFound | IoErrorKind::ConnectionRefused)
+    matches!(
+        e.kind(),
+        IoErrorKind::NotFound | IoErrorKind::ConnectionRefused
+    )
 }
 
 /// One-shot call helper.

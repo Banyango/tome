@@ -9,8 +9,8 @@
 use crate::engine::Engine;
 use crate::store::NewFire;
 use crate::triggers::{self, outcome, Event, FireRequest};
-use chrono::{DateTime, Local};
 use crate::workflow::{Library, Scope, Trigger, TriggerKind};
+use chrono::{DateTime, Local};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,7 +45,10 @@ impl Armed {
     pub fn key(&self) -> String {
         format!(
             "{}\u{0}{}\u{0}{}\u{0}{}",
-            self.project.as_deref().map(|p| p.display().to_string()).unwrap_or_default(),
+            self.project
+                .as_deref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
             self.workflow_path.display(),
             self.index,
             self.trigger.describe()
@@ -74,34 +77,57 @@ pub struct Scan {
 impl Scan {
     /// Whether a global workflow `name` is shadowed at `path`.
     pub fn shadowed(&self, name: &str, path: &Path) -> bool {
-        self.project_names.iter().any(|(root, names)| path.starts_with(root) && names.contains(name))
+        self.project_names
+            .iter()
+            .any(|(root, names)| path.starts_with(root) && names.contains(name))
     }
 }
 
 /// Invalid workflows only count as broken triggers when they (seem to)
 /// declare triggers.
 fn mentions_triggers(path: &Path) -> bool {
-    std::fs::read_to_string(path).is_ok_and(|t| t.lines().any(|l| l.trim_start().starts_with("triggers:")))
+    std::fs::read_to_string(path)
+        .is_ok_and(|t| t.lines().any(|l| l.trim_start().starts_with("triggers:")))
 }
 
 /// Read the armed triggers of `projects` (roots) and the global workflows.
 pub fn scan(projects: &[PathBuf]) -> Scan {
     let global_dir = crate::paths::tome_home().join("workflows");
     let mut out = Scan::default();
-    let mut libraries = vec![(None, Library { global_dir: global_dir.clone(), project_dir: None })];
+    let mut libraries = vec![(
+        None,
+        Library {
+            global_dir: global_dir.clone(),
+            project_dir: None,
+        },
+    )];
     for root in projects {
-        let lib = Library { global_dir: global_dir.clone(), project_dir: Some(root.join(".tome/workflows")) };
+        let lib = Library {
+            global_dir: global_dir.clone(),
+            project_dir: Some(root.join(".tome/workflows")),
+        };
         libraries.push((Some(root.clone()), lib));
     }
     for (project, lib) in libraries {
-        let scope = if project.is_some() { Scope::Project } else { Scope::Global };
+        let scope = if project.is_some() {
+            Scope::Project
+        } else {
+            Scope::Global
+        };
         for entry in lib.entries().into_iter().filter(|e| e.scope == scope) {
-            let name = entry
-                .name()
-                .map(str::to_string)
-                .unwrap_or_else(|| entry.path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
+            let name = entry.name().map(str::to_string).unwrap_or_else(|| {
+                entry
+                    .path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            });
             if let Some(root) = &project {
-                out.project_names.entry(root.clone()).or_default().insert(name.clone());
+                out.project_names
+                    .entry(root.clone())
+                    .or_default()
+                    .insert(name.clone());
             }
             match entry.result {
                 Ok(wf) => {
@@ -149,9 +175,18 @@ impl CronState {
         let mut out = Vec::new();
         let mut next = HashMap::new();
         for a in armed {
-            let TriggerKind::Cron { schedule, .. } = &a.trigger.kind else { continue };
+            let TriggerKind::Cron { schedule, .. } = &a.trigger.kind else {
+                continue;
+            };
             let key = a.key();
-            let Some(at) = self.next.get(&key).copied().or_else(|| schedule.next_local(now)) else { continue };
+            let Some(at) = self
+                .next
+                .get(&key)
+                .copied()
+                .or_else(|| schedule.next_local(now))
+            else {
+                continue;
+            };
             if now < at {
                 next.insert(key, at);
                 continue;
@@ -159,7 +194,12 @@ impl CronState {
             if now - at <= MISSED_AFTER {
                 out.push((a.clone(), at));
             } else {
-                eprintln!("tome daemon: skipped missed cron time {} of {} ({})", at.to_rfc3339(), a.name, a.trigger.describe());
+                eprintln!(
+                    "tome daemon: skipped missed cron time {} of {} ({})",
+                    at.to_rfc3339(),
+                    a.name,
+                    a.trigger.describe()
+                );
             }
             if let Some(n) = schedule.next_local(now) {
                 next.insert(key, n);
@@ -177,12 +217,18 @@ fn signature(projects: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>, u64)> {
     let mut sig = Vec::new();
     for dir in dirs {
         sig.push((dir.clone(), None, 0));
-        let Ok(read) = std::fs::read_dir(&dir) else { continue };
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in read.flatten() {
             let path = e.path();
             if path.extension().is_some_and(|x| x == "md") {
                 let meta = e.metadata().ok();
-                sig.push((path, meta.as_ref().and_then(|m| m.modified().ok()), meta.map(|m| m.len()).unwrap_or(0)));
+                sig.push((
+                    path,
+                    meta.as_ref().and_then(|m| m.modified().ok()),
+                    meta.map(|m| m.len()).unwrap_or(0),
+                ));
             }
         }
     }
@@ -193,7 +239,9 @@ fn signature(projects: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>, u64)> {
 impl Engine {
     /// Enabled projects, after dropping those whose directory is gone.
     pub(crate) fn live_projects(&self) -> Vec<PathBuf> {
-        let Ok(projects) = self.with_store(|store| store.projects()) else { return Vec::new() };
+        let Ok(projects) = self.with_store(|store| store.projects()) else {
+            return Vec::new();
+        };
         let mut live = Vec::new();
         for p in projects {
             let root = PathBuf::from(&p.path);
@@ -238,8 +286,11 @@ impl Engine {
             if now_sig != sig {
                 sig = now_sig;
                 let next = scan(&projects);
-                let was_armed: HashSet<(PathBuf, Option<PathBuf>)> =
-                    current.armed.iter().map(|a| (a.workflow_path.clone(), a.project.clone())).collect();
+                let was_armed: HashSet<(PathBuf, Option<PathBuf>)> = current
+                    .armed
+                    .iter()
+                    .map(|a| (a.workflow_path.clone(), a.project.clone()))
+                    .collect();
                 let mut still = HashMap::new();
                 for b in &next.broken {
                     let key = (b.workflow_path.clone(), b.project.clone());
@@ -251,16 +302,25 @@ impl Engine {
                 reported = still;
                 self.drop_unsubscribed(&next, &projects);
                 // Re-armed: stalled topic triggers get another go.
-                self.stalled.lock().unwrap_or_else(|p| p.into_inner()).clear();
+                self.stalled
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clear();
                 current = next;
                 eprintln!("tome daemon: {} trigger(s) armed", current.armed.len());
             }
             for (armed, at) in cron.due(&current.armed, Local::now()) {
-                let event = Event { scheduled: Some(at), ..Default::default() };
+                let event = Event {
+                    scheduled: Some(at),
+                    ..Default::default()
+                };
                 self.fire_armed(&armed, event);
             }
             let muted = |a: &Armed| {
-                a.trigger.mutes_while_running() && self.active_runs(&a.name, &a.workflow_path).is_ok_and(|r| !r.is_empty())
+                a.trigger.mutes_while_running()
+                    && self
+                        .active_runs(&a.name, &a.workflow_path)
+                        .is_ok_and(|r| !r.is_empty())
             };
             for (armed, event) in files.poll(&current, std::time::Instant::now(), muted) {
                 self.fire_armed(&armed, event);
@@ -321,7 +381,13 @@ mod tests {
     fn armed(cron: &str) -> Armed {
         let text = format!("---\nname: w\ntriggers:\n  - cron: \"{cron}\"\n---\n");
         let wf = crate::workflow::parse(Path::new("w.md"), &text).unwrap();
-        Armed { workflow_path: "w.md".into(), name: "w".into(), project: None, index: 0, trigger: wf.frontmatter.triggers[0].clone() }
+        Armed {
+            workflow_path: "w.md".into(),
+            name: "w".into(),
+            project: None,
+            index: 0,
+            trigger: wf.frontmatter.triggers[0].clone(),
+        }
     }
 
     fn at(h: u32, m: u32, s: u32) -> DateTime<Local> {
@@ -332,10 +398,16 @@ mod tests {
     fn cron_fires_on_schedule_and_skips_missed_times() {
         let a = [armed("*/10 9-17 * * *")];
         let mut state = CronState::default();
-        assert!(state.due(&a, at(9, 1, 0)).is_empty(), "arming waits for the next time");
+        assert!(
+            state.due(&a, at(9, 1, 0)).is_empty(),
+            "arming waits for the next time"
+        );
         assert!(state.due(&a, at(9, 9, 59)).is_empty());
         let due = state.due(&a, at(9, 10, 1));
-        assert_eq!(due.iter().map(|(_, t)| *t).collect::<Vec<_>>(), [at(9, 10, 0)]);
+        assert_eq!(
+            due.iter().map(|(_, t)| *t).collect::<Vec<_>>(),
+            [at(9, 10, 0)]
+        );
         assert!(state.due(&a, at(9, 10, 2)).is_empty(), "fires once");
         // Asleep from 9:15 to 9:45: 9:20..9:40 are skipped, not caught up.
         assert!(state.due(&a, at(9, 45, 0)).is_empty());

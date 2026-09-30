@@ -134,7 +134,9 @@ pub enum Size {
 impl Size {
     /// `30%` or `80` (cells).
     pub fn parse(s: &str) -> Result<Size, String> {
-        let bad = || format!("invalid `split.size` `{s}` (expected a percent like `30%` or a number of cells like `80`)");
+        let bad = || {
+            format!("invalid `split.size` `{s}` (expected a percent like `30%` or a number of cells like `80`)")
+        };
         let s = s.trim();
         let (digits, percent) = match s.strip_suffix('%') {
             Some(d) => (d.trim(), true),
@@ -144,7 +146,11 @@ impl Size {
         if n == 0 {
             return Err(bad());
         }
-        Ok(if percent { Size::Percent(n) } else { Size::Cells(n) })
+        Ok(if percent {
+            Size::Percent(n)
+        } else {
+            Size::Cells(n)
+        })
     }
 }
 
@@ -239,7 +245,10 @@ impl Settings {
 
     /// Just a layout, as the old single `layout` string gave.
     pub fn layout(layout: Layout) -> Settings {
-        Settings { layout: Some(layout), ..Settings::default() }
+        Settings {
+            layout: Some(layout),
+            ..Settings::default()
+        }
     }
 
     /// The settings as `key=value` pairs, for listings.
@@ -268,16 +277,30 @@ impl Settings {
 }
 
 pub fn parse_layout(s: &str) -> Result<Layout, String> {
-    Layout::parse(s).ok_or_else(|| format!("unknown `layout` `{s}` (expected one of: {})", LAYOUTS.join(", ")))
+    Layout::parse(s).ok_or_else(|| {
+        format!(
+            "unknown `layout` `{s}` (expected one of: {})",
+            LAYOUTS.join(", ")
+        )
+    })
 }
 
 pub fn parse_direction(s: &str) -> Result<Direction, String> {
-    Direction::parse(s)
-        .ok_or_else(|| format!("unknown `split.direction` `{s}` (expected one of: {})", DIRECTIONS.join(", ")))
+    Direction::parse(s).ok_or_else(|| {
+        format!(
+            "unknown `split.direction` `{s}` (expected one of: {})",
+            DIRECTIONS.join(", ")
+        )
+    })
 }
 
 pub fn parse_from(s: &str) -> Result<From, String> {
-    From::parse(s).ok_or_else(|| format!("unknown `from` `{s}` (expected one of: {})", FROMS.join(", ")))
+    From::parse(s).ok_or_else(|| {
+        format!(
+            "unknown `from` `{s}` (expected one of: {})",
+            FROMS.join(", ")
+        )
+    })
 }
 
 /// A YAML scalar as a string (`size: 80` is a number).
@@ -299,7 +322,10 @@ pub struct Problem {
 
 impl Problem {
     fn new(path: &[&str], message: impl Into<String>) -> Problem {
-        Problem { path: path.iter().map(|s| s.to_string()).collect(), message: message.into() }
+        Problem {
+            path: path.iter().map(|s| s.to_string()).collect(),
+            message: message.into(),
+        }
     }
 }
 
@@ -322,7 +348,9 @@ pub fn parse_settings(
         path.push(key);
         let mut problem = |m: String| problems.push(Problem::new(&path, m));
         match key {
-            "preset" if !allow_preset => problem(format!("{what}: a preset can't reference another preset")),
+            "preset" if !allow_preset => {
+                problem(format!("{what}: a preset can't reference another preset"))
+            }
             "preset" => match v.as_str().filter(|p| !p.trim().is_empty()) {
                 Some(p) => s.preset = Some(p.to_string()),
                 None => problem(format!("{what}: `preset` must be a preset name")),
@@ -337,9 +365,14 @@ pub fn parse_settings(
                     Yaml::String(w) => Workspace::parse(w),
                     Yaml::Mapping(m) => match (m.len(), m.get("name").and_then(Yaml::as_str)) {
                         (1, Some(name)) => Workspace::named(name),
-                        _ => Err("`workspace` must be a keyword, a name, or `{ name: <name> }`".to_string()),
+                        _ => Err(
+                            "`workspace` must be a keyword, a name, or `{ name: <name> }`"
+                                .to_string(),
+                        ),
                     },
-                    _ => Err("`workspace` must be a keyword, a name, or `{ name: <name> }`".to_string()),
+                    _ => Err(
+                        "`workspace` must be a keyword, a name, or `{ name: <name> }`".to_string(),
+                    ),
                 };
                 match parsed {
                     Ok(w) => s.workspace = Some(w),
@@ -348,7 +381,9 @@ pub fn parse_settings(
             }
             "split" => {
                 let Yaml::Mapping(split) = v else {
-                    problem(format!("{what}: `split` must be a mapping with `direction` and/or `size`"));
+                    problem(format!(
+                        "{what}: `split` must be a mapping with `direction` and/or `size`"
+                    ));
                     continue;
                 };
                 for (sk, sv) in split {
@@ -365,7 +400,9 @@ pub fn parse_settings(
                         "size" => match scalar(sv).map(|x| Size::parse(&x)) {
                             Some(Ok(size)) => s.size = Some(size),
                             Some(Err(e)) => problem(format!("{what}: {e}")),
-                            None => problem(format!("{what}: `split.size` must be a percent or a number of cells")),
+                            None => problem(format!(
+                                "{what}: `split.size` must be a percent or a number of cells"
+                            )),
                         },
                         other => problem(format!(
                             "{what}: unknown key `split.{other}` (expected one of: {})",
@@ -381,9 +418,16 @@ pub fn parse_settings(
             },
             k if other.contains(&k) => {}
             other_key => {
-                let mut known: Vec<&str> = KEYS.iter().filter(|k| allow_preset || **k != "preset").copied().collect();
+                let mut known: Vec<&str> = KEYS
+                    .iter()
+                    .filter(|k| allow_preset || **k != "preset")
+                    .copied()
+                    .collect();
                 known.extend_from_slice(other);
-                problem(format!("{what}: unknown key `{other_key}` (expected one of: {})", known.join(", ")))
+                problem(format!(
+                    "{what}: unknown key `{other_key}` (expected one of: {})",
+                    known.join(", ")
+                ))
             }
         }
     }
@@ -404,13 +448,22 @@ pub fn parse_value<'a>(
         Yaml::String(s) => match Layout::parse(s) {
             Some(l) => Some((Settings::layout(l), None)),
             None => {
-                problems.push(Problem::new(at, format!("unknown {what} `{s}` (expected one of: {})", LAYOUTS.join(", "))));
+                problems.push(Problem::new(
+                    at,
+                    format!(
+                        "unknown {what} `{s}` (expected one of: {})",
+                        LAYOUTS.join(", ")
+                    ),
+                ));
                 None
             }
         },
         Yaml::Mapping(m) => Some((parse_settings(m, at, what, other, true, problems), Some(m))),
         _ => {
-            problems.push(Problem::new(at, format!("{what} must be a layout name or a mapping of placement settings")));
+            problems.push(Problem::new(
+                at,
+                format!("{what} must be a layout name or a mapping of placement settings"),
+            ));
             None
         }
     }
@@ -450,12 +503,16 @@ pub struct Spec {
 impl Spec {
     /// Every preset it names.
     pub fn presets(&self) -> Vec<&str> {
-        let mut out: Vec<&str> = [Some(&self.base), self.orchestrator.as_ref(), self.workers.as_ref()]
-            .into_iter()
-            .flatten()
-            .chain(self.rules.iter().map(|r| &r.settings))
-            .filter_map(|s| s.preset.as_deref())
-            .collect();
+        let mut out: Vec<&str> = [
+            Some(&self.base),
+            self.orchestrator.as_ref(),
+            self.workers.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(self.rules.iter().map(|r| &r.settings))
+        .filter_map(|s| s.preset.as_deref())
+        .collect();
         out.dedup();
         out
     }
@@ -466,15 +523,36 @@ impl Spec {
 /// a role block with the rules under `rules`).
 pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
     const AT: &[&str] = &["defaults", "layout"];
-    let (base, map) = parse_value(v, AT, "`defaults.layout`", &["orchestrator", "workers"], problems)?;
-    let mut spec = Spec { base, ..Spec::default() };
+    let (base, map) = parse_value(
+        v,
+        AT,
+        "`defaults.layout`",
+        &["orchestrator", "workers"],
+        problems,
+    )?;
+    let mut spec = Spec {
+        base,
+        ..Spec::default()
+    };
     let Some(map) = map else { return Some(spec) };
     if let Some(o) = map.get("orchestrator") {
         let at = ["defaults", "layout", "orchestrator"];
         match o {
-            Yaml::Mapping(m) => spec.orchestrator = Some(parse_settings(m, &at, "`defaults.layout.orchestrator`", &[], true, problems)),
+            Yaml::Mapping(m) => {
+                spec.orchestrator = Some(parse_settings(
+                    m,
+                    &at,
+                    "`defaults.layout.orchestrator`",
+                    &[],
+                    true,
+                    problems,
+                ))
+            }
             Yaml::Null => {}
-            _ => problems.push(Problem::new(&at, "`defaults.layout.orchestrator` must be a mapping of placement settings")),
+            _ => problems.push(Problem::new(
+                &at,
+                "`defaults.layout.orchestrator` must be a mapping of placement settings",
+            )),
         }
     }
     if let Some(w) = map.get("workers") {
@@ -482,14 +560,24 @@ pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
         let rules: Option<&Vec<Yaml>> = match w {
             Yaml::Sequence(rules) => Some(rules),
             Yaml::Mapping(m) => {
-                let workers = parse_settings(m, &at, "`defaults.layout.workers`", &["rules"], true, problems);
+                let workers = parse_settings(
+                    m,
+                    &at,
+                    "`defaults.layout.workers`",
+                    &["rules"],
+                    true,
+                    problems,
+                );
                 no_caller(&workers, &at, "`defaults.layout.workers`", problems);
                 spec.workers = Some(workers);
                 match m.get("rules") {
                     None | Some(Yaml::Null) => None,
                     Some(Yaml::Sequence(rules)) => Some(rules),
                     Some(_) => {
-                        problems.push(Problem::new(&["defaults", "layout", "workers", "rules"], "`defaults.layout.workers.rules` must be a list of rules"));
+                        problems.push(Problem::new(
+                            &["defaults", "layout", "workers", "rules"],
+                            "`defaults.layout.workers.rules` must be a list of rules",
+                        ));
                         None
                     }
                 }
@@ -503,13 +591,19 @@ pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
         for (i, rule) in rules.into_iter().flatten().enumerate() {
             let what = format!("`defaults.layout.workers` rule {}", i + 1);
             let Yaml::Mapping(m) = rule else {
-                problems.push(Problem::new(&at, format!("{what} must be a mapping with `match` and placement settings")));
+                problems.push(Problem::new(
+                    &at,
+                    format!("{what} must be a mapping with `match` and placement settings"),
+                ));
                 continue;
             };
             let pattern = match m.get("match").and_then(Yaml::as_str) {
                 Some(p) => p.to_string(),
                 None => {
-                    problems.push(Problem::new(&at, format!("{what} needs a `match` glob for the worker's name")));
+                    problems.push(Problem::new(
+                        &at,
+                        format!("{what} needs a `match` glob for the worker's name"),
+                    ));
                     continue;
                 }
             };
@@ -522,7 +616,11 @@ pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
             };
             let settings = parse_settings(m, &at, &what, &["match"], true, problems);
             no_caller(&settings, &at, &what, problems);
-            spec.rules.push(Rule { pattern, glob, settings });
+            spec.rules.push(Rule {
+                pattern,
+                glob,
+                settings,
+            });
         }
     }
     Some(spec)
@@ -534,11 +632,15 @@ fn no_caller(s: &Settings, at: &[&str], what: &str, problems: &mut Vec<Problem>)
     if s.from == Some(From::Caller) {
         let mut path = at.to_vec();
         path.push("from");
-        problems.push(Problem::new(&path, format!("{what}: {CALLER_IS_FOR_THE_ORCHESTRATOR}")));
+        problems.push(Problem::new(
+            &path,
+            format!("{what}: {CALLER_IS_FOR_THE_ORCHESTRATOR}"),
+        ));
     }
 }
 
-pub const CALLER_IS_FOR_THE_ORCHESTRATOR: &str = "`from: caller` is for the orchestrator only; a worker can't open next to the caller";
+pub const CALLER_IS_FOR_THE_ORCHESTRATOR: &str =
+    "`from: caller` is for the orchestrator only; a worker can't open next to the caller";
 
 // --- presets -------------------------------------------------------------
 
@@ -555,7 +657,10 @@ pub fn built_in(name: &str) -> Option<Settings> {
     match name {
         "tab" => Some(Settings::layout(Layout::Tab)),
         "split" => Some(Settings::layout(Layout::Split)),
-        "workspace" => Some(Settings { workspace: Some(Workspace::Own), ..Settings::default() }),
+        "workspace" => Some(Settings {
+            workspace: Some(Workspace::Own),
+            ..Settings::default()
+        }),
         _ => None,
     }
 }
@@ -574,19 +679,46 @@ fn config_problem(file: &config::File, p: &Problem) -> CliError {
 pub fn presets(cfg: &Config) -> CliResult<BTreeMap<String, Preset>> {
     let mut out: BTreeMap<String, Preset> = BUILT_IN
         .iter()
-        .map(|n| (n.to_string(), Preset { name: n.to_string(), scope: "built-in", settings: built_in(n).unwrap() }))
+        .map(|n| {
+            (
+                n.to_string(),
+                Preset {
+                    name: n.to_string(),
+                    scope: "built-in",
+                    settings: built_in(n).unwrap(),
+                },
+            )
+        })
         .collect();
     for (name, (value, file)) in cfg.entries("layout_presets")? {
         let what = format!("preset `{name}`");
         let mut problems = Vec::new();
         let settings = match &value {
-            Yaml::Mapping(m) => parse_settings(m, &["layout_presets", &name], &what, &[], false, &mut problems),
-            _ => return Err(file.error(format!("{what} must be a mapping of placement settings")).with_hint(config_hint())),
+            Yaml::Mapping(m) => parse_settings(
+                m,
+                &["layout_presets", &name],
+                &what,
+                &[],
+                false,
+                &mut problems,
+            ),
+            _ => {
+                return Err(file
+                    .error(format!("{what} must be a mapping of placement settings"))
+                    .with_hint(config_hint()))
+            }
         };
         if let Some(p) = problems.first() {
             return Err(config_problem(file, p));
         }
-        out.insert(name.clone(), Preset { name, scope: file.scope.as_str(), settings });
+        out.insert(
+            name.clone(),
+            Preset {
+                name,
+                scope: file.scope.as_str(),
+                settings,
+            },
+        );
     }
     Ok(out)
 }
@@ -604,11 +736,26 @@ pub fn from_flags(
     let bad = |flag: &str, e: String| CliError::invalid(format!("--{flag}: {e}"));
     Ok(Settings {
         preset: preset.map(str::to_string),
-        layout: layout.map(parse_layout).transpose().map_err(|e| bad("layout", e))?,
-        workspace: workspace.map(Workspace::parse).transpose().map_err(|e| bad("workspace", e))?,
-        direction: direction.map(parse_direction).transpose().map_err(|e| bad("direction", e))?,
-        size: size.map(Size::parse).transpose().map_err(|e| bad("size", e))?,
-        from: from.map(parse_from).transpose().map_err(|e| bad("from", e))?,
+        layout: layout
+            .map(parse_layout)
+            .transpose()
+            .map_err(|e| bad("layout", e))?,
+        workspace: workspace
+            .map(Workspace::parse)
+            .transpose()
+            .map_err(|e| bad("workspace", e))?,
+        direction: direction
+            .map(parse_direction)
+            .transpose()
+            .map_err(|e| bad("direction", e))?,
+        size: size
+            .map(Size::parse)
+            .transpose()
+            .map_err(|e| bad("size", e))?,
+        from: from
+            .map(parse_from)
+            .transpose()
+            .map_err(|e| bad("from", e))?,
     })
 }
 
@@ -616,13 +763,22 @@ impl Settings {
     /// Settings sent over RPC or stored on a run (as serialized above).
     pub fn from_json(v: &Value) -> CliResult<Settings> {
         let get = |k: &str| v.get(k).and_then(Value::as_str);
-        from_flags(get("preset"), get("layout"), get("workspace"), get("direction"), get("size"), get("from"))
+        from_flags(
+            get("preset"),
+            get("layout"),
+            get("workspace"),
+            get("direction"),
+            get("size"),
+            get("from"),
+        )
     }
 }
 
 /// Fail on a flag's preset that isn't defined, before anything is recorded.
 pub fn check_flag_preset(flags: &Settings, source: &str, project: Option<&Path>) -> CliResult<()> {
-    let Some(name) = &flags.preset else { return Ok(()) };
+    let Some(name) = &flags.preset else {
+        return Ok(());
+    };
     let known = presets(&Config::load(project)?)?;
     if known.contains_key(name) {
         Ok(())
@@ -637,17 +793,27 @@ pub fn list(cfg: &Config) -> CliResult<Vec<(Preset, bool)>> {
     let effective = presets(cfg)?;
     let mut out: Vec<Preset> = BUILT_IN
         .iter()
-        .map(|n| Preset { name: n.to_string(), scope: "built-in", settings: built_in(n).unwrap() })
+        .map(|n| Preset {
+            name: n.to_string(),
+            scope: "built-in",
+            settings: built_in(n).unwrap(),
+        })
         .collect();
     for file in cfg.files() {
-        let Some(Yaml::Mapping(map)) = file.get("layout_presets") else { continue };
+        let Some(Yaml::Mapping(map)) = file.get("layout_presets") else {
+            continue;
+        };
         for name in map.keys().filter_map(Yaml::as_str) {
             let mut problems = Vec::new();
             let settings = match map.get(name) {
                 Some(Yaml::Mapping(m)) => parse_settings(m, &[], "", &[], false, &mut problems),
                 _ => Settings::default(),
             };
-            out.push(Preset { name: name.to_string(), scope: file.scope.as_str(), settings });
+            out.push(Preset {
+                name: name.to_string(),
+                scope: file.scope.as_str(),
+                settings,
+            });
         }
     }
     Ok(out
@@ -675,11 +841,18 @@ pub fn presets_report(cwd: &Path) -> CliResult<Report> {
     let rows = listed
         .iter()
         .map(|(p, shadowed)| {
-            let scope = if *shadowed { format!("{} (overridden)", p.scope) } else { p.scope.to_string() };
+            let scope = if *shadowed {
+                format!("{} (overridden)", p.scope)
+            } else {
+                p.scope.to_string()
+            };
             vec![p.name.clone(), scope, p.settings.describe()]
         })
         .collect();
-    Ok(Report::new(json!({ "presets": data }), table(&["PRESET", "SCOPE", "SETTINGS"], rows)))
+    Ok(Report::new(
+        json!({ "presets": data }),
+        table(&["PRESET", "SCOPE", "SETTINGS"], rows),
+    ))
 }
 
 fn unknown_preset(name: &str, known: &BTreeMap<String, Preset>, source: &str) -> CliError {
@@ -742,12 +915,18 @@ impl Placement {
         let str_of = |key: &str| v[key].as_str();
         let sources = v["sources"]
             .as_object()
-            .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                    .collect()
+            })
             .unwrap_or_default();
         Some(Placement {
             layout: Layout::parse(str_of("layout")?)?,
             workspace: Workspace::parse(str_of("workspace")?).ok()?,
-            direction: str_of("direction").and_then(Direction::parse).unwrap_or(Direction::Right),
+            direction: str_of("direction")
+                .and_then(Direction::parse)
+                .unwrap_or(Direction::Right),
             size: str_of("size").and_then(|s| Size::parse(s).ok()),
             from: str_of("from").and_then(From::parse),
             sources,
@@ -759,7 +938,11 @@ impl Placement {
     /// What a session from before placements had: its layout, in the
     /// project workspace or its own.
     pub fn of_layout(layout: Layout) -> Placement {
-        let workspace = if layout == Layout::Workspace { Workspace::Own } else { Workspace::Project };
+        let workspace = if layout == Layout::Workspace {
+            Workspace::Own
+        } else {
+            Workspace::Project
+        };
         Placement {
             layout,
             workspace,
@@ -791,41 +974,78 @@ pub fn resolve(inputs: &Inputs, project: Option<&Path>) -> CliResult<Placement> 
 }
 
 /// [`resolve`] with the config and `TOME_LAYOUT` given.
-pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> CliResult<Placement> {
+pub fn resolve_in(
+    inputs: &Inputs,
+    cfg: &Config,
+    env_layout: Option<String>,
+) -> CliResult<Placement> {
     let presets = presets(cfg)?;
     let mut levels = Vec::new();
     let worker = matches!(inputs.role, Role::Worker(_));
     let own = |levels: &mut Vec<Level>, source: String, s: Option<&Settings>| {
         if let Some(s) = s {
-            levels.push(Level { source, settings: s.clone(), shared: false });
+            levels.push(Level {
+                source,
+                settings: s.clone(),
+                shared: false,
+            });
         }
     };
     let push = |levels: &mut Vec<Level>, source: String, s: Option<&Settings>| {
         if let Some(s) = s {
-            levels.push(Level { source, settings: s.clone(), shared: worker });
+            levels.push(Level {
+                source,
+                settings: s.clone(),
+                shared: worker,
+            });
         }
     };
     let spec = inputs.spec;
     match inputs.role {
         Role::Orchestrator => {
             own(&mut levels, "`tome run` flags".into(), inputs.flags);
-            own(&mut levels, "the `orchestrator` block".into(), spec.and_then(|s| s.orchestrator.as_ref()));
+            own(
+                &mut levels,
+                "the `orchestrator` block".into(),
+                spec.and_then(|s| s.orchestrator.as_ref()),
+            );
         }
         Role::Worker(name) => {
-            own(&mut levels, "`tome worker spawn` flags".into(), inputs.flags);
+            own(
+                &mut levels,
+                "`tome worker spawn` flags".into(),
+                inputs.flags,
+            );
             if let Some(rule) = spec.and_then(|s| s.rules.iter().find(|r| r.matches(name))) {
-                own(&mut levels, format!("the `workers` rule `{}`", rule.pattern), Some(&rule.settings));
+                own(
+                    &mut levels,
+                    format!("the `workers` rule `{}`", rule.pattern),
+                    Some(&rule.settings),
+                );
             }
-            own(&mut levels, "the `workers` block".into(), spec.and_then(|s| s.workers.as_ref()));
+            own(
+                &mut levels,
+                "the `workers` block".into(),
+                spec.and_then(|s| s.workers.as_ref()),
+            );
             push(&mut levels, "`tome run` flags".into(), inputs.run_flags);
         }
     }
-    push(&mut levels, "`defaults.layout`".into(), spec.map(|s| &s.base));
+    push(
+        &mut levels,
+        "`defaults.layout`".into(),
+        spec.map(|s| &s.base),
+    );
     if let Some(env) = env_layout {
         let layout = Layout::parse(&env).ok_or_else(|| {
-            CliError::invalid(format!("unknown session layout `{env}` (from TOME_LAYOUT)")).with_hint(format!("use {}", LAYOUTS.join(", ")))
+            CliError::invalid(format!("unknown session layout `{env}` (from TOME_LAYOUT)"))
+                .with_hint(format!("use {}", LAYOUTS.join(", ")))
         })?;
-        push(&mut levels, "TOME_LAYOUT".into(), Some(&Settings::layout(layout)));
+        push(
+            &mut levels,
+            "TOME_LAYOUT".into(),
+            Some(&Settings::layout(layout)),
+        );
     }
     if let Some((value, file)) = cfg.get("layout") {
         let mut problems = Vec::new();
@@ -834,8 +1054,11 @@ pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> 
             _ if !problems.is_empty() => {
                 // Keep 008's message for an unknown layout name.
                 if let Yaml::String(name) = value {
-                    return Err(CliError::invalid(format!("unknown session layout `{name}` (from `layout` in {})", file.label()))
-                        .with_hint(format!("use {}", LAYOUTS.join(", "))));
+                    return Err(CliError::invalid(format!(
+                        "unknown session layout `{name}` (from `layout` in {})",
+                        file.label()
+                    ))
+                    .with_hint(format!("use {}", LAYOUTS.join(", "))));
                 }
                 return Err(config_problem(file, &problems[0]));
             }
@@ -851,8 +1074,14 @@ pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> 
         let (source, shared) = (level.source.clone(), level.shared);
         expanded.push(level);
         if let Some(name) = preset {
-            let p = presets.get(&name).ok_or_else(|| unknown_preset(&name, &presets, &source))?;
-            expanded.push(Level { source: format!("preset `{name}` (from {source})"), settings: p.settings.clone(), shared });
+            let p = presets
+                .get(&name)
+                .ok_or_else(|| unknown_preset(&name, &presets, &source))?;
+            expanded.push(Level {
+                source: format!("preset `{name}` (from {source})"),
+                settings: p.settings.clone(),
+                shared,
+            });
         }
     }
     // A worker skips `from: caller` where it's shared with the orchestrator;
@@ -860,7 +1089,10 @@ pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> 
     for level in expanded.iter_mut().filter(|_| worker) {
         if level.settings.from == Some(From::Caller) {
             if !level.shared {
-                return Err(CliError::invalid(format!("{CALLER_IS_FOR_THE_ORCHESTRATOR} (from {})", level.source)));
+                return Err(CliError::invalid(format!(
+                    "{CALLER_IS_FOR_THE_ORCHESTRATOR} (from {})",
+                    level.source
+                )));
             }
             level.settings.from = None;
         }
@@ -869,7 +1101,10 @@ pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> 
     let mut sources = BTreeMap::new();
     macro_rules! pick {
         ($field:ident, $key:expr) => {{
-            let found = expanded.iter().enumerate().find_map(|(i, l)| l.settings.$field.clone().map(|v| (i, v)));
+            let found = expanded
+                .iter()
+                .enumerate()
+                .find_map(|(i, l)| l.settings.$field.clone().map(|v| (i, v)));
             if let Some((i, _)) = &found {
                 sources.insert($key.to_string(), expanded[*i].source.clone());
             }
@@ -897,11 +1132,20 @@ pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> 
         (layout, workspace) => {
             let layout = layout.map(|(_, l)| l).unwrap_or(Layout::Tab);
             let workspace = workspace.map(|(_, w)| w).unwrap_or(Workspace::Project);
-            (if workspace == Workspace::Own { Layout::Workspace } else { layout }, workspace)
+            (
+                if workspace == Workspace::Own {
+                    Layout::Workspace
+                } else {
+                    layout
+                },
+                workspace,
+            )
         }
     };
     for key in ["layout", "workspace", "split.direction"] {
-        sources.entry(key.to_string()).or_insert_with(|| "the default".into());
+        sources
+            .entry(key.to_string())
+            .or_insert_with(|| "the default".into());
     }
     Ok(Placement {
         layout,
@@ -918,20 +1162,42 @@ pub fn resolve_in(inputs: &Inputs, cfg: &Config, env_layout: Option<String>) -> 
 /// Where `tome session move` puts a session placed at `current`: each
 /// setting its `flags` (or their preset) give, the rest as they were. A
 /// preset that isn't defined is an error.
-pub fn moved(current: &Placement, flags: &Settings, project: Option<&Path>) -> CliResult<Placement> {
+pub fn moved(
+    current: &Placement,
+    flags: &Settings,
+    project: Option<&Path>,
+) -> CliResult<Placement> {
     let presets = presets(&Config::load(project)?)?;
     let source = "`tome session move` flags";
-    let mut levels = vec![Level { source: source.into(), settings: flags.clone(), shared: false }];
+    let mut levels = vec![Level {
+        source: source.into(),
+        settings: flags.clone(),
+        shared: false,
+    }];
     if let Some(name) = &flags.preset {
-        let p = presets.get(name).ok_or_else(|| unknown_preset(name, &presets, source))?;
-        levels.push(Level { source: format!("preset `{name}` (from {source})"), settings: p.settings.clone(), shared: false });
+        let p = presets
+            .get(name)
+            .ok_or_else(|| unknown_preset(name, &presets, source))?;
+        levels.push(Level {
+            source: format!("preset `{name}` (from {source})"),
+            settings: p.settings.clone(),
+            shared: false,
+        });
     }
-    let mut out = Placement { caller: None, warnings: Vec::new(), ..current.clone() };
+    let mut out = Placement {
+        caller: None,
+        warnings: Vec::new(),
+        ..current.clone()
+    };
     macro_rules! pick {
         ($field:ident, $key:expr) => {{
-            let found = levels.iter().enumerate().find_map(|(i, l)| l.settings.$field.clone().map(|v| (i, v)));
+            let found = levels
+                .iter()
+                .enumerate()
+                .find_map(|(i, l)| l.settings.$field.clone().map(|v| (i, v)));
             if let Some((i, _)) = &found {
-                out.sources.insert($key.to_string(), levels[*i].source.clone());
+                out.sources
+                    .insert($key.to_string(), levels[*i].source.clone());
             }
             found
         }};
@@ -966,11 +1232,13 @@ pub fn moved(current: &Placement, flags: &Settings, project: Option<&Path>) -> C
         }
         (Some((li, Layout::Workspace)), _) => {
             (out.layout, out.workspace) = (Layout::Workspace, Workspace::Own);
-            out.sources.insert("workspace".into(), levels[li].source.clone());
+            out.sources
+                .insert("workspace".into(), levels[li].source.clone());
         }
         (_, Some((wi, Workspace::Own))) => {
             (out.layout, out.workspace) = (Layout::Workspace, Workspace::Own);
-            out.sources.insert("layout".into(), levels[wi].source.clone());
+            out.sources
+                .insert("layout".into(), levels[wi].source.clone());
         }
         (Some((_, l)), w) => {
             out.layout = l;
@@ -1005,7 +1273,11 @@ pub fn check_presets(spec: Option<&Spec>, project: Option<&Path>) -> CliResult<(
     }
     let known = presets(&Config::load(project)?)?;
     match names.into_iter().find(|n| !known.contains_key(*n)) {
-        Some(n) => Err(unknown_preset(n, &known, "the workflow's `defaults.layout`")),
+        Some(n) => Err(unknown_preset(
+            n,
+            &known,
+            "the workflow's `defaults.layout`",
+        )),
         None => Ok(()),
     }
 }
@@ -1014,8 +1286,14 @@ pub fn check_presets(spec: Option<&Spec>, project: Option<&Path>) -> CliResult<(
 /// (a warning: presets depend on the environment).
 pub fn undefined_presets(spec: Option<&Spec>, project: Option<&Path>) -> Vec<String> {
     let Some(spec) = spec else { return Vec::new() };
-    let Ok(known) = Config::load(project).and_then(|c| presets(&c)) else { return Vec::new() };
-    spec.presets().into_iter().filter(|n| !known.contains_key(*n)).map(str::to_string).collect()
+    let Ok(known) = Config::load(project).and_then(|c| presets(&c)) else {
+        return Vec::new();
+    };
+    spec.presets()
+        .into_iter()
+        .filter(|n| !known.contains_key(*n))
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1039,18 +1317,38 @@ mod tests {
             f
         };
         let m = moved(&tab, &flags("layout=split direction=down"), None).unwrap();
-        assert_eq!((m.layout, &m.workspace, m.direction), (Layout::Split, &Workspace::Project, Direction::Down));
+        assert_eq!(
+            (m.layout, &m.workspace, m.direction),
+            (Layout::Split, &Workspace::Project, Direction::Down)
+        );
         assert_eq!(m.sources["split.direction"], "`tome session move` flags");
         let own = moved(&m, &flags("workspace=own"), None).unwrap();
-        assert_eq!((own.layout, &own.workspace, own.direction), (Layout::Workspace, &Workspace::Own, Direction::Down));
+        assert_eq!(
+            (own.layout, &own.workspace, own.direction),
+            (Layout::Workspace, &Workspace::Own, Direction::Down)
+        );
         let back = moved(&own, &flags("layout=tab"), None).unwrap();
-        assert_eq!((back.layout, &back.workspace), (Layout::Tab, &Workspace::Project));
+        assert_eq!(
+            (back.layout, &back.workspace),
+            (Layout::Tab, &Workspace::Project)
+        );
         assert_eq!(back.sources["workspace"], "the default");
         let named = moved(&own, &flags("workspace=reviews"), None).unwrap();
-        assert_eq!((named.layout, &named.workspace), (Layout::Tab, &Workspace::Named("reviews".into())));
-        let f = Settings { preset: Some("nope".into()), ..Settings::default() };
+        assert_eq!(
+            (named.layout, &named.workspace),
+            (Layout::Tab, &Workspace::Named("reviews".into()))
+        );
+        let f = Settings {
+            preset: Some("nope".into()),
+            ..Settings::default()
+        };
         let err = moved(&tab, &f, None).unwrap_err();
-        assert!(err.message.contains("unknown layout preset `nope` (from `tome session move` flags)"), "{}", err.message);
+        assert!(
+            err.message
+                .contains("unknown layout preset `nope` (from `tome session move` flags)"),
+            "{}",
+            err.message
+        );
         assert_eq!(Placement::from_json(&m.to_json()), Some(m));
     }
 
@@ -1070,7 +1368,14 @@ mod tests {
         assert_eq!(s.base.preset.as_deref(), Some("wide"));
         assert_eq!(s.base.size, Some(Size::Percent(30)));
         let o = s.orchestrator.as_ref().unwrap();
-        assert_eq!((o.layout, o.direction, o.size), (Some(Layout::Split), Some(Direction::Right), Some(Size::Percent(40))));
+        assert_eq!(
+            (o.layout, o.direction, o.size),
+            (
+                Some(Layout::Split),
+                Some(Direction::Right),
+                Some(Size::Percent(40))
+            )
+        );
         assert_eq!(s.rules.len(), 2);
         assert!(s.rules[0].matches("review-1") && !s.rules[0].matches("build"));
         assert_eq!(s.rules[1].settings.direction, Some(Direction::Down));
@@ -1079,7 +1384,8 @@ mod tests {
 
     #[test]
     fn workers_can_be_a_role_block_with_rules() {
-        let (s, problems) = spec("workers:\n  layout: split\n  rules:\n    - match: a*\n      from: first\n");
+        let (s, problems) =
+            spec("workers:\n  layout: split\n  rules:\n    - match: a*\n      from: first\n");
         assert!(problems.is_empty(), "{problems:?}");
         let s = s.unwrap();
         assert_eq!(s.workers.unwrap().layout, Some(Layout::Split));
@@ -1091,19 +1397,28 @@ mod tests {
         for (yaml, want) in [
             ("tabs", "unknown `defaults.layout` `tabs`"),
             ("layout: sideways", "unknown `layout` `sideways`"),
-            ("split: { direction: diagonal }", "unknown `split.direction` `diagonal`"),
+            (
+                "split: { direction: diagonal }",
+                "unknown `split.direction` `diagonal`",
+            ),
             ("split: { size: 0 }", "invalid `split.size` `0`"),
             ("split: { size: lots }", "invalid `split.size`"),
             ("split: { dir: up }", "unknown key `split.dir`"),
             ("from: middle", "unknown `from` `middle`"),
             ("workspace: { name: own }", "`own` is reserved"),
             ("workspace: \"a b\"", "unknown workspace `a b`"),
-            ("orchestrator: { preset: 3 }", "`preset` must be a preset name"),
+            (
+                "orchestrator: { preset: 3 }",
+                "`preset` must be a preset name",
+            ),
             ("workers: [{ layout: tab }]", "needs a `match` glob"),
             ("colour: red", "unknown key `colour`"),
         ] {
             let (_, problems) = spec(yaml);
-            assert!(problems.iter().any(|p| p.message.contains(want)), "{yaml}: {problems:?}");
+            assert!(
+                problems.iter().any(|p| p.message.contains(want)),
+                "{yaml}: {problems:?}"
+            );
         }
     }
 
@@ -1111,36 +1426,75 @@ mod tests {
     fn workspace_words_are_keywords_and_other_strings_names() {
         assert_eq!(Workspace::parse("own"), Ok(Workspace::Own));
         assert_eq!(Workspace::parse("focused"), Ok(Workspace::Focused));
-        assert_eq!(Workspace::parse("reviews"), Ok(Workspace::Named("reviews".into())));
+        assert_eq!(
+            Workspace::parse("reviews"),
+            Ok(Workspace::Named("reviews".into()))
+        );
         assert_eq!(Size::parse("80"), Ok(Size::Cells(80)));
         assert_eq!(Size::parse("30%"), Ok(Size::Percent(30)));
     }
 
-    fn resolve_with(spec_yaml: &str, role: Role, flags: Option<&Settings>, run_flags: Option<&Settings>) -> Placement {
+    fn resolve_with(
+        spec_yaml: &str,
+        role: Role,
+        flags: Option<&Settings>,
+        run_flags: Option<&Settings>,
+    ) -> Placement {
         let (s, problems) = spec(spec_yaml);
         assert!(problems.is_empty(), "{problems:?}");
-        resolve_in(&Inputs { role, flags, run_flags, spec: s.as_ref() }, &Config::default(), None).unwrap()
+        resolve_in(
+            &Inputs {
+                role,
+                flags,
+                run_flags,
+                spec: s.as_ref(),
+            },
+            &Config::default(),
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
     fn each_setting_resolves_on_its_own() {
         let yaml = "preset: split\nsplit: { size: 30% }\norchestrator: { split: { direction: down } }\nworkers:\n  layout: tab\n  rules:\n    - match: \"review-*\"\n      from: orchestrator\n";
         let o = resolve_with(yaml, Role::Orchestrator, None, None);
-        assert_eq!((o.layout, o.direction, o.size, o.from), (Layout::Split, Direction::Down, Some(Size::Percent(30)), None));
-        assert_eq!(o.sources["layout"], "preset `split` (from `defaults.layout`)");
+        assert_eq!(
+            (o.layout, o.direction, o.size, o.from),
+            (
+                Layout::Split,
+                Direction::Down,
+                Some(Size::Percent(30)),
+                None
+            )
+        );
+        assert_eq!(
+            o.sources["layout"],
+            "preset `split` (from `defaults.layout`)"
+        );
         assert_eq!(o.sources["split.direction"], "the `orchestrator` block");
         assert_eq!(o.sources["split.size"], "`defaults.layout`");
         assert_eq!(o.sources["workspace"], "the default");
 
-        let flags = Settings { size: Some(Size::Cells(80)), ..Settings::default() };
+        let flags = Settings {
+            size: Some(Size::Cells(80)),
+            ..Settings::default()
+        };
         let w = resolve_with(yaml, Role::Worker("review-1"), Some(&flags), None);
-        assert_eq!((w.layout, w.size, w.from), (Layout::Tab, Some(Size::Cells(80)), Some(From::Orchestrator)));
+        assert_eq!(
+            (w.layout, w.size, w.from),
+            (Layout::Tab, Some(Size::Cells(80)), Some(From::Orchestrator))
+        );
         assert_eq!(w.sources["from"], "the `workers` rule `review-*`");
         assert_eq!(w.sources["layout"], "the `workers` block");
         assert_eq!(w.sources["split.size"], "`tome worker spawn` flags");
 
         // Run flags sit below the worker blocks, above `defaults.layout`.
-        let run = Settings { layout: Some(Layout::Split), direction: Some(Direction::Up), ..Settings::default() };
+        let run = Settings {
+            layout: Some(Layout::Split),
+            direction: Some(Direction::Up),
+            ..Settings::default()
+        };
         let w = resolve_with(yaml, Role::Worker("build"), None, Some(&run));
         assert_eq!((w.layout, w.direction), (Layout::Tab, Direction::Up));
     }
@@ -1148,15 +1502,24 @@ mod tests {
     #[test]
     fn layout_workspace_is_an_own_workspace() {
         let o = resolve_with("workspace", Role::Orchestrator, None, None);
-        assert_eq!((o.layout, &o.workspace), (Layout::Workspace, &Workspace::Own));
+        assert_eq!(
+            (o.layout, &o.workspace),
+            (Layout::Workspace, &Workspace::Own)
+        );
         // A higher level's own layout wins over it.
         let flags = Settings::layout(Layout::Tab);
         let o = resolve_with("workspace", Role::Orchestrator, Some(&flags), None);
         assert_eq!((o.layout, &o.workspace), (Layout::Tab, &Workspace::Project));
         // A higher level's workspace too.
-        let flags = Settings { workspace: Some(Workspace::Named("x".into())), ..Settings::default() };
+        let flags = Settings {
+            workspace: Some(Workspace::Named("x".into())),
+            ..Settings::default()
+        };
         let o = resolve_with("workspace", Role::Orchestrator, Some(&flags), None);
-        assert_eq!((o.layout, &o.workspace), (Layout::Tab, &Workspace::Named("x".into())));
+        assert_eq!(
+            (o.layout, &o.workspace),
+            (Layout::Tab, &Workspace::Named("x".into()))
+        );
     }
 
     #[test]
@@ -1166,27 +1529,60 @@ mod tests {
             "layout: { preset: wide, from: first }\nlayout_presets:\n  wide: { layout: split, split: { size: 70% } }\n",
         )
         .unwrap();
-        let inputs = Inputs { role: Role::Orchestrator, flags: None, run_flags: None, spec: None };
+        let inputs = Inputs {
+            role: Role::Orchestrator,
+            flags: None,
+            run_flags: None,
+            spec: None,
+        };
         let p = resolve_in(&inputs, &cfg, Some("tab".into())).unwrap();
         // TOME_LAYOUT is above the config.
-        assert_eq!((p.layout, p.size, p.from), (Layout::Tab, Some(Size::Percent(70)), Some(From::First)));
+        assert_eq!(
+            (p.layout, p.size, p.from),
+            (Layout::Tab, Some(Size::Percent(70)), Some(From::First))
+        );
         assert_eq!(p.sources["layout"], "TOME_LAYOUT");
-        assert_eq!(p.sources["split.size"], "preset `wide` (from project config)");
+        assert_eq!(
+            p.sources["split.size"],
+            "preset `wide` (from project config)"
+        );
         let listed = presets(&cfg).unwrap();
         assert_eq!(listed["wide"].scope, "project");
-        assert_eq!(listed["wide"].settings.describe(), "layout=split split.size=70%");
+        assert_eq!(
+            listed["wide"].settings.describe(),
+            "layout=split split.size=70%"
+        );
 
-        let nested = Config::parse(config::Scope::Global, "layout_presets:\n  a: { preset: b }\n").unwrap();
-        assert!(presets(&nested).unwrap_err().message.contains("can't reference another preset"));
+        let nested = Config::parse(
+            config::Scope::Global,
+            "layout_presets:\n  a: { preset: b }\n",
+        )
+        .unwrap();
+        assert!(presets(&nested)
+            .unwrap_err()
+            .message
+            .contains("can't reference another preset"));
     }
 
     #[test]
     fn caller_is_for_the_orchestrator_only() {
         // A worker's own blocks can't give it.
-        for yaml in ["workers: [{ match: \"*\", from: caller }]", "workers: { from: caller }"] {
+        for yaml in [
+            "workers: [{ match: \"*\", from: caller }]",
+            "workers: { from: caller }",
+        ] {
             let (_, problems) = spec(yaml);
-            assert!(problems.iter().any(|p| p.message.contains("`from: caller` is for the orchestrator only")), "{yaml}: {problems:?}");
-            assert_eq!(problems[0].path.last().map(String::as_str), Some("from"), "{problems:?}");
+            assert!(
+                problems.iter().any(|p| p
+                    .message
+                    .contains("`from: caller` is for the orchestrator only")),
+                "{yaml}: {problems:?}"
+            );
+            assert_eq!(
+                problems[0].path.last().map(String::as_str),
+                Some("from"),
+                "{problems:?}"
+            );
         }
         let (_, problems) = spec("orchestrator: { from: caller }");
         assert!(problems.is_empty(), "{problems:?}");
@@ -1195,20 +1591,56 @@ mod tests {
         // from the next level down.
         let cfg = Config::parse(config::Scope::Project, "layout: { from: last }\n").unwrap();
         let (s, _) = spec("layout: split\nfrom: caller");
-        let run = Settings { from: Some(From::Caller), ..Settings::default() };
-        let inputs = Inputs { role: Role::Orchestrator, flags: None, run_flags: None, spec: s.as_ref() };
+        let run = Settings {
+            from: Some(From::Caller),
+            ..Settings::default()
+        };
+        let inputs = Inputs {
+            role: Role::Orchestrator,
+            flags: None,
+            run_flags: None,
+            spec: s.as_ref(),
+        };
         let o = resolve_in(&inputs, &cfg, None).unwrap();
-        assert_eq!((o.from, o.sources["from"].as_str()), (Some(From::Caller), "`defaults.layout`"));
-        let inputs = Inputs { role: Role::Worker("w"), flags: None, run_flags: Some(&run), spec: s.as_ref() };
+        assert_eq!(
+            (o.from, o.sources["from"].as_str()),
+            (Some(From::Caller), "`defaults.layout`")
+        );
+        let inputs = Inputs {
+            role: Role::Worker("w"),
+            flags: None,
+            run_flags: Some(&run),
+            spec: s.as_ref(),
+        };
         let w = resolve_in(&inputs, &cfg, None).unwrap();
-        assert_eq!((w.from, w.sources["from"].as_str()), (Some(From::Last), "project config"));
+        assert_eq!(
+            (w.from, w.sources["from"].as_str()),
+            (Some(From::Last), "project config")
+        );
 
         // A worker's own preset giving it is an error.
-        let cfg = Config::parse(config::Scope::Project, "layout_presets:\n  chat: { from: caller }\n").unwrap();
-        let flags = Settings { preset: Some("chat".into()), ..Settings::default() };
-        let inputs = Inputs { role: Role::Worker("w"), flags: Some(&flags), run_flags: None, spec: None };
+        let cfg = Config::parse(
+            config::Scope::Project,
+            "layout_presets:\n  chat: { from: caller }\n",
+        )
+        .unwrap();
+        let flags = Settings {
+            preset: Some("chat".into()),
+            ..Settings::default()
+        };
+        let inputs = Inputs {
+            role: Role::Worker("w"),
+            flags: Some(&flags),
+            run_flags: None,
+            spec: None,
+        };
         let err = resolve_in(&inputs, &cfg, None).unwrap_err();
-        assert!(err.message.contains("(from preset `chat` (from `tome worker spawn` flags))"), "{}", err.message);
+        assert!(
+            err.message
+                .contains("(from preset `chat` (from `tome worker spawn` flags))"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
@@ -1218,16 +1650,37 @@ mod tests {
         at.caller = Some("pane P".into());
         let m = moved(&at, &Settings::layout(Layout::Split), None).unwrap();
         assert_eq!((m.from, m.caller.as_deref()), (None, None));
-        let m = moved(&at, &Settings { from: Some(From::Caller), ..Settings::default() }, None).unwrap();
+        let m = moved(
+            &at,
+            &Settings {
+                from: Some(From::Caller),
+                ..Settings::default()
+            },
+            None,
+        )
+        .unwrap();
         assert_eq!(m.from, Some(From::Caller));
     }
 
     #[test]
     fn an_undefined_preset_is_an_error_with_the_known_ones() {
         let (s, _) = spec("preset: nope");
-        let inputs = Inputs { role: Role::Orchestrator, flags: None, run_flags: None, spec: s.as_ref() };
+        let inputs = Inputs {
+            role: Role::Orchestrator,
+            flags: None,
+            run_flags: None,
+            spec: s.as_ref(),
+        };
         let err = resolve_in(&inputs, &Config::default(), None).unwrap_err();
-        assert!(err.message.contains("unknown layout preset `nope` (from `defaults.layout`)"), "{}", err.message);
-        assert!(err.hint.unwrap().contains("known presets: split, tab, workspace"));
+        assert!(
+            err.message
+                .contains("unknown layout preset `nope` (from `defaults.layout`)"),
+            "{}",
+            err.message
+        );
+        assert!(err
+            .hint
+            .unwrap()
+            .contains("known presets: split, tab, workspace"));
     }
 }

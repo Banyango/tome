@@ -5,9 +5,9 @@
 //! through `--run <id>` or `TOME_RUN_ID`.
 
 use crate::engine::reason;
-use crate::placement::Settings;
 use crate::output::{exit, CliError, CliResult, Mode, Report};
 use crate::paths;
+use crate::placement::Settings;
 use crate::rpc;
 use crate::workflow::Library;
 use chrono::{Local, NaiveDateTime, TimeZone};
@@ -23,14 +23,20 @@ fn call(method: &str, params: Value) -> CliResult<Value> {
 
 /// The run a run-side command applies to.
 fn run_id(run: Option<String>) -> CliResult<String> {
-    run.filter(|r| !r.trim().is_empty())
-        .ok_or_else(|| CliError::invalid("no run given").with_hint("pass the run id, or set TOME_RUN_ID"))
+    run.filter(|r| !r.trim().is_empty()).ok_or_else(|| {
+        CliError::invalid("no run given").with_hint("pass the run id, or set TOME_RUN_ID")
+    })
 }
 
 /// Resolve a workflow by name or path and ask the daemon to start it. The
 /// daemon re-validates it; an invalid workflow is exit `2` and no run is
 /// recorded.
-pub fn start_params(cwd: &Path, target: &str, params: &[String], placement: &Settings) -> CliResult<Value> {
+pub fn start_params(
+    cwd: &Path,
+    target: &str,
+    params: &[String],
+    placement: &Settings,
+) -> CliResult<Value> {
     let wf = Library::discover(cwd).find(target)?;
     let mut p = json!({
         "workflow_path": wf.path,
@@ -48,9 +54,19 @@ pub fn start_params(cwd: &Path, target: &str, params: &[String], placement: &Set
 }
 
 /// `tome run <wf> --detach`: start the run and return its id right away.
-pub fn start_detached(cwd: &Path, target: &str, params: &[String], placement: &Settings) -> CliResult<Report> {
+pub fn start_detached(
+    cwd: &Path,
+    target: &str,
+    params: &[String],
+    placement: &Settings,
+) -> CliResult<Report> {
     let run = call("run.start", start_params(cwd, target, params, placement)?)?;
-    let human = format!("run {} {} ({})", run["id"], run["status"].as_str().unwrap_or("?"), s(&run["workflow_name"]));
+    let human = format!(
+        "run {} {} ({})",
+        run["id"],
+        run["status"].as_str().unwrap_or("?"),
+        s(&run["workflow_name"])
+    );
     Ok(Report::new(run, human))
 }
 
@@ -61,7 +77,13 @@ pub fn start_detached(cwd: &Path, target: &str, params: &[String], placement: &S
 /// Ctrl-C (or SIGTERM/SIGHUP) cancels the run and waits for the daemon to
 /// confirm; a second one exits right away. If this process dies instead, the
 /// daemon notices the closed connection and cancels the run itself.
-pub fn start_attached(cwd: &Path, target: &str, params: &[String], placement: &Settings, mode: Mode) -> CliResult<Report> {
+pub fn start_attached(
+    cwd: &Path,
+    target: &str,
+    params: &[String],
+    placement: &Settings,
+    mode: Mode,
+) -> CliResult<Report> {
     let mut start = start_params(cwd, target, params, placement)?;
     start["attach"] = json!(true);
     let mut client = rpc::Client::connect(&paths::socket_path())?;
@@ -83,7 +105,10 @@ pub fn start_attached(cwd: &Path, target: &str, params: &[String], placement: &S
                     if let (Some(id), false) = (run_id.get(), cancel_sent) {
                         cancel_sent = true;
                         // Finished in the meantime is fine: its final event is on the way.
-                        let _ = call("run.cancel", json!({ "id": id, "reason": reason::INTERRUPTED }));
+                        let _ = call(
+                            "run.cancel",
+                            json!({ "id": id, "reason": reason::INTERRUPTED }),
+                        );
                     }
                 }
                 _ => std::process::exit(exit::CANCELLED),
@@ -109,7 +134,12 @@ extern "C" fn on_signal(_: libc::c_int) {
 fn install_signal_handlers() {
     for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         // SAFETY: the handler only touches an atomic.
-        unsafe { libc::signal(sig, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t) };
+        unsafe {
+            libc::signal(
+                sig,
+                on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            )
+        };
     }
 }
 
@@ -176,7 +206,9 @@ fn event_line(ev: &Value) -> String {
             let status = s(&ev["status"]);
             let mut line = format!("[{time}] run {} {status}", ev["run_id"]);
             match ev["summary"].as_str().or(ev["reason"].as_str()) {
-                Some(detail) if status != "running" && status != "queued" => line.push_str(&format!(": {detail}")),
+                Some(detail) if status != "running" && status != "queued" => {
+                    line.push_str(&format!(": {detail}"))
+                }
                 _ => line.push_str(&format!(" ({})", s(&ev["workflow"]))),
             }
             line
@@ -187,16 +219,26 @@ fn event_line(ev: &Value) -> String {
 /// A stored UTC timestamp as local `HH:MM:SS`.
 fn clock(utc: &str) -> Option<String> {
     let naive = NaiveDateTime::parse_from_str(utc, "%Y-%m-%dT%H:%M:%S%.fZ").ok()?;
-    Some(Local.from_utc_datetime(&naive).format("%H:%M:%S").to_string())
+    Some(
+        Local
+            .from_utc_datetime(&naive)
+            .format("%H:%M:%S")
+            .to_string(),
+    )
 }
 
 /// `tome run finish --status succeeded|failed [--summary ...]`
 pub fn finish(run: Option<String>, status: &str, summary: Option<String>) -> CliResult<Report> {
     if !matches!(status, "succeeded" | "failed") {
-        return Err(CliError::invalid(format!("invalid --status `{status}` (use succeeded or failed)")));
+        return Err(CliError::invalid(format!(
+            "invalid --status `{status}` (use succeeded or failed)"
+        )));
     }
     let id = run_id(run)?;
-    let run = call("run.finish", json!({ "id": id, "status": status, "summary": summary }))?;
+    let run = call(
+        "run.finish",
+        json!({ "id": id, "status": status, "summary": summary }),
+    )?;
     Ok(Report::new(run.clone(), finished_line(&run)))
 }
 
@@ -211,11 +253,18 @@ pub fn cancel(run: Option<String>) -> CliResult<Report> {
 /// the agent's session, where `TOME_RUN_ID` (and, for a worker,
 /// `TOME_WORKER_ID`) are set.
 pub fn ready() -> CliResult<Report> {
-    let var = |k| std::env::var(k).ok().filter(|v: &String| !v.trim().is_empty());
+    let var = |k| {
+        std::env::var(k)
+            .ok()
+            .filter(|v: &String| !v.trim().is_empty())
+    };
     let id = var("TOME_RUN_ID").ok_or_else(|| {
         CliError::invalid("`tome ready` is for agents tome started (TOME_RUN_ID isn't set)")
     })?;
-    let ready = call("agent.ready", json!({ "run_id": id, "worker": var("TOME_WORKER_ID") }))?;
+    let ready = call(
+        "agent.ready",
+        json!({ "run_id": id, "worker": var("TOME_WORKER_ID") }),
+    )?;
     let human = match ready["worker"].as_str() {
         Some(w) => format!("ready: worker {w} of run {id}"),
         None => format!("ready: orchestrator of run {id}"),
@@ -224,9 +273,17 @@ pub fn ready() -> CliResult<Report> {
 }
 
 /// `tome step start|done|fail [<name>] [--message ...]`
-pub fn step(event: &str, name: Option<String>, message: Option<String>, run: Option<String>) -> CliResult<Report> {
+pub fn step(
+    event: &str,
+    name: Option<String>,
+    message: Option<String>,
+    run: Option<String>,
+) -> CliResult<Report> {
     let id = run_id(run)?;
-    let step = call("step.report", json!({ "run_id": id, "step": name, "event": event, "message": message }))?;
+    let step = call(
+        "step.report",
+        json!({ "run_id": id, "step": name, "event": event, "message": message }),
+    )?;
     let verb = match event {
         "start" => "started",
         "done" => "done",
@@ -248,5 +305,7 @@ fn finished_line(run: &Value) -> String {
 }
 
 fn s(v: &Value) -> String {
-    v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())
+    v.as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| v.to_string())
 }

@@ -55,9 +55,11 @@ impl Daemon {
             "daemon.status" => (Ok(self.status()), false),
             "daemon.shutdown" => (Ok(json!({ "stopping": true })), true),
             method if Engine::handles(method) => (self.engine.dispatch(method, &req.params), false),
-            method if api::handles(method) => {
-                (self.engine.with_store(|store| api::dispatch(store, method, &req.params)), false)
-            }
+            method if api::handles(method) => (
+                self.engine
+                    .with_store(|store| api::dispatch(store, method, &req.params)),
+                false,
+            ),
             _ => return None,
         };
         Some(handled)
@@ -81,25 +83,41 @@ pub fn run_foreground() -> anyhow::Result<()> {
     let mut store = Store::open(&paths::db_path(), &paths::runs_dir())?;
     // Before accepting requests: no running run survives its daemon (queued
     // ones do, and start below).
-    for run in recovery::recover(&mut store, &orchestrator::Hooks).context("recovering interrupted runs")? {
-        eprintln!("tome daemon: run {} ({}) marked failed: {}", run.id, run.workflow_name, recovery::REASON);
+    for run in recovery::recover(&mut store, &orchestrator::Hooks)
+        .context("recovering interrupted runs")?
+    {
+        eprintln!(
+            "tome daemon: run {} ({}) marked failed: {}",
+            run.id,
+            run.workflow_name,
+            recovery::REASON
+        );
     }
     let socket = paths::socket_path();
     if socket.exists() {
         // We hold the lock, so whatever left this socket behind is gone.
-        fs::remove_file(&socket).with_context(|| format!("removing stale socket {}", socket.display()))?;
+        fs::remove_file(&socket)
+            .with_context(|| format!("removing stale socket {}", socket.display()))?;
     }
-    let listener = UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
+    let listener =
+        UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
 
     let daemon = Arc::new(Daemon {
         started: Instant::now(),
-        started_at_unix: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        started_at_unix: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
         socket: socket.clone(),
         engine: Arc::new(Engine::new(store)),
         _lock: lock,
     });
-    eprintln!("tome daemon: listening on {} (pid {})", socket.display(), std::process::id());
+    eprintln!(
+        "tome daemon: listening on {} (pid {})",
+        socket.display(),
+        std::process::id()
+    );
     let engine = Arc::clone(&daemon.engine);
     std::thread::spawn(move || engine.resume_queued());
     let engine = Arc::clone(&daemon.engine);
@@ -131,7 +149,10 @@ fn acquire_lock() -> anyhow::Result<File> {
     // SAFETY: flock on a valid, owned file descriptor.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc != 0 {
-        bail!("another tome daemon is already running (lock held on {})", path.display());
+        bail!(
+            "another tome daemon is already running (lock held on {})",
+            path.display()
+        );
     }
     file.set_len(0)?;
     writeln!(&file, "{}", std::process::id())?;
@@ -139,7 +160,9 @@ fn acquire_lock() -> anyhow::Result<File> {
 }
 
 fn serve_connection(daemon: &Daemon, stream: UnixStream) {
-    let Ok(mut writer) = stream.try_clone() else { return };
+    let Ok(mut writer) = stream.try_clone() else {
+        return;
+    };
     let reader = BufReader::new(stream);
     for line in reader.lines() {
         let Ok(line) = line else { return };
@@ -147,7 +170,12 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
             continue;
         }
         let req = serde_json::from_str::<Request>(&line);
-        if let Some(agent) = req.as_ref().ok().and_then(|r| r.caller.as_ref()).and_then(crate::handshake::caller_of) {
+        if let Some(agent) = req
+            .as_ref()
+            .ok()
+            .and_then(|r| r.caller.as_ref())
+            .and_then(crate::handshake::caller_of)
+        {
             daemon.engine.seen(agent);
         }
         let (resp, shutdown) = match req {
@@ -162,10 +190,21 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
                 Some((Err(err), shutdown)) => (Response::from_cli_error(req.id, &err), shutdown),
                 None => {
                     let msg = format!("unknown method `{}`", req.method);
-                    (Response::err(req.id, codes::METHOD_NOT_FOUND, msg, None), false)
+                    (
+                        Response::err(req.id, codes::METHOD_NOT_FOUND, msg, None),
+                        false,
+                    )
                 }
             },
-            Err(e) => (Response::err(Value::Null, codes::PARSE_ERROR, format!("invalid request: {e}"), None), false),
+            Err(e) => (
+                Response::err(
+                    Value::Null,
+                    codes::PARSE_ERROR,
+                    format!("invalid request: {e}"),
+                    None,
+                ),
+                false,
+            ),
         };
         if write_line(&mut writer, &resp).is_err() {
             return;
@@ -187,7 +226,11 @@ fn stream_run(daemon: &Daemon, req: &Request, writer: &mut UnixStream) -> Option
     let mut sink = SocketSink { out: writer };
     let result = if req.method == "run.watch" {
         match api::req_id(&req.params) {
-            Ok(id) => daemon.engine.watch(id, req.params["cancel_on_disconnect"] == true, &mut sink),
+            Ok(id) => {
+                daemon
+                    .engine
+                    .watch(id, req.params["cancel_on_disconnect"] == true, &mut sink)
+            }
             Err(e) => Some(Err(e)),
         }
     } else {
@@ -203,14 +246,21 @@ struct SocketSink<'a> {
 
 impl Sink for SocketSink<'_> {
     fn send(&mut self, event: &Value) -> std::io::Result<()> {
-        write_line(self.out, &json!({ "jsonrpc": rpc::JSONRPC, "method": rpc::EVENT, "params": event }))
+        write_line(
+            self.out,
+            &json!({ "jsonrpc": rpc::JSONRPC, "method": rpc::EVENT, "params": event }),
+        )
     }
 
     /// The client never writes during a stream, so a readable socket with
     /// nothing to read means it closed its end.
     fn gone(&mut self) -> bool {
         let fd = self.out.as_raw_fd();
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         // SAFETY: polling and peeking one valid descriptor we own.
         unsafe {
             if libc::poll(&mut pfd, 1, 0) <= 0 {
@@ -220,8 +270,18 @@ impl Sink for SocketSink<'_> {
                 return true;
             }
             let mut byte = 0u8;
-            let n = libc::recv(fd, (&mut byte as *mut u8).cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT);
-            n == 0 || (n < 0 && !matches!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted))
+            let n = libc::recv(
+                fd,
+                (&mut byte as *mut u8).cast(),
+                1,
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            );
+            n == 0
+                || (n < 0
+                    && !matches!(
+                        std::io::Error::last_os_error().kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ))
         }
     }
 }

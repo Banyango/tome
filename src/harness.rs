@@ -44,8 +44,17 @@ fn presets() -> BTreeMap<String, Template> {
     // Claude Code, interactive, with the prompt as its first message. It may
     // run `tome` without asking, so it can report progress on its own.
     // `--allowedTools` takes a list, so `--` stops it swallowing the prompt.
-    let claude = ["claude", "--allowedTools", "Bash(tome:*)", "--", "{{prompt}}"];
-    BTreeMap::from([("claude".to_string(), Template::Argv(claude.iter().map(|s| s.to_string()).collect()))])
+    let claude = [
+        "claude",
+        "--allowedTools",
+        "Bash(tome:*)",
+        "--",
+        "{{prompt}}",
+    ];
+    BTreeMap::from([(
+        "claude".to_string(),
+        Template::Argv(claude.iter().map(|s| s.to_string()).collect()),
+    )])
 }
 
 /// Every known harness for a project: the presets, overridden or extended
@@ -54,7 +63,10 @@ pub fn all(project: Option<&Path>) -> CliResult<BTreeMap<String, Template>> {
     let cfg = Config::load(project)?;
     let mut out = presets();
     for (name, (spec, file)) in cfg.entries("harnesses").map_err(hinted)? {
-        out.insert(name.clone(), parse_harness(&name, &spec).map_err(|e| hinted(file.error(e)))?);
+        out.insert(
+            name.clone(),
+            parse_harness(&name, &spec).map_err(|e| hinted(file.error(e)))?,
+        );
     }
     Ok(out)
 }
@@ -85,9 +97,12 @@ fn parse_harness(name: &str, spec: &Yaml) -> Result<Template, String> {
     let command = match spec {
         Yaml::Mapping(m) => {
             if let Some(other) = m.keys().filter_map(Yaml::as_str).find(|k| *k != "command") {
-                return Err(format!("harness `{name}`: unknown key `{other}` (expected `command`)"));
+                return Err(format!(
+                    "harness `{name}`: unknown key `{other}` (expected `command`)"
+                ));
             }
-            m.get("command").ok_or(format!("harness `{name}`: missing `command`"))?
+            m.get("command")
+                .ok_or(format!("harness `{name}`: missing `command`"))?
         }
         other => other,
     };
@@ -99,11 +114,17 @@ fn parse_harness(name: &str, spec: &Yaml) -> Result<Template, String> {
                 .map(|i| match i {
                     Yaml::String(s) => Ok(s.clone()),
                     Yaml::Number(n) => Ok(n.to_string()),
-                    _ => Err(format!("harness `{name}`: command arguments must be strings")),
+                    _ => Err(format!(
+                        "harness `{name}`: command arguments must be strings"
+                    )),
                 })
                 .collect::<Result<_, _>>()?,
         ),
-        _ => return Err(format!("harness `{name}`: `command` must be a non-empty list or string")),
+        _ => {
+            return Err(format!(
+                "harness `{name}`: `command` must be a non-empty list or string"
+            ))
+        }
     };
     check_vars(name, &template)?;
     Ok(template)
@@ -117,10 +138,15 @@ fn check_vars(name: &str, template: &Template) -> Result<(), String> {
     for part in parts {
         let mut rest = part;
         while let Some(open) = rest.find("{{") {
-            let Some(close) = rest[open..].find("}}") else { break };
+            let Some(close) = rest[open..].find("}}") else {
+                break;
+            };
             let var = rest[open + 2..open + close].trim();
             if !VARS.contains(&var) {
-                return Err(format!("harness `{name}`: unknown variable `{{{{{var}}}}}` (available: {})", VARS.join(", ")));
+                return Err(format!(
+                    "harness `{name}`: unknown variable `{{{{{var}}}}}` (available: {})",
+                    VARS.join(", ")
+                ));
             }
             rest = &rest[open + close + 2..];
         }
@@ -151,7 +177,9 @@ fn substitute(s: &str, vars: &Vars, quote: bool) -> String {
     let mut out = String::new();
     let mut rest = s;
     while let Some(open) = rest.find("{{") {
-        let Some(close) = rest[open..].find("}}") else { break };
+        let Some(close) = rest[open..].find("}}") else {
+            break;
+        };
         out.push_str(&rest[..open]);
         let value = match rest[open + 2..open + close].trim() {
             "prompt" => vars.prompt.to_string(),
@@ -179,13 +207,31 @@ mod tests {
     use super::*;
 
     fn vars() -> Vars<'static> {
-        Vars { prompt: "do it's thing", prompt_file: "/r/1/prompt.md", run_id: 7, session: "tome-7-x", cwd: "/p" }
+        Vars {
+            prompt: "do it's thing",
+            prompt_file: "/r/1/prompt.md",
+            run_id: 7,
+            session: "tome-7-x",
+            cwd: "/p",
+        }
     }
 
     #[test]
     fn claude_preset_passes_the_prompt_as_one_argument() {
-        let h = Harness { name: "claude".into(), template: presets().remove("claude").unwrap() };
-        assert_eq!(h.command(&vars()), ["claude", "--allowedTools", "Bash(tome:*)", "--", "do it's thing"]);
+        let h = Harness {
+            name: "claude".into(),
+            template: presets().remove("claude").unwrap(),
+        };
+        assert_eq!(
+            h.command(&vars()),
+            [
+                "claude",
+                "--allowedTools",
+                "Bash(tome:*)",
+                "--",
+                "do it's thing"
+            ]
+        );
     }
 
     fn parse_config(text: &str) -> Result<BTreeMap<String, Template>, String> {
@@ -203,15 +249,34 @@ mod tests {
             "harnesses:\n  claude: [claude, --model, opus, \"{{prompt}}\"]\n  aider:\n    command: aider --message-file {{prompt_file}} --tag run-{{ run_id }}\n",
         )
         .unwrap();
-        let claude = Harness { name: "claude".into(), template: cfg["claude"].clone() };
-        assert_eq!(claude.command(&vars()), ["claude", "--model", "opus", "do it's thing"]);
-        let aider = Harness { name: "aider".into(), template: cfg["aider"].clone() };
-        assert_eq!(aider.command(&vars()), ["sh", "-c", "aider --message-file '/r/1/prompt.md' --tag run-'7'"]);
+        let claude = Harness {
+            name: "claude".into(),
+            template: cfg["claude"].clone(),
+        };
+        assert_eq!(
+            claude.command(&vars()),
+            ["claude", "--model", "opus", "do it's thing"]
+        );
+        let aider = Harness {
+            name: "aider".into(),
+            template: cfg["aider"].clone(),
+        };
+        assert_eq!(
+            aider.command(&vars()),
+            [
+                "sh",
+                "-c",
+                "aider --message-file '/r/1/prompt.md' --tag run-'7'"
+            ]
+        );
     }
 
     #[test]
     fn shell_form_quotes_values() {
-        let h = Harness { name: "x".into(), template: Template::Shell("echo {{prompt}}".into()) };
+        let h = Harness {
+            name: "x".into(),
+            template: Template::Shell("echo {{prompt}}".into()),
+        };
         assert_eq!(h.command(&vars())[2], r"echo 'do it'\''s thing'");
     }
 
@@ -221,7 +286,10 @@ mod tests {
             ("harnesses: [a]", "must be a mapping"),
             ("harnesses:\n  x: {cmd: y}", "unknown key `cmd`"),
             ("harnesses:\n  x: []", "non-empty"),
-            ("harnesses:\n  x: run {{task}}", "unknown variable `{{task}}`"),
+            (
+                "harnesses:\n  x: run {{task}}",
+                "unknown variable `{{task}}`",
+            ),
         ] {
             let err = parse_config(src).unwrap_err();
             assert!(err.contains(want), "{src}: {err}");

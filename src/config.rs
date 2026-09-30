@@ -89,7 +89,12 @@ impl Config {
         if let Some(f) = read(Scope::Global, global_path())? {
             files.push(f);
         }
-        if let Some(f) = project.and_then(project_path).map(|p| read(Scope::Project, p)).transpose()?.flatten() {
+        if let Some(f) = project
+            .and_then(project_path)
+            .map(|p| read(Scope::Project, p))
+            .transpose()?
+            .flatten()
+        {
             files.push(f);
         }
         Ok(Config { files })
@@ -124,10 +129,14 @@ impl Config {
             let map = match f.doc.get(key) {
                 None | Some(Yaml::Null) => continue,
                 Some(Yaml::Mapping(m)) => m,
-                Some(_) => return Err(f.error(format!("`{key}` must be a mapping of name to entry"))),
+                Some(_) => {
+                    return Err(f.error(format!("`{key}` must be a mapping of name to entry")))
+                }
             };
             for (name, value) in map {
-                let name = name.as_str().ok_or_else(|| f.error(format!("`{key}` names must be strings")))?;
+                let name = name
+                    .as_str()
+                    .ok_or_else(|| f.error(format!("`{key}` names must be strings")))?;
                 out.insert(name.to_string(), (value.clone(), f));
             }
         }
@@ -138,7 +147,9 @@ impl Config {
     #[cfg(test)]
     pub fn parse(scope: Scope, text: &str) -> CliResult<Config> {
         let path = PathBuf::from(format!("{}.yaml", scope.as_str()));
-        Ok(Config { files: vec![parse(scope, path, text)?] })
+        Ok(Config {
+            files: vec![parse(scope, path, text)?],
+        })
     }
 }
 
@@ -146,7 +157,10 @@ fn read(scope: Scope, path: PathBuf) -> CliResult<Option<File>> {
     match std::fs::read_to_string(&path) {
         Ok(text) => parse(scope, path, &text).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(CliError::internal(format!("reading {}: {e}", path.display()))),
+        Err(e) => Err(CliError::internal(format!(
+            "reading {}: {e}",
+            path.display()
+        ))),
     }
 }
 
@@ -160,7 +174,8 @@ fn parse(scope: Scope, path: PathBuf, text: &str) -> CliResult<File> {
     for key in doc.keys() {
         let key = key.as_str().unwrap_or("?");
         if !KEYS.contains(&key) {
-            return Err(bad(format!("unknown key `{key}`")).with_hint(format!("known keys: {}", KEYS.join(", "))));
+            return Err(bad(format!("unknown key `{key}`"))
+                .with_hint(format!("known keys: {}", KEYS.join(", "))));
         }
     }
     Ok(File { scope, path, doc })
@@ -173,20 +188,39 @@ mod tests {
     #[test]
     fn unknown_keys_are_refused() {
         let err = Config::parse(Scope::Project, "backend: tmux\nlayuot: split\n").unwrap_err();
-        assert!(err.message.contains("unknown key `layuot`"), "{}", err.message);
+        assert!(
+            err.message.contains("unknown key `layuot`"),
+            "{}",
+            err.message
+        );
         assert!(err.hint.unwrap().contains("layout_presets"));
     }
 
     #[test]
     fn project_wins_per_key_and_per_entry() {
-        let global = parse(Scope::Global, "g.yaml".into(), "backend: tmux\nlayout: split\nharnesses:\n  a: x\n  b: y\n").unwrap();
-        let project = parse(Scope::Project, "p.yaml".into(), "layout: tab\nharnesses:\n  b: z\n").unwrap();
-        let cfg = Config { files: vec![global, project] };
+        let global = parse(
+            Scope::Global,
+            "g.yaml".into(),
+            "backend: tmux\nlayout: split\nharnesses:\n  a: x\n  b: y\n",
+        )
+        .unwrap();
+        let project = parse(
+            Scope::Project,
+            "p.yaml".into(),
+            "layout: tab\nharnesses:\n  b: z\n",
+        )
+        .unwrap();
+        let cfg = Config {
+            files: vec![global, project],
+        };
         assert_eq!(cfg.str("backend").unwrap().unwrap().0, "tmux");
         let (layout, from) = cfg.str("layout").unwrap().unwrap();
         assert_eq!((layout.as_str(), from.scope), ("tab", Scope::Project));
         let h = cfg.entries("harnesses").unwrap();
         assert_eq!(h["a"].0, Yaml::from("x"));
-        assert_eq!((h["b"].0.clone(), h["b"].1.scope), (Yaml::from("z"), Scope::Project));
+        assert_eq!(
+            (h["b"].0.clone(), h["b"].1.scope),
+            (Yaml::from("z"), Scope::Project)
+        );
     }
 }

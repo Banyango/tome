@@ -21,7 +21,9 @@ mod queues;
 mod triggers;
 mod workers;
 
-pub use events::{check_payload, state as delivery_state, BusEvent, Delivery, NewEvent, Subscriber};
+pub use events::{
+    check_payload, state as delivery_state, BusEvent, Delivery, NewEvent, Subscriber,
+};
 pub use queues::Pulled;
 pub use triggers::{Fire, NewFire, Project};
 pub use workers::{check_name, NewWorker, Worker, WorkerEnd, WorkerHistory, WorkerStatus};
@@ -261,7 +263,10 @@ impl RunStatus {
     }
 
     pub fn is_finished(self) -> bool {
-        matches!(self, RunStatus::Succeeded | RunStatus::Failed | RunStatus::Cancelled)
+        matches!(
+            self,
+            RunStatus::Succeeded | RunStatus::Failed | RunStatus::Cancelled
+        )
     }
 }
 
@@ -434,10 +439,20 @@ pub fn fmt_ts(ts: NaiveDateTime) -> String {
 pub fn log_file_stem(step: &str) -> String {
     let stem: String = step
         .chars()
-        .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ') { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let stem = stem.trim().trim_start_matches('.').to_string();
-    if stem.is_empty() { "step".into() } else { stem }
+    if stem.is_empty() {
+        "step".into()
+    } else {
+        stem
+    }
 }
 
 impl Store {
@@ -448,7 +463,10 @@ impl Store {
         let config = Config::default().enable_external_access(false)?;
         let conn = Connection::open_with_flags(db_path, config)
             .with_context(|| format!("opening {}", db_path.display()))?;
-        let mut store = Store { conn, runs_dir: runs_dir.to_path_buf() };
+        let mut store = Store {
+            conn,
+            runs_dir: runs_dir.to_path_buf(),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -457,7 +475,10 @@ impl Store {
     pub fn open_in_memory(runs_dir: &Path) -> anyhow::Result<Store> {
         let config = Config::default().enable_external_access(false)?;
         let conn = Connection::open_in_memory_with_flags(config)?;
-        let mut store = Store { conn, runs_dir: runs_dir.to_path_buf() };
+        let mut store = Store {
+            conn,
+            runs_dir: runs_dir.to_path_buf(),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -475,11 +496,14 @@ impl Store {
     }
 
     pub fn log_path(&self, run_id: i64, step: &str) -> PathBuf {
-        self.run_dir(run_id).join(format!("{}.log", log_file_stem(step)))
+        self.run_dir(run_id)
+            .join(format!("{}.log", log_file_stem(step)))
     }
 
     fn migrate(&mut self) -> anyhow::Result<()> {
-        self.conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")?;
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)",
+        )?;
         let current = self.schema_version()?;
         if current > MIGRATIONS.len() {
             anyhow::bail!(
@@ -490,9 +514,13 @@ impl Store {
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(current) {
             let version = i + 1;
             let tx = self.conn.transaction()?;
-            tx.execute_batch(sql).with_context(|| format!("applying schema migration {version}"))?;
+            tx.execute_batch(sql)
+                .with_context(|| format!("applying schema migration {version}"))?;
             tx.execute("DELETE FROM schema_version", [])?;
-            tx.execute("INSERT INTO schema_version VALUES (?)", params![version as i64])?;
+            tx.execute(
+                "INSERT INTO schema_version VALUES (?)",
+                params![version as i64],
+            )?;
             tx.commit()?;
             eprintln!("tome daemon: migrated database schema to version {version}");
         }
@@ -512,7 +540,11 @@ impl Store {
 
     /// Record a new run. `render` receives the allocated run id and returns
     /// the resolved workflow snapshot (so `{{run.id}}` can be substituted).
-    pub fn create_run(&mut self, new: NewRun<'_>, render: impl FnOnce(i64) -> String) -> anyhow::Result<Run> {
+    pub fn create_run(
+        &mut self,
+        new: NewRun<'_>,
+        render: impl FnOnce(i64) -> String,
+    ) -> anyhow::Result<Run> {
         let tx = self.conn.transaction()?;
         let id: i64 = tx.query_row("SELECT nextval('run_id_seq')", [], |r| r.get(0))?;
         let snapshot = render(id);
@@ -539,7 +571,10 @@ impl Store {
 
     pub fn get_run(&self, id: i64, with_snapshot: bool) -> anyhow::Result<Option<Run>> {
         let sql = format!("{} WHERE id = ?", run_select(with_snapshot));
-        Ok(self.conn.query_row(&sql, params![id], |r| run_from_row(r, with_snapshot)).optional()?)
+        Ok(self
+            .conn
+            .query_row(&sql, params![id], |r| run_from_row(r, with_snapshot))
+            .optional()?)
     }
 
     pub fn require_run(&self, id: i64) -> CliResult<Run> {
@@ -569,13 +604,18 @@ impl Store {
             sql.push_str(&format!(" LIMIT {limit}"));
         }
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(duckdb::params_from_iter(args.iter()), |r| run_from_row(r, false))?;
+        let rows = stmt.query_map(duckdb::params_from_iter(args.iter()), |r| {
+            run_from_row(r, false)
+        })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Runs that haven't finished (queued or running).
     pub fn in_progress_runs(&self) -> anyhow::Result<Vec<Run>> {
-        let sql = format!("{} WHERE status IN ('queued', 'running') ORDER BY id", run_select(false));
+        let sql = format!(
+            "{} WHERE status IN ('queued', 'running') ORDER BY id",
+            run_select(false)
+        );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |r| run_from_row(r, false))?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -608,7 +648,10 @@ impl Store {
             "queues",
             "queue_messages",
         ] {
-            tx.execute(&format!("DELETE FROM {table} WHERE run_id = ?"), params![id])?;
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE run_id = ?"),
+                params![id],
+            )?;
         }
         tx.execute("DELETE FROM runs WHERE id = ?", params![id])?;
         tx.commit()?;
@@ -616,13 +659,25 @@ impl Store {
     }
 
     /// Move a run to a finished status. Errors if it's already finished.
-    pub fn finish_run(&mut self, id: i64, status: RunStatus, reason: Option<&str>, summary: Option<&str>) -> CliResult<Run> {
+    pub fn finish_run(
+        &mut self,
+        id: i64,
+        status: RunStatus,
+        reason: Option<&str>,
+        summary: Option<&str>,
+    ) -> CliResult<Run> {
         if !status.is_finished() {
-            return Err(CliError::invalid(format!("`{}` is not a final run status", status.as_str())));
+            return Err(CliError::invalid(format!(
+                "`{}` is not a final run status",
+                status.as_str()
+            )));
         }
         let run = self.require_run(id)?;
         if run.status.is_finished() {
-            return Err(CliError::invalid(format!("run {id} has already finished ({})", run.status.as_str())));
+            return Err(CliError::invalid(format!(
+                "run {id} has already finished ({})",
+                run.status.as_str()
+            )));
         }
         self.conn
             .execute(
@@ -642,10 +697,19 @@ impl Store {
     /// End an unfinished run that didn't finish itself (cancelled, or failed
     /// because its orchestrator went away): workers still active are
     /// cancelled and steps still running are failed with `reason` first.
-    pub fn abort_run(&mut self, id: i64, status: RunStatus, reason: &str, summary: Option<&str>) -> CliResult<Run> {
+    pub fn abort_run(
+        &mut self,
+        id: i64,
+        status: RunStatus,
+        reason: &str,
+        summary: Option<&str>,
+    ) -> CliResult<Run> {
         let run = self.require_run(id)?;
         if run.status.is_finished() {
-            return Err(CliError::invalid(format!("run {id} has already finished ({})", run.status.as_str())));
+            return Err(CliError::invalid(format!(
+                "run {id} has already finished ({})",
+                run.status.as_str()
+            )));
         }
         self.end_active_workers(id, WorkerStatus::Cancelled, reason)?;
         for step in self.steps(id).map_err(internal_any)? {
@@ -668,20 +732,32 @@ impl Store {
 
     /// The longest-waiting queued run of a workflow, with its snapshot.
     pub fn next_queued(&self, workflow: &str) -> anyhow::Result<Option<Run>> {
-        let sql = format!("{} WHERE workflow_name = ? AND status = 'queued' ORDER BY id LIMIT 1", run_select(true));
-        Ok(self.conn.query_row(&sql, params![workflow], |r| run_from_row(r, true)).optional()?)
+        let sql = format!(
+            "{} WHERE workflow_name = ? AND status = 'queued' ORDER BY id LIMIT 1",
+            run_select(true)
+        );
+        Ok(self
+            .conn
+            .query_row(&sql, params![workflow], |r| run_from_row(r, true))
+            .optional()?)
     }
 
     /// Move a queued run to running.
     pub fn dequeue_run(&mut self, id: i64) -> CliResult<Run> {
         let n = self
             .conn
-            .execute("UPDATE runs SET status = 'running' WHERE id = ? AND status = 'queued'", params![id])
+            .execute(
+                "UPDATE runs SET status = 'running' WHERE id = ? AND status = 'queued'",
+                params![id],
+            )
             .map_err(internal)?;
         if n == 0 {
             return Err(CliError::invalid(format!("run {id} isn't queued")));
         }
-        Ok(self.get_run(id, true).map_err(internal_any)?.expect("run exists"))
+        Ok(self
+            .get_run(id, true)
+            .map_err(internal_any)?
+            .expect("run exists"))
     }
 
     /// Replace a queued run's trigger cause. False if the run isn't queued
@@ -696,9 +772,18 @@ impl Store {
 
     /// Add a note to a run's placement state (once).
     pub fn add_run_note(&mut self, id: i64, note: &str) -> anyhow::Result<()> {
-        let current: Option<String> =
-            self.conn.query_row("SELECT placement FROM runs WHERE id = ?", params![id], |r| r.get(0)).optional()?.flatten();
-        let mut placement: Value = current.and_then(|p| serde_json::from_str(&p).ok()).unwrap_or_else(|| serde_json::json!({}));
+        let current: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT placement FROM runs WHERE id = ?",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let mut placement: Value = current
+            .and_then(|p| serde_json::from_str(&p).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
         let notes = placement["notes"].as_array().cloned().unwrap_or_default();
         if notes.iter().any(|n| n.as_str() == Some(note)) {
             return Ok(());
@@ -706,12 +791,18 @@ impl Store {
         let mut notes = notes;
         notes.push(Value::from(note));
         placement["notes"] = Value::Array(notes);
-        self.conn.execute("UPDATE runs SET placement = ? WHERE id = ?", params![placement.to_string(), id])?;
+        self.conn.execute(
+            "UPDATE runs SET placement = ? WHERE id = ?",
+            params![placement.to_string(), id],
+        )?;
         Ok(())
     }
 
     pub fn set_snapshot(&mut self, id: i64, snapshot: &str) -> anyhow::Result<()> {
-        self.conn.execute("UPDATE runs SET workflow_snapshot = ? WHERE id = ?", params![snapshot, id])?;
+        self.conn.execute(
+            "UPDATE runs SET workflow_snapshot = ? WHERE id = ?",
+            params![snapshot, id],
+        )?;
         Ok(())
     }
 
@@ -731,14 +822,23 @@ impl Store {
     }
 
     /// Record a step transition reported by the orchestrator.
-    pub fn report_step(&mut self, run_id: i64, step: &str, event: StepEvent, message: Option<&str>) -> CliResult<Step> {
+    pub fn report_step(
+        &mut self,
+        run_id: i64,
+        step: &str,
+        event: StepEvent,
+        message: Option<&str>,
+    ) -> CliResult<Step> {
         let step = step.trim();
         if step.is_empty() {
             return Err(CliError::invalid("step name must not be empty"));
         }
         let run = self.require_run(run_id)?;
         if run.status.is_finished() {
-            return Err(CliError::invalid(format!("run {run_id} has already finished ({})", run.status.as_str())));
+            return Err(CliError::invalid(format!(
+                "run {run_id} has already finished ({})",
+                run.status.as_str()
+            )));
         }
         let ts = now();
         let tx = self.conn.transaction().map_err(internal)?;
@@ -748,7 +848,11 @@ impl Store {
         )
         .map_err(internal)?;
         let exists: bool = tx
-            .query_row("SELECT count(*) > 0 FROM steps WHERE run_id = ? AND name = ?", params![run_id, step], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) > 0 FROM steps WHERE run_id = ? AND name = ?",
+                params![run_id, step],
+                |r| r.get(0),
+            )
             .map_err(internal)?;
         let status = event.resulting_status();
         match (exists, event) {
@@ -778,7 +882,10 @@ impl Store {
         }
         tx.commit().map_err(internal)?;
         let steps = self.steps(run_id).map_err(internal_any)?;
-        Ok(steps.into_iter().find(|s| s.name == step).expect("step just written"))
+        Ok(steps
+            .into_iter()
+            .find(|s| s.name == step)
+            .expect("step just written"))
     }
 
     pub fn steps(&self, run_id: i64) -> anyhow::Result<Vec<Step>> {
@@ -825,7 +932,11 @@ impl Store {
             for entry in read.flatten() {
                 let path = entry.path();
                 if path.extension().is_some_and(|e| e == "log") && path.is_file() {
-                    let step = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                    let step = path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                     found.push((step, path, size));
                 }
@@ -845,10 +956,17 @@ impl Store {
     }
 
     pub fn logs(&self, run_id: i64) -> anyhow::Result<Vec<LogEntry>> {
-        let mut stmt =
-            self.conn.prepare("SELECT step, path, size, tail, updated_at FROM logs WHERE run_id = ? ORDER BY step")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT step, path, size, tail, updated_at FROM logs WHERE run_id = ? ORDER BY step",
+        )?;
         let rows = stmt.query_map(params![run_id], |r| {
-            Ok(LogEntry { step: r.get(0)?, path: r.get(1)?, size: r.get(2)?, tail: r.get(3)?, updated_at: fmt_ts(r.get(4)?) })
+            Ok(LogEntry {
+                step: r.get(0)?,
+                path: r.get(1)?,
+                size: r.get(2)?,
+                tail: r.get(3)?,
+                updated_at: fmt_ts(r.get(4)?),
+            })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -914,7 +1032,10 @@ impl Store {
     }
 
     pub fn sessions(&self, run_id: i64) -> anyhow::Result<Vec<Session>> {
-        self.query_sessions("WHERE s.run_id = ? ORDER BY s.created_at, s.name", params![run_id])
+        self.query_sessions(
+            "WHERE s.run_id = ? ORDER BY s.created_at, s.name",
+            params![run_id],
+        )
     }
 
     /// The orchestrator sessions of running runs.
@@ -925,7 +1046,11 @@ impl Store {
         )
     }
 
-    fn query_sessions(&self, rest: &str, args: &[&dyn duckdb::ToSql]) -> anyhow::Result<Vec<Session>> {
+    fn query_sessions(
+        &self,
+        rest: &str,
+        args: &[&dyn duckdb::ToSql],
+    ) -> anyhow::Result<Vec<Session>> {
         let mut stmt = self
             .conn
             .prepare(&format!("SELECT s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.pane, s.layout, s.harness, s.placement, s.created_at FROM sessions s {rest}"))?;
@@ -940,7 +1065,9 @@ impl Store {
                 pane: r.get(6)?,
                 layout: r.get(7)?,
                 harness: r.get(8)?,
-                placement: r.get::<_, Option<String>>(9)?.and_then(|p| serde_json::from_str(&p).ok()),
+                placement: r
+                    .get::<_, Option<String>>(9)?
+                    .and_then(|p| serde_json::from_str(&p).ok()),
                 created_at: fmt_ts(r.get(10)?),
             })
         })?;
@@ -977,8 +1104,12 @@ fn run_from_row(r: &Row<'_>, with_snapshot: bool) -> duckdb::Result<Run> {
         summary: r.get(7)?,
         created_at: fmt_ts(r.get(8)?),
         finished_at: r.get::<_, Option<NaiveDateTime>>(9)?.map(fmt_ts),
-        trigger: r.get::<_, Option<String>>(10)?.and_then(|t| serde_json::from_str(&t).ok()),
-        placement: r.get::<_, Option<String>>(11)?.and_then(|t| serde_json::from_str(&t).ok()),
+        trigger: r
+            .get::<_, Option<String>>(10)?
+            .and_then(|t| serde_json::from_str(&t).ok()),
+        placement: r
+            .get::<_, Option<String>>(11)?
+            .and_then(|t| serde_json::from_str(&t).ok()),
         workflow_snapshot: if with_snapshot { r.get(12)? } else { None },
     })
 }
@@ -989,7 +1120,9 @@ pub fn read_tail(path: &Path, lines: usize) -> String {
 }
 
 pub fn read_tail_bytes(path: &Path, lines: usize, max_bytes: u64) -> String {
-    let Ok(mut file) = std::fs::File::open(path) else { return String::new() };
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let start = len.saturating_sub(max_bytes);
     if file.seek(SeekFrom::Start(start)).is_err() {
@@ -999,7 +1132,11 @@ pub fn read_tail_bytes(path: &Path, lines: usize, max_bytes: u64) -> String {
     let _ = file.read_to_end(&mut buf);
     let text = String::from_utf8_lossy(&buf);
     // If we started mid-file, drop the (probably partial) first line.
-    let text = if start > 0 { text.split_once('\n').map(|(_, rest)| rest).unwrap_or("") } else { &text };
+    let text = if start > 0 {
+        text.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+    } else {
+        &text
+    };
     let all: Vec<&str> = text.lines().collect();
     all[all.len().saturating_sub(lines)..].join("\n")
 }
@@ -1054,7 +1191,10 @@ mod tests {
         let runs = dir.path().join("runs");
         {
             let store = Store::open(&db, &runs).unwrap();
-            store.conn.execute("UPDATE schema_version SET version = 999", []).unwrap();
+            store
+                .conn
+                .execute("UPDATE schema_version SET version = 999", [])
+                .unwrap();
         }
         let err = Store::open(&db, &runs).err().unwrap();
         assert!(err.to_string().contains("newer"), "{err}");
@@ -1066,7 +1206,10 @@ mod tests {
         let a = new_run(&mut store, "wf");
         let b = new_run(&mut store, "wf");
         assert_eq!(b.id, a.id + 1);
-        assert_eq!(b.workflow_snapshot.as_deref(), Some(format!("snapshot for run {}", b.id).as_str()));
+        assert_eq!(
+            b.workflow_snapshot.as_deref(),
+            Some(format!("snapshot for run {}", b.id).as_str())
+        );
         assert_eq!(b.status, RunStatus::Running);
         assert_eq!(b.params["base"], "main");
         assert_eq!(b.project_path.as_deref(), Some("/proj"));
@@ -1077,11 +1220,21 @@ mod tests {
     fn step_status_and_history() {
         let (_d, mut store) = store();
         let run = new_run(&mut store, "wf");
-        store.report_step(run.id, "Implement", StepEvent::Start, None).unwrap();
-        store.report_step(run.id, "Implement", StepEvent::Done, Some("ok")).unwrap();
-        store.report_step(run.id, "Review", StepEvent::Start, None).unwrap();
-        store.report_step(run.id, "Review", StepEvent::Fail, Some("changes requested")).unwrap();
-        let again = store.report_step(run.id, "Implement", StepEvent::Start, None).unwrap();
+        store
+            .report_step(run.id, "Implement", StepEvent::Start, None)
+            .unwrap();
+        store
+            .report_step(run.id, "Implement", StepEvent::Done, Some("ok"))
+            .unwrap();
+        store
+            .report_step(run.id, "Review", StepEvent::Start, None)
+            .unwrap();
+        store
+            .report_step(run.id, "Review", StepEvent::Fail, Some("changes requested"))
+            .unwrap();
+        let again = store
+            .report_step(run.id, "Implement", StepEvent::Start, None)
+            .unwrap();
         assert_eq!(again.attempts, 2);
         assert_eq!(again.status, "running");
         assert!(again.finished_at.is_none());
@@ -1092,35 +1245,68 @@ mod tests {
         assert_eq!(review.message.as_deref(), Some("changes requested"));
 
         let history = store.step_history(run.id).unwrap();
-        let events: Vec<_> = history.iter().map(|h| format!("{}:{}", h.step, h.event)).collect();
-        assert_eq!(events, ["Implement:start", "Implement:done", "Review:start", "Review:fail", "Implement:start"]);
+        let events: Vec<_> = history
+            .iter()
+            .map(|h| format!("{}:{}", h.step, h.event))
+            .collect();
+        assert_eq!(
+            events,
+            [
+                "Implement:start",
+                "Implement:done",
+                "Review:start",
+                "Review:fail",
+                "Implement:start"
+            ]
+        );
     }
 
     #[test]
     fn finishing_is_final() {
         let (_d, mut store) = store();
         let run = new_run(&mut store, "wf");
-        let done = store.finish_run(run.id, RunStatus::Succeeded, None, Some("all good")).unwrap();
+        let done = store
+            .finish_run(run.id, RunStatus::Succeeded, None, Some("all good"))
+            .unwrap();
         assert_eq!(done.status, RunStatus::Succeeded);
         assert!(done.finished_at.is_some());
-        assert!(store.finish_run(run.id, RunStatus::Failed, None, None).is_err());
-        assert!(store.report_step(run.id, "x", StepEvent::Start, None).is_err());
-        assert_eq!(store.finish_run(999, RunStatus::Failed, None, None).unwrap_err().kind, crate::output::ErrorKind::NotFound);
+        assert!(store
+            .finish_run(run.id, RunStatus::Failed, None, None)
+            .is_err());
+        assert!(store
+            .report_step(run.id, "x", StepEvent::Start, None)
+            .is_err());
+        assert_eq!(
+            store
+                .finish_run(999, RunStatus::Failed, None, None)
+                .unwrap_err()
+                .kind,
+            crate::output::ErrorKind::NotFound
+        );
     }
 
     #[test]
     fn cancel_fails_running_steps() {
         let (_d, mut store) = store();
         let run = new_run(&mut store, "wf");
-        store.report_step(run.id, "Build", StepEvent::Start, None).unwrap();
-        store.report_step(run.id, "Build", StepEvent::Done, None).unwrap();
-        store.report_step(run.id, "Test", StepEvent::Start, None).unwrap();
+        store
+            .report_step(run.id, "Build", StepEvent::Start, None)
+            .unwrap();
+        store
+            .report_step(run.id, "Build", StepEvent::Done, None)
+            .unwrap();
+        store
+            .report_step(run.id, "Test", StepEvent::Start, None)
+            .unwrap();
         assert_eq!(store.current_step(run.id).unwrap().as_deref(), Some("Test"));
         let done = store.cancel_run(run.id, "user_cancelled").unwrap();
         assert_eq!(done.status, RunStatus::Cancelled);
         assert_eq!(done.reason.as_deref(), Some("user_cancelled"));
         let steps = store.steps(run.id).unwrap();
-        assert_eq!(steps.iter().map(|s| s.status.as_str()).collect::<Vec<_>>(), ["done", "failed"]);
+        assert_eq!(
+            steps.iter().map(|s| s.status.as_str()).collect::<Vec<_>>(),
+            ["done", "failed"]
+        );
         assert!(store.current_step(run.id).unwrap().is_none());
         assert!(store.cancel_run(run.id, "again").is_err());
     }
@@ -1130,12 +1316,24 @@ mod tests {
         let (_d, mut store) = store();
         let a = new_run(&mut store, "alpha");
         new_run(&mut store, "beta");
-        store.finish_run(a.id, RunStatus::Failed, Some("boom"), None).unwrap();
+        store
+            .finish_run(a.id, RunStatus::Failed, Some("boom"), None)
+            .unwrap();
         assert_eq!(store.list_runs(&RunFilter::default()).unwrap().len(), 2);
-        let failed = store.list_runs(&RunFilter { status: Some(RunStatus::Failed), ..Default::default() }).unwrap();
+        let failed = store
+            .list_runs(&RunFilter {
+                status: Some(RunStatus::Failed),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].reason.as_deref(), Some("boom"));
-        let beta = store.list_runs(&RunFilter { workflow: Some("beta".into()), ..Default::default() }).unwrap();
+        let beta = store
+            .list_runs(&RunFilter {
+                workflow: Some("beta".into()),
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(beta[0].workflow_name, "beta");
         assert_eq!(store.in_progress_runs().unwrap().len(), 1);
     }

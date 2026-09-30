@@ -69,15 +69,25 @@ impl Kind {
     pub fn choose(requested: Option<&str>, project: Option<&Path>) -> CliResult<Kind> {
         let env = std::env::var("TOME_BACKEND").ok().filter(|s| !s.is_empty());
         let (name, source) = match (requested, env) {
-            (Some(r), _) => (r.to_string(), "the workflow's `defaults.backend`".to_string()),
+            (Some(r), _) => (
+                r.to_string(),
+                "the workflow's `defaults.backend`".to_string(),
+            ),
             (None, Some(e)) => (e, "TOME_BACKEND".to_string()),
             (None, None) => match Config::load(project)?.str("backend")? {
                 Some((c, file)) => (c, format!("`backend` in {}", file.label())),
-                None => return Ok(if Cmux::inside() { Kind::Cmux } else { Kind::Tmux }),
+                None => {
+                    return Ok(if Cmux::inside() {
+                        Kind::Cmux
+                    } else {
+                        Kind::Tmux
+                    })
+                }
             },
         };
         Kind::parse(&name).ok_or_else(|| {
-            CliError::invalid(format!("unknown session backend `{name}` (from {source})")).with_hint("use tmux or cmux")
+            CliError::invalid(format!("unknown session backend `{name}` (from {source})"))
+                .with_hint("use tmux or cmux")
         })
     }
 }
@@ -116,7 +126,10 @@ impl Layout {
     /// A recorded session's layout; sessions from before layouts had their
     /// own workspace.
     pub fn of(s: &Session) -> Layout {
-        s.layout.as_deref().and_then(Layout::parse).unwrap_or(Layout::Workspace)
+        s.layout
+            .as_deref()
+            .and_then(Layout::parse)
+            .unwrap_or(Layout::Workspace)
     }
 }
 
@@ -146,7 +159,10 @@ impl Backend {
     /// fills in) and any placement warnings.
     pub fn launch(&self, launch: &Launch) -> CliResult<(Session, Vec<String>)> {
         let mut warnings = Vec::new();
-        let home = launch.project.map(Path::to_path_buf).unwrap_or_else(paths::user_home);
+        let home = launch
+            .project
+            .map(Path::to_path_buf)
+            .unwrap_or_else(paths::user_home);
         let (socket, handle, pane) = match (self, launch.layout) {
             (Backend::Tmux(t), Layout::Workspace) => (t.socket.clone(), None, t.launch(launch)?),
             (Backend::Cmux(c), Layout::Workspace) => {
@@ -156,15 +172,23 @@ impl Backend {
             (Backend::Tmux(t), layout) => {
                 let _held = workspace::lock();
                 let places = workspace::Places::open();
-                let id = t.workspace(&places, launch.target, launch.project, &home, &mut warnings)?;
+                let id =
+                    t.workspace(&places, launch.target, launch.project, &home, &mut warnings)?;
                 let pane = t.launch_in(&id, layout, launch, &mut warnings)?;
                 (t.socket.clone(), Some(id), pane)
             }
             (Backend::Cmux(c), layout) => {
                 let _held = workspace::lock();
                 let places = workspace::Places::open();
-                let (record, kept) = c.workspace(&places, launch.target, launch.project, &home, &mut warnings)?;
-                let surface = c.launch_in(kept.then_some(&places), record.clone(), layout, launch, &mut warnings)?;
+                let (record, kept) =
+                    c.workspace(&places, launch.target, launch.project, &home, &mut warnings)?;
+                let surface = c.launch_in(
+                    kept.then_some(&places),
+                    record.clone(),
+                    layout,
+                    launch,
+                    &mut warnings,
+                )?;
                 (None, Some(record.id), surface)
             }
         };
@@ -224,8 +248,12 @@ impl Target {
 /// goes in the project's instead.
 fn gone(target: &Target, warnings: &mut Vec<String>) {
     match target {
-        Target::Focused(id) => warnings.push(format!("workspace: focused: {id} is gone; opened in the project workspace")),
-        Target::Caller(id) => warnings.push(format!("from: caller: its workspace {id} is gone; opened in the project workspace")),
+        Target::Focused(id) => warnings.push(format!(
+            "workspace: focused: {id} is gone; opened in the project workspace"
+        )),
+        Target::Caller(id) => warnings.push(format!(
+            "from: caller: its workspace {id} is gone; opened in the project workspace"
+        )),
         _ => {}
     }
 }
@@ -254,9 +282,17 @@ pub fn focused(kind: Kind) -> Result<String, String> {
             if !Cmux::inside() || !cmux.available() {
                 return Err("cmux isn't answering".into());
             }
-            let out = cmux.run(&["--id-format", "uuids", "identify", "--json"]).ok().filter(|o| o.status.success());
-            let v: Value = out.and_then(|o| serde_json::from_slice(&o.stdout).ok()).unwrap_or_default();
-            v["focused"]["workspace_id"].as_str().map(str::to_string).ok_or_else(|| "cmux has no focused workspace".into())
+            let out = cmux
+                .run(&["--id-format", "uuids", "identify", "--json"])
+                .ok()
+                .filter(|o| o.status.success());
+            let v: Value = out
+                .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+                .unwrap_or_default();
+            v["focused"]["workspace_id"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "cmux has no focused workspace".into())
         }
     }
 }
@@ -264,7 +300,11 @@ pub fn focused(kind: Kind) -> Result<String, String> {
 /// The cmux pane this process runs in, from its environment:
 /// `{surface, workspace}`; `None` outside cmux.
 pub fn caller_env() -> Option<Value> {
-    let var = |k| std::env::var(k).ok().filter(|v: &String| !v.trim().is_empty());
+    let var = |k| {
+        std::env::var(k)
+            .ok()
+            .filter(|v: &String| !v.trim().is_empty())
+    };
     let surface = var("CMUX_SURFACE_ID")?;
     Some(serde_json::json!({ "surface": surface, "workspace": var("CMUX_WORKSPACE_ID") }))
 }
@@ -273,9 +313,18 @@ pub fn caller_env() -> Option<Value> {
 /// workspace and the surface), or why it can't be used.
 pub fn caller_anchor(surface: &str) -> Result<(split::Anchor, String), String> {
     let all = Cmux.surfaces().ok_or("cmux isn't answering")?;
-    let s = all.into_iter().find(|s| s.id == surface).ok_or("the caller's pane is gone")?;
+    let s = all
+        .into_iter()
+        .find(|s| s.id == surface)
+        .ok_or("the caller's pane is gone")?;
     let pane = s.pane.clone().unwrap_or_default();
-    Ok((split::Anchor { handle: s.workspace, pane: surface.to_string() }, pane))
+    Ok((
+        split::Anchor {
+            handle: s.workspace,
+            pane: surface.to_string(),
+        },
+        pane,
+    ))
 }
 
 // Recorded sessions are found by their own pane or tab (`pane`: a tmux pane
@@ -287,7 +336,9 @@ pub fn caller_anchor(surface: &str) -> Result<(split::Anchor, String), String> {
 pub fn is_alive(s: &Session) -> Option<bool> {
     match Kind::parse(&s.backend) {
         Some(Kind::Tmux) => {
-            let tmux = Tmux { socket: s.socket.clone() };
+            let tmux = Tmux {
+                socket: s.socket.clone(),
+            };
             Some(match &s.pane {
                 Some(pane) => tmux.pane_alive(pane),
                 None => tmux.is_alive(&s.name),
@@ -309,7 +360,9 @@ pub fn kill(s: &Session) -> bool {
     let layout = Layout::of(s);
     match Kind::parse(&s.backend) {
         Some(Kind::Tmux) => {
-            let tmux = Tmux { socket: s.socket.clone() };
+            let tmux = Tmux {
+                socket: s.socket.clone(),
+            };
             match (&s.pane, layout) {
                 (Some(pane), Layout::Tab) => tmux.kill_window_of(pane),
                 (Some(pane), Layout::Split) => tmux.kill_pane(pane),
@@ -317,7 +370,9 @@ pub fn kill(s: &Session) -> bool {
             }
         }
         Some(Kind::Cmux) => match (&s.handle, &s.pane, layout) {
-            (Some(workspace), Some(surface), Layout::Tab | Layout::Split) => Cmux.close_surface(workspace, surface),
+            (Some(workspace), Some(surface), Layout::Tab | Layout::Split) => {
+                Cmux.close_surface(workspace, surface)
+            }
             (Some(workspace), _, _) => Cmux.kill(workspace),
             (None, _, _) => false,
         },
@@ -330,15 +385,18 @@ pub fn kill(s: &Session) -> bool {
 pub fn send_line(s: &Session, text: &str) -> bool {
     match Kind::parse(&s.backend) {
         Some(Kind::Tmux) => {
-            let tmux = Tmux { socket: s.socket.clone() };
+            let tmux = Tmux {
+                socket: s.socket.clone(),
+            };
             match &s.pane {
                 Some(pane) => tmux.pane_alive(pane) && tmux.send_keys(pane, text),
                 None => tmux.send_line(&s.name, text),
             }
         }
-        Some(Kind::Cmux) => {
-            s.handle.as_deref().is_some_and(|id| Cmux.send_line(id, s.pane.as_deref(), text))
-        }
+        Some(Kind::Cmux) => s
+            .handle
+            .as_deref()
+            .is_some_and(|id| Cmux.send_line(id, s.pane.as_deref(), text)),
         None => false,
     }
 }
@@ -400,7 +458,11 @@ pub struct Tmux {
 
 impl Tmux {
     pub fn from_env() -> Tmux {
-        Tmux { socket: std::env::var("TOME_TMUX_SOCKET").ok().filter(|s| !s.is_empty()) }
+        Tmux {
+            socket: std::env::var("TOME_TMUX_SOCKET")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        }
     }
 
     fn cmd(&self) -> Command {
@@ -419,17 +481,26 @@ impl Tmux {
 
     /// Whether tmux is installed.
     pub fn available() -> bool {
-        Command::new("tmux").arg("-V").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+        Command::new("tmux")
+            .arg("-V")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
     }
 
     /// Start `launch.argv` in a new detached session with `launch.env` set,
     /// capturing its output to `launch.log`. Returns its pane's id.
     pub fn launch(&self, launch: &Launch) -> CliResult<String> {
         if !Tmux::available() {
-            return Err(CliError::internal("tmux isn't installed").with_hint("install tmux, or use `backend: cmux`"));
+            return Err(CliError::internal("tmux isn't installed")
+                .with_hint("install tmux, or use `backend: cmux`"));
         }
         if self.is_alive(launch.name) {
-            return Err(CliError::internal(format!("tmux session `{}` already exists", launch.name)));
+            return Err(CliError::internal(format!(
+                "tmux session `{}` already exists",
+                launch.name
+            )));
         }
         let ready = launch.script.with_extension("ready");
         let _ = fs::remove_file(&ready);
@@ -438,8 +509,23 @@ impl Tmux {
         let cwd = launch.cwd.to_string_lossy();
         let script = launch.script.to_string_lossy();
         let out = self.run(&[
-            "new-session", "-d", "-P", "-F", "#{pane_id}", "-s", launch.name, "-n", launch.title, "-c", &cwd, "-x", "200", "-y",
-            "50", "sh", &script,
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-s",
+            launch.name,
+            "-n",
+            launch.title,
+            "-c",
+            &cwd,
+            "-x",
+            "200",
+            "-y",
+            "50",
+            "sh",
+            &script,
         ])?;
         if !out.status.success() {
             return Err(CliError::internal(format!(
@@ -462,7 +548,13 @@ impl Tmux {
     /// Start `launch.argv` in the tome session `id`: in a new window under
     /// the `tab` layout (`from` doesn't apply to tmux windows), in a new pane
     /// as `launch.split` says under `split`. Returns its pane's id.
-    pub fn launch_in(&self, id: &str, layout: Layout, launch: &Launch, warnings: &mut Vec<String>) -> CliResult<String> {
+    pub fn launch_in(
+        &self,
+        id: &str,
+        layout: Layout,
+        launch: &Launch,
+        warnings: &mut Vec<String>,
+    ) -> CliResult<String> {
         let ready = launch.script.with_extension("ready");
         let _ = fs::remove_file(&ready);
         fs::write(launch.script, script(launch, Capture::AfterStart(&ready)))?;
@@ -473,11 +565,33 @@ impl Tmux {
         let mut anchored = false;
         let out = match layout {
             Layout::Split => {
-                let (out, from_anchor) = self.split_window(id, launch.split, split::Opening::New { cwd: &cwd, argv: &["sh", &script] }, warnings)?;
+                let (out, from_anchor) = self.split_window(
+                    id,
+                    launch.split,
+                    split::Opening::New {
+                        cwd: &cwd,
+                        argv: &["sh", &script],
+                    },
+                    warnings,
+                )?;
                 anchored = from_anchor;
                 out
             }
-            _ => self.run(&["new-window", "-d", "-t", &target, "-n", launch.title, "-c", &cwd, "-P", "-F", "#{pane_id}", "sh", &script])?,
+            _ => self.run(&[
+                "new-window",
+                "-d",
+                "-t",
+                &target,
+                "-n",
+                launch.title,
+                "-c",
+                &cwd,
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "sh",
+                &script,
+            ])?,
         };
         if !out.status.success() {
             return Err(CliError::internal(format!(
@@ -526,7 +640,9 @@ impl Tmux {
     /// Whether the session (by id, `$<n>`) exists.
     fn session_exists(&self, id: &str) -> bool {
         match self.run(&["list-sessions", "-F", "#{session_id}"]) {
-            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).lines().any(|l| l.trim() == id),
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .any(|l| l.trim() == id),
             _ => false,
         }
     }
@@ -534,50 +650,71 @@ impl Tmux {
     /// Whether the pane (`%<n>`) exists and its command is still running.
     pub fn pane_alive(&self, pane: &str) -> bool {
         match self.run(&["list-panes", "-t", pane, "-F", "#{pane_id} #{pane_dead}"]) {
-            Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout).lines().any(|l| l.trim() == format!("{pane} 0"))
-            }
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .any(|l| l.trim() == format!("{pane} 0")),
             _ => false,
         }
     }
 
     /// Kill a pane. Returns whether it existed.
     pub fn kill_pane(&self, pane: &str) -> bool {
-        self.pane_exists(pane) && self.run(&["kill-pane", "-t", pane]).is_ok_and(|o| o.status.success())
+        self.pane_exists(pane)
+            && self
+                .run(&["kill-pane", "-t", pane])
+                .is_ok_and(|o| o.status.success())
     }
 
     /// Kill the window a pane is in. Returns whether it existed.
     pub fn kill_window_of(&self, pane: &str) -> bool {
-        self.pane_exists(pane) && self.run(&["kill-window", "-t", pane]).is_ok_and(|o| o.status.success())
+        self.pane_exists(pane)
+            && self
+                .run(&["kill-window", "-t", pane])
+                .is_ok_and(|o| o.status.success())
     }
 
     /// Whether the pane exists, running or not. (A missing `-t` target
     /// would otherwise fall back to the current pane.)
     fn pane_exists(&self, pane: &str) -> bool {
         match self.run(&["list-panes", "-t", pane, "-F", "#{pane_id}"]) {
-            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).lines().any(|l| l.trim() == pane),
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .any(|l| l.trim() == pane),
             _ => false,
         }
     }
 
     /// Type `text` into a pane (or other target), then Enter.
     fn send_keys(&self, target: &str, text: &str) -> bool {
-        self.run(&["send-keys", "-t", target, "-l", text]).is_ok_and(|o| o.status.success())
-            && self.run(&["send-keys", "-t", target, "Enter"]).is_ok_and(|o| o.status.success())
+        self.run(&["send-keys", "-t", target, "-l", text])
+            .is_ok_and(|o| o.status.success())
+            && self
+                .run(&["send-keys", "-t", target, "Enter"])
+                .is_ok_and(|o| o.status.success())
     }
 
     /// Whether the session exists and its command is still running.
     pub fn is_alive(&self, name: &str) -> bool {
-        match self.run(&["list-panes", "-s", "-t", &format!("={name}"), "-F", "#{pane_dead}"]) {
+        match self.run(&[
+            "list-panes",
+            "-s",
+            "-t",
+            &format!("={name}"),
+            "-F",
+            "#{pane_dead}",
+        ]) {
             // With `remain-on-exit` a finished pane lingers; it's dead then.
-            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).lines().any(|l| l.trim() == "0"),
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .any(|l| l.trim() == "0"),
             _ => false,
         }
     }
 
     /// Kill a session. Returns whether it existed.
     pub fn kill(&self, name: &str) -> bool {
-        self.run(&["kill-session", "-t", &format!("={name}")]).is_ok_and(|o| o.status.success())
+        self.run(&["kill-session", "-t", &format!("={name}")])
+            .is_ok_and(|o| o.status.success())
     }
 
     /// Type `text` into the session's active pane, then Enter.
@@ -592,7 +729,10 @@ impl Tmux {
     #[cfg(test)]
     pub fn list(&self) -> Vec<String> {
         match self.run(&["list-sessions", "-F", "#{session_name}"]) {
-            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect(),
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::to_string)
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -636,7 +776,9 @@ impl Cmux {
 
     /// Whether this process runs inside cmux (and so may use it).
     pub fn inside() -> bool {
-        ["CMUX_SOCKET_PATH", "CMUX_WORKSPACE_ID"].iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+        ["CMUX_SOCKET_PATH", "CMUX_WORKSPACE_ID"]
+            .iter()
+            .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
     }
 
     /// Whether cmux answers.
@@ -645,7 +787,11 @@ impl Cmux {
     }
 
     fn unavailable(&self) -> CliError {
-        let why = if Cmux::inside() { "cmux isn't answering" } else { "the tome daemon isn't running inside cmux" };
+        let why = if Cmux::inside() {
+            "cmux isn't answering"
+        } else {
+            "the tome daemon isn't running inside cmux"
+        };
         CliError::internal(format!("can't start a cmux workspace: {why}")).with_hint(
             "start the daemon from a cmux terminal (`tome daemon stop`, then any tome command there), or use `backend: tmux`",
         )
@@ -671,19 +817,28 @@ impl Cmux {
             "false",
         ])?;
         let stdout = String::from_utf8_lossy(&out.stdout);
-        let reference = stdout.trim().strip_prefix("OK ").filter(|_| out.status.success()).ok_or_else(|| {
-            CliError::internal(format!(
-                "cmux couldn't open a workspace for `{}`: {}",
-                launch.name,
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))
-        })?;
-        let found = self.surfaces().and_then(|all| all.into_iter().find(|s| s.workspace_ref == reference && !s.id.is_empty()));
+        let reference = stdout
+            .trim()
+            .strip_prefix("OK ")
+            .filter(|_| out.status.success())
+            .ok_or_else(|| {
+                CliError::internal(format!(
+                    "cmux couldn't open a workspace for `{}`: {}",
+                    launch.name,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ))
+            })?;
+        let found = self.surfaces().and_then(|all| {
+            all.into_iter()
+                .find(|s| s.workspace_ref == reference && !s.id.is_empty())
+        });
         match found {
             Some(s) => Ok((s.workspace, s.id)),
             None => {
                 let _ = self.run(&["close-workspace", "--workspace", reference]);
-                Err(CliError::internal(format!("cmux opened {reference} but tome couldn't find its id")))
+                Err(CliError::internal(format!(
+                    "cmux opened {reference} but tome couldn't find its id"
+                )))
             }
         }
     }
@@ -712,26 +867,56 @@ impl Cmux {
                 String::from_utf8_lossy(&out.stderr).trim()
             ))
         };
-        let here: Vec<Surface> =
-            self.surfaces().unwrap_or_default().into_iter().filter(|s| s.workspace == record.id && !s.id.is_empty()).collect();
+        let here: Vec<Surface> = self
+            .surfaces()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| s.workspace == record.id && !s.id.is_empty())
+            .collect();
         let tabs = match places {
-            Some(_) => record.tabs.clone().filter(|p| here.iter().any(|s| s.pane.as_deref() == Some(p.as_str()))),
-            None => split.recent.iter().find_map(|a| here.iter().find(|s| s.id == a.pane)?.pane.clone()),
+            Some(_) => record
+                .tabs
+                .clone()
+                .filter(|p| here.iter().any(|s| s.pane.as_deref() == Some(p.as_str()))),
+            None => split
+                .recent
+                .iter()
+                .find_map(|a| here.iter().find(|s| s.id == a.pane)?.pane.clone()),
         };
-        let anchor = split.anchors.iter().find_map(|a| here.iter().find(|s| a.handle == record.id && s.id == a.pane));
+        let anchor = split.anchors.iter().find_map(|a| {
+            here.iter()
+                .find(|s| a.handle == record.id && s.id == a.pane)
+        });
         split.missing_anchor(anchor.is_some(), warnings);
-        let join = anchor.and_then(|a| a.pane.clone()).filter(|_| layout == Layout::Tab);
+        let join = anchor
+            .and_then(|a| a.pane.clone())
+            .filter(|_| layout == Layout::Tab);
         let surface = match (layout, join.or(tabs)) {
             (Layout::Tab, Some(pane)) => {
                 let out = self.run(&[
-                    "--id-format", "uuids", "new-surface", "--workspace", &record.id, "--pane", &pane, "--focus", "false",
+                    "--id-format",
+                    "uuids",
+                    "new-surface",
+                    "--workspace",
+                    &record.id,
+                    "--pane",
+                    &pane,
+                    "--focus",
+                    "false",
                 ])?;
                 first_id(&out).ok_or_else(|| failed("tab", &out))?
             }
             _ => {
                 // Off the anchor, else the last pane (cmux lists them left
                 // to right).
-                let mut args = vec!["--id-format", "uuids", "new-split", split.direction.as_str(), "--workspace", &record.id];
+                let mut args = vec![
+                    "--id-format",
+                    "uuids",
+                    "new-split",
+                    split.direction.as_str(),
+                    "--workspace",
+                    &record.id,
+                ];
                 if let Some(from) = anchor.or(here.last()) {
                     args.extend(["--surface", from.id.as_str()]);
                 }
@@ -740,17 +925,29 @@ impl Cmux {
                 let surface = first_id(&out).ok_or_else(|| failed("split", &out))?;
                 self.size_pane(&record.id, &surface, split, warnings);
                 if let (Layout::Tab, Some(places)) = (layout, places) {
-                    let pane = self.surfaces().and_then(|all| all.into_iter().find(|s| s.id == surface)?.pane);
+                    let pane = self
+                        .surfaces()
+                        .and_then(|all| all.into_iter().find(|s| s.id == surface)?.pane);
                     record.tabs = pane;
                     places.put(&record)?;
                 }
                 surface
             }
         };
-        let _ = self.run(&["rename-tab", "--workspace", &record.id, "--surface", &surface, launch.title]);
+        let _ = self.run(&[
+            "rename-tab",
+            "--workspace",
+            &record.id,
+            "--surface",
+            &surface,
+            launch.title,
+        ]);
         if !self.send_line(&record.id, Some(&surface), &exec_command(launch)) {
             self.close_surface(&record.id, &surface);
-            return Err(CliError::internal(format!("cmux couldn't start `{}` in its new terminal", launch.name)));
+            return Err(CliError::internal(format!(
+                "cmux couldn't start `{}` in its new terminal",
+                launch.name
+            )));
         }
         Ok(surface)
     }
@@ -780,14 +977,28 @@ impl Cmux {
     /// Every terminal in every workspace of every window, as cmux's tree
     /// has them; `None` if cmux didn't answer.
     fn surfaces(&self) -> Option<Vec<Surface>> {
-        let out = self.run(&["--id-format", "both", "tree", "--all", "--json"]).ok().filter(|o| o.status.success())?;
+        let out = self
+            .run(&["--id-format", "both", "tree", "--all", "--json"])
+            .ok()
+            .filter(|o| o.status.success())?;
         let tree: Value = serde_json::from_slice(&out.stdout).ok()?;
         let mut all = Vec::new();
-        for w in tree["windows"].as_array()?.iter().flat_map(|w| w["workspaces"].as_array().into_iter().flatten()) {
-            let (Some(workspace), Some(workspace_ref)) = (w["id"].as_str(), w["ref"].as_str()) else { continue };
+        for w in tree["windows"]
+            .as_array()?
+            .iter()
+            .flat_map(|w| w["workspaces"].as_array().into_iter().flatten())
+        {
+            let (Some(workspace), Some(workspace_ref)) = (w["id"].as_str(), w["ref"].as_str())
+            else {
+                continue;
+            };
             let panes = w["panes"].as_array().into_iter().flatten();
             let surfaces = panes.flat_map(|p| {
-                p["surfaces"].as_array().into_iter().flatten().filter_map(move |s| Some((p["id"].as_str()?, s["id"].as_str()?)))
+                p["surfaces"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(move |s| Some((p["id"].as_str()?, s["id"].as_str()?)))
             });
             let mut any = false;
             for (pane, id) in surfaces {
@@ -825,13 +1036,22 @@ impl Cmux {
 
     /// Close a workspace. Returns whether it was open.
     pub fn kill(&self, id: &str) -> bool {
-        self.run(&["close-workspace", "--workspace", id]).is_ok_and(|o| o.status.success())
+        self.run(&["close-workspace", "--workspace", id])
+            .is_ok_and(|o| o.status.success())
     }
 
     /// Close one surface (tab) of a workspace. Returns whether it was open.
     pub fn close_surface(&self, workspace: &str, surface: &str) -> bool {
         self.surface_alive(surface) == Some(true)
-            && self.run(&["close-surface", "--workspace", workspace, "--surface", surface]).is_ok_and(|o| o.status.success())
+            && self
+                .run(&[
+                    "close-surface",
+                    "--workspace",
+                    workspace,
+                    "--surface",
+                    surface,
+                ])
+                .is_ok_and(|o| o.status.success())
     }
 
     /// Type `text` into a surface of the workspace (its focused one if
@@ -850,7 +1070,8 @@ impl Cmux {
 
     /// Post a cmux notification.
     pub fn notify(&self, title: &str, body: &str) -> bool {
-        self.run(&["notify", "--title", title, "--body", body]).is_ok_and(|o| o.status.success())
+        self.run(&["notify", "--title", title, "--body", body])
+            .is_ok_and(|o| o.status.success())
     }
 }
 
@@ -867,7 +1088,13 @@ struct Surface {
 /// The first id in a cmux `OK <id> ...` answer.
 fn first_id(out: &Output) -> Option<String> {
     let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout.trim().strip_prefix("OK ").filter(|_| out.status.success())?.split_whitespace().next().map(str::to_string)
+    stdout
+        .trim()
+        .strip_prefix("OK ")
+        .filter(|_| out.status.success())?
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
 }
 
 /// What to type into a cmux terminal to run the launcher: the leading space
@@ -891,7 +1118,10 @@ enum Capture<'a> {
 fn script(launch: &Launch, capture: Capture) -> String {
     let mut s = String::from("#!/bin/sh\n");
     // Terminals opened inside an existing workspace start in its directory.
-    s.push_str(&format!("cd {} || exit 1\n", shell_quote(&launch.cwd.to_string_lossy())));
+    s.push_str(&format!(
+        "cd {} || exit 1\n",
+        shell_quote(&launch.cwd.to_string_lossy())
+    ));
     for (k, v) in launch.env {
         s.push_str(&format!("export {k}={}\n", shell_quote(v)));
     }
@@ -917,8 +1147,16 @@ fn script(launch: &Launch, capture: Capture) -> String {
 /// A session name for a run: `tome-<id>-<workflow>`. tmux doesn't allow `.`
 /// or `:` in names, so anything but letters, digits, `_` and `-` becomes `-`.
 pub fn run_session_name(run_id: i64, workflow: &str, role: &str) -> String {
-    let slug: String =
-        workflow.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' }).collect();
+    let slug: String = workflow
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
     match role {
         "orchestrator" => format!("{}{slug}", run_prefix(run_id)),
         role => format!("{}{slug}-{role}", run_prefix(run_id)),
@@ -958,7 +1196,9 @@ mod tests {
                 eprintln!("skipping: tmux isn't installed");
                 return None;
             }
-            Some(Server(Tmux { socket: Some(format!("tome-test-{tag}-{}", std::process::id())) }))
+            Some(Server(Tmux {
+                socket: Some(format!("tome-test-{tag}-{}", std::process::id())),
+            }))
         }
     }
 
@@ -970,7 +1210,10 @@ mod tests {
 
     fn launch(tmux: &Tmux, dir: &Path, name: &str, argv: &[&str]) {
         let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-        let env = vec![("TOME_RUN_ID".to_string(), "7".to_string()), ("GREETING".to_string(), "it's me".to_string())];
+        let env = vec![
+            ("TOME_RUN_ID".to_string(), "7".to_string()),
+            ("GREETING".to_string(), "it's me".to_string()),
+        ];
         tmux.launch(&Launch {
             name,
             title: "tome: test #7",
@@ -989,24 +1232,40 @@ mod tests {
 
     #[test]
     fn launched_command_gets_env_cwd_and_its_output_is_captured() {
-        let Some(server) = Server::new("env") else { return };
+        let Some(server) = Server::new("env") else {
+            return;
+        };
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path().canonicalize().unwrap();
-        launch(&server.0, &dir, "tome-7-env", &["sh", "-c", "echo \"run=$TOME_RUN_ID $GREETING in $(pwd)\"; sleep 0.3"]);
+        launch(
+            &server.0,
+            &dir,
+            "tome-7-env",
+            &[
+                "sh",
+                "-c",
+                "echo \"run=$TOME_RUN_ID $GREETING in $(pwd)\"; sleep 0.3",
+            ],
+        );
         let log = dir.join("tome-7-env.log");
         let want = format!("run=7 it's me in {}", dir.display());
         assert!(
-            wait_until(Duration::from_secs(5), || fs::read_to_string(&log).is_ok_and(|s| s.contains(&want))),
+            wait_until(Duration::from_secs(5), || fs::read_to_string(&log)
+                .is_ok_and(|s| s.contains(&want))),
             "log: {:?}",
             fs::read_to_string(&log)
         );
         // Exits on its own and the session goes away.
-        assert!(wait_until(Duration::from_secs(5), || !server.0.is_alive("tome-7-env")));
+        assert!(wait_until(Duration::from_secs(5), || !server
+            .0
+            .is_alive("tome-7-env")));
     }
 
     #[test]
     fn sessions_can_be_listed_and_killed_by_run() {
-        let Some(server) = Server::new("kill") else { return };
+        let Some(server) = Server::new("kill") else {
+            return;
+        };
         let tmux = &server.0;
         let dir = tempfile::tempdir().unwrap();
         launch(tmux, dir.path(), "tome-7-build", &["sleep", "30"]);
@@ -1026,35 +1285,54 @@ mod tests {
 
     #[test]
     fn dead_pane_with_remain_on_exit_is_not_alive() {
-        let Some(server) = Server::new("remain") else { return };
+        let Some(server) = Server::new("remain") else {
+            return;
+        };
         let tmux = &server.0;
         let dir = tempfile::tempdir().unwrap();
         launch(tmux, dir.path(), "tome-8-keep", &["sleep", "30"]);
-        tmux.run(&["set-option", "-g", "remain-on-exit", "on"]).unwrap();
-        tmux.run(&["set-option", "-t", "=tome-8-keep", "remain-on-exit", "on"]).unwrap();
+        tmux.run(&["set-option", "-g", "remain-on-exit", "on"])
+            .unwrap();
+        tmux.run(&["set-option", "-t", "=tome-8-keep", "remain-on-exit", "on"])
+            .unwrap();
         assert!(tmux.is_alive("tome-8-keep"));
-        tmux.run(&["send-keys", "-t", "=tome-8-keep:", "C-c"]).unwrap();
+        tmux.run(&["send-keys", "-t", "=tome-8-keep:", "C-c"])
+            .unwrap();
         assert!(wait_until(Duration::from_secs(5), || !tmux.is_alive("tome-8-keep")));
-        assert!(tmux.list().contains(&"tome-8-keep".to_string()), "pane lingers");
+        assert!(
+            tmux.list().contains(&"tome-8-keep".to_string()),
+            "pane lingers"
+        );
     }
 
     #[test]
     fn lines_can_be_typed_into_a_session() {
-        let Some(server) = Server::new("send") else { return };
+        let Some(server) = Server::new("send") else {
+            return;
+        };
         let tmux = &server.0;
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("got.txt");
         let cmd = format!("read line; echo \"$line\" > {}; sleep 5", out.display());
         launch(tmux, dir.path(), "tome-9-read", &["sh", "-c", &cmd]);
         assert!(tmux.send_line("tome-9-read", "worker w1 done; it's $HOME"));
-        assert!(wait_until(Duration::from_secs(5), || fs::read_to_string(&out).is_ok_and(|s| s.trim() == "worker w1 done; it's $HOME")));
+        assert!(wait_until(Duration::from_secs(5), || fs::read_to_string(
+            &out
+        )
+        .is_ok_and(|s| s.trim() == "worker w1 done; it's $HOME")));
         assert!(!tmux.send_line("tome-9-gone", "hello"));
     }
 
     #[test]
     fn run_session_names_are_tmux_safe() {
-        assert_eq!(run_session_name(42, "review.loop:v2", "orchestrator"), "tome-42-review-loop-v2");
-        assert_eq!(run_session_name(42, "build", "worker"), "tome-42-build-worker");
+        assert_eq!(
+            run_session_name(42, "review.loop:v2", "orchestrator"),
+            "tome-42-review-loop-v2"
+        );
+        assert_eq!(
+            run_session_name(42, "build", "worker"),
+            "tome-42-build-worker"
+        );
         assert!(run_session_name(42, "build", "orchestrator").starts_with(&run_prefix(42)));
     }
 }

@@ -21,8 +21,14 @@ fn duration(run: &Run) -> Option<i64> {
 fn ended(run: &Run) -> Option<(&'static str, Value)> {
     let base = json!({ "run_id": run.id, "workflow": run.workflow_name });
     let (what, extra) = match run.status {
-        RunStatus::Succeeded => ("succeeded", json!({ "summary": run.summary, "duration": duration(run) })),
-        RunStatus::Failed => ("failed", json!({ "reason": run.reason, "summary": run.summary })),
+        RunStatus::Succeeded => (
+            "succeeded",
+            json!({ "summary": run.summary, "duration": duration(run) }),
+        ),
+        RunStatus::Failed => (
+            "failed",
+            json!({ "reason": run.reason, "summary": run.summary }),
+        ),
         RunStatus::Cancelled => ("cancelled", json!({})),
         _ => return None,
     };
@@ -49,7 +55,10 @@ impl Engine {
                 self.publish_lifecycle(&run, STARTED, &payload);
             }
             Ok(None) => {}
-            Err(e) => eprintln!("tome daemon: announcing run {run_id}'s start failed: {}", e.message),
+            Err(e) => eprintln!(
+                "tome daemon: announcing run {run_id}'s start failed: {}",
+                e.message
+            ),
         }
     }
 
@@ -67,14 +76,19 @@ impl Engine {
                 }
             }
             Ok(None) => {}
-            Err(e) => eprintln!("tome daemon: marking the end of run {run_id} failed: {}", e.message),
+            Err(e) => eprintln!(
+                "tome daemon: marking the end of run {run_id} failed: {}",
+                e.message
+            ),
         }
     }
 
     /// Publish `tome.run.<workflow>.<what>` to the run's project, a step
     /// deeper than the event that started the run.
     fn publish_lifecycle(&self, run: &Run, what: &str, payload: &Value) {
-        let Some(project) = &run.project_path else { return };
+        let Some(project) = &run.project_path else {
+            return;
+        };
         let topic = format!("{}.run.{}.{what}", topic::RESERVED, run.workflow_name);
         if let Err(e) = topic::check_name(&topic) {
             eprintln!("tome daemon: run {} has no lifecycle events: {e}", run.id);
@@ -90,7 +104,10 @@ impl Engine {
             only: None,
         };
         if let Err(e) = self.publish(&publish, false) {
-            eprintln!("tome daemon: publishing {topic} for run {} failed: {}", run.id, e.message);
+            eprintln!(
+                "tome daemon: publishing {topic} for run {} failed: {}",
+                run.id, e.message
+            );
         }
     }
 }
@@ -120,10 +137,25 @@ mod tests {
     #[test]
     fn ended_payloads_fit_how_the_run_ended() {
         let (what, p) = ended(&run(RunStatus::Succeeded)).unwrap();
-        assert_eq!((what, p), ("succeeded", json!({ "run_id": 3, "workflow": "implement", "summary": "done", "duration": 65 })));
+        assert_eq!(
+            (what, p),
+            (
+                "succeeded",
+                json!({ "run_id": 3, "workflow": "implement", "summary": "done", "duration": 65 })
+            )
+        );
         let (what, p) = ended(&run(RunStatus::Failed)).unwrap();
-        assert_eq!((what, p), ("failed", json!({ "run_id": 3, "workflow": "implement", "reason": "orchestrator_exited", "summary": "done" })));
-        assert_eq!(ended(&run(RunStatus::Cancelled)).unwrap().1, json!({ "run_id": 3, "workflow": "implement" }));
+        assert_eq!(
+            (what, p),
+            (
+                "failed",
+                json!({ "run_id": 3, "workflow": "implement", "reason": "orchestrator_exited", "summary": "done" })
+            )
+        );
+        assert_eq!(
+            ended(&run(RunStatus::Cancelled)).unwrap().1,
+            json!({ "run_id": 3, "workflow": "implement" })
+        );
         assert!(ended(&run(RunStatus::Running)).is_none());
     }
 }

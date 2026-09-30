@@ -29,7 +29,9 @@ impl Platform {
         } else if cfg!(target_os = "linux") {
             Ok(Platform::Systemd)
         } else {
-            Err(CliError::invalid("service install is supported on macOS (launchd) and Linux (systemd) only"))
+            Err(CliError::invalid(
+                "service install is supported on macOS (launchd) and Linux (systemd) only",
+            ))
         }
     }
 
@@ -42,7 +44,9 @@ impl Platform {
 
     pub fn unit_path(self) -> PathBuf {
         match self {
-            Platform::Launchd => paths::user_home().join("Library/LaunchAgents").join(format!("{LAUNCHD_LABEL}.plist")),
+            Platform::Launchd => paths::user_home()
+                .join("Library/LaunchAgents")
+                .join(format!("{LAUNCHD_LABEL}.plist")),
             Platform::Systemd => {
                 let config = std::env::var_os("XDG_CONFIG_HOME")
                     .filter(|v| !v.is_empty())
@@ -71,7 +75,9 @@ impl UnitSpec {
         let exe = exe.canonicalize().unwrap_or(exe);
         Ok(UnitSpec {
             exe,
-            tome_home: std::env::var_os("TOME_HOME").filter(|v| !v.is_empty()).map(PathBuf::from),
+            tome_home: std::env::var_os("TOME_HOME")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
             path_env: std::env::var("PATH").ok().filter(|v| !v.is_empty()),
             log: paths::daemon_log_path(),
         })
@@ -99,7 +105,12 @@ impl UnitSpec {
         let env: String = self
             .env_pairs()
             .iter()
-            .map(|(k, v)| format!("        <key>{k}</key>\n        <string>{}</string>\n", xml_escape(v)))
+            .map(|(k, v)| {
+                format!(
+                    "        <key>{k}</key>\n        <string>{}</string>\n",
+                    xml_escape(v)
+                )
+            })
             .collect();
         let env_block = if env.is_empty() {
             String::new()
@@ -144,7 +155,12 @@ impl UnitSpec {
         let env: String = self
             .env_pairs()
             .iter()
-            .map(|(k, v)| format!("Environment=\"{k}={}\"\n", v.replace('\\', "\\\\").replace('"', "\\\"")))
+            .map(|(k, v)| {
+                format!(
+                    "Environment=\"{k}={}\"\n",
+                    v.replace('\\', "\\\\").replace('"', "\\\"")
+                )
+            })
             .collect();
         format!(
             "[Unit]
@@ -165,7 +181,10 @@ WantedBy=default.target
 }
 
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// The installed unit file, if any.
@@ -205,8 +224,14 @@ pub fn install(print_only: bool, no_start: bool) -> CliResult<Report> {
             Platform::Launchd => {
                 let target = launchd_domain();
                 // Reload if an older copy is already loaded.
-                let _ = run_quiet("launchctl", &["bootout", &format!("{target}/{LAUNCHD_LABEL}")]);
-                run_checked("launchctl", &["bootstrap", &target, &unit_path.display().to_string()])?;
+                let _ = run_quiet(
+                    "launchctl",
+                    &["bootout", &format!("{target}/{LAUNCHD_LABEL}")],
+                );
+                run_checked(
+                    "launchctl",
+                    &["bootstrap", &target, &unit_path.display().to_string()],
+                )?;
             }
             Platform::Systemd => {
                 run_checked("systemctl", &["--user", "daemon-reload"])?;
@@ -221,7 +246,11 @@ pub fn install(print_only: bool, no_start: bool) -> CliResult<Report> {
         "installed {} service at {}{}",
         platform.name(),
         unit_path.display(),
-        if started { "\ntome daemon is running" } else { "" }
+        if started {
+            "\ntome daemon is running"
+        } else {
+            ""
+        }
     );
     let data = json!({
         "platform": platform.name(),
@@ -242,7 +271,10 @@ pub fn uninstall() -> CliResult<Report> {
     }
     match platform {
         Platform::Launchd => {
-            let _ = run_quiet("launchctl", &["bootout", &format!("{}/{LAUNCHD_LABEL}", launchd_domain())]);
+            let _ = run_quiet(
+                "launchctl",
+                &["bootout", &format!("{}/{LAUNCHD_LABEL}", launchd_domain())],
+            );
         }
         Platform::Systemd => {
             let _ = run_quiet("systemctl", &["--user", "disable", "--now", SYSTEMD_UNIT]);
@@ -253,7 +285,14 @@ pub fn uninstall() -> CliResult<Report> {
         let _ = run_quiet("systemctl", &["--user", "daemon-reload"]);
     }
     let data = json!({ "platform": platform.name(), "path": unit_path, "removed": true });
-    Ok(Report::new(data, format!("removed {} service {}", platform.name(), unit_path.display())))
+    Ok(Report::new(
+        data,
+        format!(
+            "removed {} service {}",
+            platform.name(),
+            unit_path.display()
+        ),
+    ))
 }
 
 /// Start the installed service (used by `tome daemon start`).
@@ -264,7 +303,10 @@ pub fn start_installed(platform: Platform, unit_path: &Path) -> CliResult<()> {
             let service = format!("{target}/{LAUNCHD_LABEL}");
             // kickstart fails if the agent isn't loaded (e.g. after bootout).
             if run_quiet("launchctl", &["kickstart", &service]).is_err() {
-                run_checked("launchctl", &["bootstrap", &target, &unit_path.display().to_string()])?;
+                run_checked(
+                    "launchctl",
+                    &["bootstrap", &target, &unit_path.display().to_string()],
+                )?;
             }
         }
         Platform::Systemd => run_checked("systemctl", &["--user", "start", SYSTEMD_UNIT])?,
@@ -278,7 +320,10 @@ fn launchd_domain() -> String {
 }
 
 fn run_quiet(cmd: &str, args: &[&str]) -> Result<(), String> {
-    let out = Command::new(cmd).args(args).output().map_err(|e| e.to_string())?;
+    let out = Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
     } else {
@@ -287,7 +332,8 @@ fn run_quiet(cmd: &str, args: &[&str]) -> Result<(), String> {
 }
 
 fn run_checked(cmd: &str, args: &[&str]) -> CliResult<()> {
-    run_quiet(cmd, args).map_err(|e| CliError::internal(format!("`{cmd} {}` failed: {e}", args.join(" "))))
+    run_quiet(cmd, args)
+        .map_err(|e| CliError::internal(format!("`{cmd} {}` failed: {e}", args.join(" "))))
 }
 
 #[cfg(test)]
@@ -325,7 +371,11 @@ mod tests {
 
     #[test]
     fn env_block_omitted_when_empty() {
-        let s = UnitSpec { tome_home: None, path_env: None, ..spec() };
+        let s = UnitSpec {
+            tome_home: None,
+            path_env: None,
+            ..spec()
+        };
         assert!(!s.launchd_plist().contains("EnvironmentVariables"));
         assert!(!s.systemd_unit().contains("Environment="));
     }

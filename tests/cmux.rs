@@ -12,13 +12,19 @@ use std::process::Stdio;
 fn write_wf(env: &Env, name: &str, defaults: &str) {
     let dir = env.project().join(".tome/workflows");
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join(format!("{name}.md")), format!("---\nname: {name}\n{defaults}---\n## Build\nGo.\n")).unwrap();
+    fs::write(
+        dir.join(format!("{name}.md")),
+        format!("---\nname: {name}\n{defaults}---\n## Build\nGo.\n"),
+    )
+    .unwrap();
 }
 
 /// The recorded orchestrator session of run 1.
 fn session(env: &Env) -> Value {
     let (_, shown) = env.json(&["runs", "show", "1"]);
-    let sessions = shown["sessions"].as_array().unwrap_or_else(|| panic!("{shown}"));
+    let sessions = shown["sessions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{shown}"));
     assert_eq!(sessions.len(), 1, "{shown}");
     sessions[0].clone()
 }
@@ -26,8 +32,14 @@ fn session(env: &Env) -> Value {
 fn workspace(env: &Env) -> String {
     let s = session(env);
     assert_eq!(s["backend"], "cmux", "{s}");
-    assert!(s["pane"].as_str().is_some_and(|p| !p.is_empty()), "no surface: {s}");
-    s["handle"].as_str().unwrap_or_else(|| panic!("no handle: {s}")).to_string()
+    assert!(
+        s["pane"].as_str().is_some_and(|p| !p.is_empty()),
+        "no surface: {s}"
+    );
+    s["handle"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no handle: {s}"))
+        .to_string()
 }
 
 fn status(env: &Env) -> Value {
@@ -48,19 +60,34 @@ fn stub_orchestrator_drives_a_run_in_a_cmux_workspace() {
     let Some(env) = Env::cmux() else { return };
     let script = env.home().join("stub.sh");
     fs::write(&script, STUB).unwrap();
-    env.set_config(&format!("harnesses:\n  stub: [sh, \"{}\"]\n", script.display()));
+    env.set_config(&format!(
+        "harnesses:\n  stub: [sh, \"{}\"]\n",
+        script.display()
+    ));
     write_wf(&env, "cmuxstub", "defaults:\n  harness: stub\n");
     env.start_daemon();
 
-    let out = env.cmd(&["--json", "run", "cmuxstub"]).stdin(Stdio::null()).output().unwrap();
+    let out = env
+        .cmd(&["--json", "run", "cmuxstub"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
     let events = String::from_utf8_lossy(&out.stdout).to_string();
-    assert_eq!(out.status.code(), Some(0), "{events}\n{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{events}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(events.contains("done in cmux"), "{events}");
 
     // The agent ran on a real terminal, in the project, with the run's env.
     let seen = fs::read_to_string(env.home().join("seen.txt")).unwrap();
     let project = env.project().canonicalize().unwrap();
-    assert_eq!(seen.trim(), format!("run=1 tty=yes cwd={}", project.display()));
+    assert_eq!(
+        seen.trim(),
+        format!("run=1 tty=yes cwd={}", project.display())
+    );
 
     // Its output was captured, and the workspace closed when it exited.
     let id = workspace(&env);
@@ -68,7 +95,10 @@ fn stub_orchestrator_drives_a_run_in_a_cmux_workspace() {
     assert!(log.contains("hello from the stub orchestrator"), "{log}");
     eventually("workspace to close itself", || !cmux_has_workspace(&id));
 
-    assert_eq!(session(&env)["attach"], format!("cmux select-workspace --workspace {id}"));
+    assert_eq!(
+        session(&env)["attach"],
+        format!("cmux select-workspace --workspace {id}")
+    );
 }
 
 #[test]
@@ -95,7 +125,9 @@ fn closing_the_workspace_fails_the_run_and_notifies_in_cmux() {
     env.json(&["run", "cmuxclosed", "--detach"]);
     let id = workspace(&env);
 
-    assert!(cmux(&["close-workspace", "--workspace", &id]).status.success());
+    assert!(cmux(&["close-workspace", "--workspace", &id])
+        .status
+        .success());
     eventually("run to fail", || status(&env)["status"] == "failed");
     assert_eq!(status(&env)["reason"], "orchestrator_exited");
 
@@ -157,15 +189,32 @@ fn layout_env(layout: &str) -> Option<Env> {
     env.vars.retain(|(k, _)| k != "TOME_LAYOUT");
     // The orchestrator writes the first line typed into it to `got.txt`.
     let script = env.home().join("reader.sh");
-    fs::write(&script, format!("read line; echo \"$line\" > {}; sleep 60\n", env.home().join("got.txt").display())).unwrap();
-    env.set_config(&format!("harnesses:\n  reader: [sh, \"{}\"]\nlayout: {layout}\n", script.display()));
+    fs::write(
+        &script,
+        format!(
+            "read line; echo \"$line\" > {}; sleep 60\n",
+            env.home().join("got.txt").display()
+        ),
+    )
+    .unwrap();
+    env.set_config(&format!(
+        "harnesses:\n  reader: [sh, \"{}\"]\nlayout: {layout}\n",
+        script.display()
+    ));
     write_wf(&env, "build", "defaults:\n  harness: reader\n");
     Some(env)
 }
 
 /// A workspace's panes, left to right: `(pane, [(surface, title)])`.
 fn panes_of(workspace: &str) -> Vec<(String, Vec<(String, String)>)> {
-    let out = cmux(&["--id-format", "both", "tree", "--workspace", workspace, "--json"]);
+    let out = cmux(&[
+        "--id-format",
+        "both",
+        "tree",
+        "--workspace",
+        workspace,
+        "--json",
+    ]);
     let tree: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
     let ws = tree["windows"]
         .as_array()
@@ -181,22 +230,43 @@ fn panes_of(workspace: &str) -> Vec<(String, Vec<(String, String)>)> {
         .flatten()
         .map(|p| {
             let surfaces = p["surfaces"].as_array().into_iter().flatten();
-            let surfaces = surfaces.map(|s| (s["id"].as_str().unwrap_or("").to_string(), s["title"].as_str().unwrap_or("").to_string()));
-            (p["id"].as_str().unwrap_or("").to_string(), surfaces.collect())
+            let surfaces = surfaces.map(|s| {
+                (
+                    s["id"].as_str().unwrap_or("").to_string(),
+                    s["title"].as_str().unwrap_or("").to_string(),
+                )
+            });
+            (
+                p["id"].as_str().unwrap_or("").to_string(),
+                surfaces.collect(),
+            )
         })
         .collect()
 }
 
 fn titles(panes: &[(String, Vec<(String, String)>)]) -> Vec<Vec<String>> {
-    panes.iter().map(|(_, s)| s.iter().map(|(_, t)| t.clone()).collect()).collect()
+    panes
+        .iter()
+        .map(|(_, s)| s.iter().map(|(_, t)| t.clone()).collect())
+        .collect()
 }
 
 /// Spawn a command worker as run 1's orchestrator.
 fn spawn(env: &Env, name: &str, argv: &[&str]) {
     let mut args = vec!["--json", "worker", "spawn", "--name", name, "--"];
     args.extend_from_slice(argv);
-    let out = env.cmd(&args).env("TOME_RUN_ID", "1").stdin(Stdio::null()).output().unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let out = env
+        .cmd(&args)
+        .env("TOME_RUN_ID", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 fn got(env: &Env) -> String {
@@ -216,11 +286,16 @@ fn tab_layout_opens_sessions_as_tabs_of_one_split_in_the_tome_workspace() {
         s["attach"],
         format!("cmux select-workspace --workspace {ws} && cmux focus-panel --panel {surface} --workspace {ws}")
     );
-    let places: Value = serde_json::from_slice(&fs::read(env.home().join("workspaces.json")).unwrap()).unwrap();
+    let places: Value =
+        serde_json::from_slice(&fs::read(env.home().join("workspaces.json")).unwrap()).unwrap();
     assert_eq!(places[0]["id"], ws.as_str(), "{places}");
 
     // The shell on the left, the tabs split on its right.
-    eventually("the orchestrator's tab", || titles(&panes_of(&ws)).get(1).is_some_and(|t| t == &["tome: build #1"]));
+    eventually("the orchestrator's tab", || {
+        titles(&panes_of(&ws))
+            .get(1)
+            .is_some_and(|t| t == &["tome: build #1"])
+    });
     spawn(&env, "w1", &["sleep", "60"]);
     let panes = panes_of(&ws);
     assert_eq!(panes.len(), 2, "{panes:?}");
@@ -234,16 +309,26 @@ fn tab_layout_opens_sessions_as_tabs_of_one_split_in_the_tome_workspace() {
     // Closing the tabs by hand ends just those sessions, and the split goes.
     let (_, tabs) = panes_of(&ws)[1].clone();
     for (id, _) in &tabs {
-        assert!(cmux(&["close-surface", "--workspace", &ws, "--surface", id]).status.success());
+        assert!(
+            cmux(&["close-surface", "--workspace", &ws, "--surface", id])
+                .status
+                .success()
+        );
     }
-    eventually("run to fail", || status(&env)["reason"] == "orchestrator_exited");
+    eventually("run to fail", || {
+        status(&env)["reason"] == "orchestrator_exited"
+    });
     eventually("the split is gone", || panes_of(&ws).len() == 1);
 
     // The next run brings the split back, in the same workspace.
     env.json(&["run", "build", "--detach"]);
     let (_, shown) = env.json(&["runs", "show", "2"]);
     assert_eq!(shown["sessions"][0]["handle"], ws.as_str(), "{shown}");
-    eventually("run 2's tab", || titles(&panes_of(&ws)).get(1).is_some_and(|t| t == &["tome: build #2"]));
+    eventually("run 2's tab", || {
+        titles(&panes_of(&ws))
+            .get(1)
+            .is_some_and(|t| t == &["tome: build #2"])
+    });
 
     // A restart kills the sessions but leaves the workspace.
     let (_, daemon) = env.json(&["daemon", "status"]);
@@ -256,7 +341,9 @@ fn tab_layout_opens_sessions_as_tabs_of_one_split_in_the_tome_workspace() {
 
 #[test]
 fn split_layout_opens_each_session_in_its_own_split_to_the_right() {
-    let Some(env) = layout_env("split") else { return };
+    let Some(env) = layout_env("split") else {
+        return;
+    };
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     assert_eq!(session(&env)["layout"], "split");
@@ -265,7 +352,15 @@ fn split_layout_opens_each_session_in_its_own_split_to_the_right() {
     spawn(&env, "w2", &["sleep", "60"]);
     let panes = panes_of(&ws);
     let titles: Vec<String> = titles(&panes).into_iter().skip(1).flatten().collect();
-    assert_eq!(titles, ["tome: build #1", "tome: build #1 / w1", "tome: build #1 / w2"], "{panes:?}");
+    assert_eq!(
+        titles,
+        [
+            "tome: build #1",
+            "tome: build #1 / w1",
+            "tome: build #1 / w2"
+        ],
+        "{panes:?}"
+    );
 
     // Nudges reach the orchestrator's pane.
     spawn(&env, "w3", &["true"]);
@@ -282,36 +377,73 @@ fn spawn_with(env: &Env, name: &str, flags: &[&str], argv: &[&str]) {
     args.extend_from_slice(flags);
     args.push("--");
     args.extend_from_slice(argv);
-    let out = env.cmd(&args).env("TOME_RUN_ID", "1").stdin(Stdio::null()).output().unwrap();
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let out = env
+        .cmd(&args)
+        .env("TOME_RUN_ID", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 fn worker_session(env: &Env, name: &str) -> Value {
     let (_, shown) = env.json(&["runs", "show", "1"]);
-    shown["sessions"].as_array().unwrap().iter().find(|s| s["name"] == format!("tome-1-build-{name}")).cloned().unwrap()
+    shown["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == format!("tome-1-build-{name}"))
+        .cloned()
+        .unwrap()
 }
 
 #[test]
 fn a_tab_with_from_joins_the_anchor_pane_and_size_is_best_effort() {
-    let Some(env) = layout_env("split") else { return };
+    let Some(env) = layout_env("split") else {
+        return;
+    };
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     let ws = workspace(&env);
     let orch = session(&env)["pane"].as_str().unwrap().to_string();
     // A tab next to the orchestrator: in its pane.
-    spawn_with(&env, "t", &["--layout", "tab", "--from", "orchestrator"], &["sleep", "60"]);
+    spawn_with(
+        &env,
+        "t",
+        &["--layout", "tab", "--from", "orchestrator"],
+        &["sleep", "60"],
+    );
     let panes = panes_of(&ws);
-    let with_orch = panes.iter().find(|(_, s)| s.iter().any(|(id, _)| *id == orch)).unwrap();
-    assert!(with_orch.1.iter().any(|(_, t)| t == "tome: build #1 / t"), "{panes:?}");
+    let with_orch = panes
+        .iter()
+        .find(|(_, s)| s.iter().any(|(id, _)| *id == orch))
+        .unwrap();
+    assert!(
+        with_orch.1.iter().any(|(_, t)| t == "tome: build #1 / t"),
+        "{panes:?}"
+    );
 
     // A sized split below: sized, or skipped with a warning when cmux has
     // no geometry for a workspace that hasn't been shown.
-    spawn_with(&env, "d", &["--direction", "down", "--size", "10"], &["sleep", "60"]);
+    spawn_with(
+        &env,
+        "d",
+        &["--direction", "down", "--size", "10"],
+        &["sleep", "60"],
+    );
     let d = worker_session(&env, "d");
     assert_eq!(d["placement"]["direction"], "down", "{d}");
     assert_eq!(panes_of(&ws).len(), 3, "{:?}", panes_of(&ws));
     let warnings = d["placement"]["warnings"].to_string();
-    assert!(d["placement"]["warnings"].is_null() || warnings.contains("split.size 10"), "{d}");
+    assert!(
+        d["placement"]["warnings"].is_null() || warnings.contains("split.size 10"),
+        "{d}"
+    );
     assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
 }
 
@@ -322,16 +454,28 @@ fn session_move_moves_a_live_surface_between_tabs_splits_and_its_own_workspace()
     env.json(&["run", "build", "--detach"]);
     let ws = workspace(&env);
     spawn(&env, "w1", &["sleep", "60"]);
-    let surface = worker_session(&env, "w1")["pane"].as_str().unwrap().to_string();
-    eventually("w1's tab", || titles(&panes_of(&ws)).get(1).is_some_and(|t| t.len() == 2));
+    let surface = worker_session(&env, "w1")["pane"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    eventually("w1's tab", || {
+        titles(&panes_of(&ws)).get(1).is_some_and(|t| t.len() == 2)
+    });
 
     // Out of the tabs split into a split of its own.
     let (code, moved) = env.json(&["session", "move", "1/w1", "--layout", "split"]);
     assert_eq!(code, 0, "{moved}");
-    assert_eq!((moved["pane"].as_str(), moved["handle"].as_str()), (Some(surface.as_str()), Some(ws.as_str())), "{moved}");
+    assert_eq!(
+        (moved["pane"].as_str(), moved["handle"].as_str()),
+        (Some(surface.as_str()), Some(ws.as_str())),
+        "{moved}"
+    );
     let panes = panes_of(&ws);
     assert_eq!(panes.len(), 3, "{panes:?}");
-    assert!(panes.iter().any(|(_, s)| s.len() == 1 && s[0].0 == surface), "{panes:?}");
+    assert!(
+        panes.iter().any(|(_, s)| s.len() == 1 && s[0].0 == surface),
+        "{panes:?}"
+    );
 
     // Into a workspace of its own, then back as a tab: the one it had is
     // closed once it's empty.
@@ -339,13 +483,25 @@ fn session_move_moves_a_live_surface_between_tabs_splits_and_its_own_workspace()
     assert_eq!(code, 0, "{moved}");
     let own = moved["handle"].as_str().unwrap().to_string();
     assert_ne!(own, ws);
-    assert_eq!(panes_of(&own).iter().flat_map(|(_, s)| s.iter().map(|(id, _)| id.clone())).collect::<Vec<_>>(), [surface.clone()]);
+    assert_eq!(
+        panes_of(&own)
+            .iter()
+            .flat_map(|(_, s)| s.iter().map(|(id, _)| id.clone()))
+            .collect::<Vec<_>>(),
+        [surface.clone()]
+    );
     let (code, moved) = env.json(&["session", "move", "1/w1", "--layout", "tab"]);
     assert_eq!(code, 0, "{moved}");
     assert_eq!(moved["handle"], ws.as_str(), "{moved}");
     eventually("its own workspace closed", || !cmux_has_workspace(&own));
-    assert_eq!(titles(&panes_of(&ws))[1], ["tome: build #1", "tome: build #1 / w1"]);
-    assert_eq!(env.json(&["worker", "status", "w1", "--run", "1"]).1["status"], "running");
+    assert_eq!(
+        titles(&panes_of(&ws))[1],
+        ["tome: build #1", "tome: build #1 / w1"]
+    );
+    assert_eq!(
+        env.json(&["worker", "status", "w1", "--run", "1"]).1["status"],
+        "running"
+    );
     assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
 }
 
@@ -353,9 +509,19 @@ fn session_move_moves_a_live_surface_between_tabs_splits_and_its_own_workspace()
 /// workspace, `(workspace, surface)`. The tests point `CMUX_*` at it rather
 /// than at the pane they run in.
 fn chat_pane() -> (String, String) {
-    let out = cmux(&["new-workspace", "--name", "tome test chat", "--focus", "false"]);
+    let out = cmux(&[
+        "new-workspace",
+        "--name",
+        "tome test chat",
+        "--focus",
+        "false",
+    ]);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let reference = stdout.trim().strip_prefix("OK ").unwrap_or_else(|| panic!("{stdout}")).to_string();
+    let reference = stdout
+        .trim()
+        .strip_prefix("OK ")
+        .unwrap_or_else(|| panic!("{stdout}"))
+        .to_string();
     let out = cmux(&["--id-format", "both", "tree", "--all", "--json"]);
     let tree: Value = serde_json::from_slice(&out.stdout).unwrap();
     let ws = tree["windows"]
@@ -382,7 +548,9 @@ fn pane_with(ws: &str, surface: &str) -> Option<(String, Vec<String>)> {
 
 #[test]
 fn from_caller_opens_the_orchestrator_next_to_the_pane_that_ran_tome() {
-    let Some(mut env) = layout_env("tab") else { return };
+    let Some(mut env) = layout_env("tab") else {
+        return;
+    };
     let (chat, chat_surface) = chat_pane();
     env.set_var("CMUX_WORKSPACE_ID", &chat);
     env.set_var("CMUX_SURFACE_ID", &chat_surface);
@@ -396,28 +564,62 @@ fn from_caller_opens_the_orchestrator_next_to_the_pane_that_ran_tome() {
     let orch = s["pane"].as_str().unwrap().to_string();
     let (_, tabs) = pane_with(&chat, &chat_surface).unwrap();
     assert!(tabs.contains(&orch), "{:?}", panes_of(&chat));
-    assert!(s["placement"]["caller"].as_str().is_some_and(|c| c.contains(&chat_surface)), "{s}");
+    assert!(
+        s["placement"]["caller"]
+            .as_str()
+            .is_some_and(|c| c.contains(&chat_surface)),
+        "{s}"
+    );
     assert!(s["placement"]["warnings"].is_null(), "{s}");
     let (_, shown) = env.json(&["runs", "show", "1"]);
-    assert_eq!(shown["run"]["placement"]["caller"]["surface"], chat_surface.as_str(), "{shown}");
+    assert_eq!(
+        shown["run"]["placement"]["caller"]["surface"],
+        chat_surface.as_str(),
+        "{shown}"
+    );
 
     // Moved into a split off the caller's pane, and the chat keeps its own.
-    let (code, moved) = env.json(&["session", "move", "1/orchestrator", "--layout", "split", "--from", "caller"]);
+    let (code, moved) = env.json(&[
+        "session",
+        "move",
+        "1/orchestrator",
+        "--layout",
+        "split",
+        "--from",
+        "caller",
+    ]);
     assert_eq!(code, 0, "{moved}");
     assert_eq!(moved["handle"], chat.as_str(), "{moved}");
     let panes = panes_of(&chat);
     assert_eq!(panes.len(), 2, "{panes:?}");
-    assert_eq!(pane_with(&chat, &orch).unwrap().1, [orch.clone()], "{panes:?}");
-    assert_eq!(pane_with(&chat, &chat_surface).unwrap().1, [chat_surface.clone()], "{panes:?}");
+    assert_eq!(
+        pane_with(&chat, &orch).unwrap().1,
+        [orch.clone()],
+        "{panes:?}"
+    );
+    assert_eq!(
+        pane_with(&chat, &chat_surface).unwrap().1,
+        [chat_surface.clone()],
+        "{panes:?}"
+    );
     assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
-    eventually("the orchestrator's pane closed", || panes_of(&chat).len() == 1);
+    eventually("the orchestrator's pane closed", || {
+        panes_of(&chat).len() == 1
+    });
 
     // Once the caller's pane is gone, it falls back with a warning.
-    assert!(cmux(&["close-workspace", "--workspace", &chat]).status.success());
+    assert!(cmux(&["close-workspace", "--workspace", &chat])
+        .status
+        .success());
     env.json(&["run", "build", "--detach", "--from", "caller"]);
     let (_, shown) = env.json(&["runs", "show", "2"]);
     let s = &shown["sessions"][0];
     assert_ne!(s["handle"], chat.as_str(), "{s}");
-    assert!(s["placement"]["warnings"].to_string().contains("from: caller"), "{s}");
+    assert!(
+        s["placement"]["warnings"]
+            .to_string()
+            .contains("from: caller"),
+        "{s}"
+    );
     assert_eq!(env.json(&["run", "cancel", "2"]).0, 0);
 }

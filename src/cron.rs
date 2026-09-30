@@ -20,7 +20,9 @@ pub struct Cron {
     weekdays_any: bool,
 }
 
-const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTHS: [&str; 12] = [
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+];
 const WEEKDAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
 impl Cron {
@@ -69,7 +71,11 @@ impl Cron {
         let limit = t + Duration::days(366 * 5);
         while t < limit {
             if self.months & (1 << t.month()) == 0 {
-                let (y, m) = if t.month() == 12 { (t.year() + 1, 1) } else { (t.year(), t.month() + 1) };
+                let (y, m) = if t.month() == 12 {
+                    (t.year() + 1, 1)
+                } else {
+                    (t.year(), t.month() + 1)
+                };
                 t = NaiveDate::from_ymd_opt(y, m, 1)?.and_hms_opt(0, 0, 0)?;
                 continue;
             }
@@ -113,7 +119,9 @@ fn field(spec: &str, what: &str, min: u32, max: u32, names: &[&str]) -> Result<u
             // Months are 1-based, weekdays 0-based.
             return Ok(i as u32 + min);
         }
-        let n: u32 = s.parse().map_err(|_| format!("`{s}` is not a valid {what}"))?;
+        let n: u32 = s
+            .parse()
+            .map_err(|_| format!("`{s}` is not a valid {what}"))?;
         if n < min || n > max {
             return Err(format!("{what} `{n}` is out of range ({min}-{max})"));
         }
@@ -126,7 +134,9 @@ fn field(spec: &str, what: &str, min: u32, max: u32, names: &[&str]) -> Result<u
         }
         let (range, step) = match part.split_once('/') {
             Some((r, s)) => {
-                let step: u32 = s.parse().map_err(|_| format!("`{s}` is not a valid step in {what} field"))?;
+                let step: u32 = s
+                    .parse()
+                    .map_err(|_| format!("`{s}` is not a valid step in {what} field"))?;
                 if step == 0 {
                     return Err(format!("step 0 in {what} field"));
                 }
@@ -165,18 +175,34 @@ mod tests {
     }
 
     fn next(expr: &str, from: &str) -> String {
-        Cron::parse(expr).unwrap().next_after(at(from)).unwrap().format("%Y-%m-%d %H:%M").to_string()
+        Cron::parse(expr)
+            .unwrap()
+            .next_after(at(from))
+            .unwrap()
+            .format("%Y-%m-%d %H:%M")
+            .to_string()
     }
 
     #[test]
     fn schedules() {
         assert_eq!(next("* * * * *", "2026-01-01 10:00"), "2026-01-01 10:01");
-        assert_eq!(next("0 9 * * 1-5", "2026-09-25 09:00"), "2026-09-28 09:00", "friday to monday");
+        assert_eq!(
+            next("0 9 * * 1-5", "2026-09-25 09:00"),
+            "2026-09-28 09:00",
+            "friday to monday"
+        );
         assert_eq!(next("*/15 * * * *", "2026-01-01 10:07"), "2026-01-01 10:15");
         assert_eq!(next("30 2 1 * *", "2026-01-15 00:00"), "2026-02-01 02:30");
         assert_eq!(next("0 0 29 feb *", "2026-03-01 00:00"), "2028-02-29 00:00");
-        assert_eq!(next("0 12 * jan-mar sun", "2026-03-30 00:00"), "2027-01-03 12:00");
-        assert_eq!(next("0 0 * * 7", "2026-09-27 00:00"), "2026-10-04 00:00", "7 is sunday");
+        assert_eq!(
+            next("0 12 * jan-mar sun", "2026-03-30 00:00"),
+            "2027-01-03 12:00"
+        );
+        assert_eq!(
+            next("0 0 * * 7", "2026-09-27 00:00"),
+            "2026-10-04 00:00",
+            "7 is sunday"
+        );
         // Both day fields restricted: either matches.
         assert_eq!(next("0 0 13 * fri", "2026-09-01 00:00"), "2026-09-04 00:00");
         assert_eq!(next("5/20 * * * *", "2026-01-01 10:46"), "2026-01-01 11:05");
@@ -184,9 +210,22 @@ mod tests {
 
     #[test]
     fn errors() {
-        for bad in ["* * * *", "60 * * * *", "* 24 * * *", "* * 0 * *", "* * * 13 *", "*/0 * * * *", "5-1 * * * *", "x * * * *", "1,,2 * * * *"] {
+        for bad in [
+            "* * * *",
+            "60 * * * *",
+            "* 24 * * *",
+            "* * 0 * *",
+            "* * * 13 *",
+            "*/0 * * * *",
+            "5-1 * * * *",
+            "x * * * *",
+            "1,,2 * * * *",
+        ] {
             assert!(Cron::parse(bad).is_err(), "{bad}");
         }
-        assert!(Cron::parse("0 0 31 2 *").unwrap().next_after(at("2026-01-01 00:00")).is_none());
+        assert!(Cron::parse("0 0 31 2 *")
+            .unwrap()
+            .next_after(at("2026-01-01 00:00"))
+            .is_none());
     }
 }

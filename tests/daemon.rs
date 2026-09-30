@@ -49,7 +49,11 @@ fn start_status_stop_lifecycle() {
 #[test]
 fn tome_output_env_selects_json() {
     let env = Env::new();
-    let out = env.cmd(&["daemon", "status"]).env("TOME_OUTPUT", "json").output().unwrap();
+    let out = env
+        .cmd(&["daemon", "status"])
+        .env("TOME_OUTPUT", "json")
+        .output()
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["running"], false);
 }

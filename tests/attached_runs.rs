@@ -25,7 +25,12 @@ struct Attached {
 
 impl Attached {
     fn spawn(env: &Env, args: &[&str]) -> Attached {
-        let mut child = env.cmd(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut child = env
+            .cmd(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
         let stdout = child.stdout.take().unwrap();
         let (tx, lines) = mpsc::channel();
         std::thread::spawn(move || {
@@ -39,7 +44,9 @@ impl Attached {
     }
 
     fn next_line(&self) -> String {
-        self.lines.recv_timeout(Duration::from_secs(10)).expect("no output from attached run")
+        self.lines
+            .recv_timeout(Duration::from_secs(10))
+            .expect("no output from attached run")
     }
 
     fn next_event(&self) -> Value {
@@ -92,14 +99,38 @@ fn attached_run_streams_ndjson_and_exits_0() {
 
     assert_eq!(env.json(&["step", "start", "Build", "--run", &rid]).0, 0);
     let ev = run.next_event();
-    assert_eq!((ev["type"].as_str(), ev["step"].as_str(), ev["event"].as_str()), (Some("step"), Some("Build"), Some("start")));
+    assert_eq!(
+        (
+            ev["type"].as_str(),
+            ev["step"].as_str(),
+            ev["event"].as_str()
+        ),
+        (Some("step"), Some("Build"), Some("start"))
+    );
 
-    assert_eq!(env.json(&["step", "done", "-m", "compiled", "--run", &rid]).0, 0);
+    assert_eq!(
+        env.json(&["step", "done", "-m", "compiled", "--run", &rid])
+            .0,
+        0
+    );
     let ev = run.next_event();
     assert_eq!(ev["event"], "done");
     assert_eq!(ev["message"], "compiled");
 
-    assert_eq!(env.json(&["run", "finish", "--status", "succeeded", "--summary", "shipped", "--run", &rid]).0, 0);
+    assert_eq!(
+        env.json(&[
+            "run",
+            "finish",
+            "--status",
+            "succeeded",
+            "--summary",
+            "shipped",
+            "--run",
+            &rid
+        ])
+        .0,
+        0
+    );
     let ev = run.next_event();
     assert_eq!(ev["type"], "run");
     assert_eq!(ev["status"], "succeeded");
@@ -124,7 +155,16 @@ fn failed_run_exits_1_with_human_lines() {
     assert!(run.next_line().ends_with("] Build: started"));
     env.json(&["step", "fail", "-m", "linker error", "--run", "1"]);
     assert!(run.next_line().ends_with("] Build: failed (linker error)"));
-    env.json(&["run", "finish", "--status", "failed", "--summary", "gave up", "--run", "1"]);
+    env.json(&[
+        "run",
+        "finish",
+        "--status",
+        "failed",
+        "--summary",
+        "gave up",
+        "--run",
+        "1",
+    ]);
     assert!(run.next_line().ends_with("] run 1 failed: gave up"));
     assert_eq!(run.wait().0, 1);
 }
@@ -142,7 +182,10 @@ fn ctrl_c_cancels_the_run_and_exits_130() {
     run.signal(libc::SIGINT);
     // The running step fails with the run, then the run ends cancelled.
     let ev = run.next_event();
-    assert_eq!((ev["step"].as_str(), ev["event"].as_str()), (Some("Build"), Some("fail")));
+    assert_eq!(
+        (ev["step"].as_str(), ev["event"].as_str()),
+        (Some("Build"), Some("fail"))
+    );
     let ev = run.next_event();
     assert_eq!(ev["status"], "cancelled");
     assert_eq!(ev["reason"], "interrupted");
@@ -209,14 +252,37 @@ fn watch_replays_history_of_a_finished_run() {
     env.json(&["run", "finish", "--status", "succeeded", "--run", &rid]);
 
     let mut stream = UnixStream::connect(env.socket()).unwrap();
-    writeln!(stream, "{}", json!({ "jsonrpc": "2.0", "id": 1, "method": "run.watch", "params": { "id": run["id"] } })).unwrap();
-    let lines: Vec<Value> =
-        BufReader::new(stream).lines().take(4).map(|l| serde_json::from_str(&l.unwrap()).unwrap()).collect();
+    writeln!(
+        stream,
+        "{}",
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "run.watch", "params": { "id": run["id"] } })
+    )
+    .unwrap();
+    let lines: Vec<Value> = BufReader::new(stream)
+        .lines()
+        .take(4)
+        .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
+        .collect();
     let events: Vec<(&str, &str)> = lines[..3]
         .iter()
-        .map(|l| (l["method"].as_str().unwrap(), l["params"]["event"].as_str().or(l["params"]["status"].as_str()).unwrap()))
+        .map(|l| {
+            (
+                l["method"].as_str().unwrap(),
+                l["params"]["event"]
+                    .as_str()
+                    .or(l["params"]["status"].as_str())
+                    .unwrap(),
+            )
+        })
         .collect();
-    assert_eq!(events, [("run.event", "start"), ("run.event", "done"), ("run.event", "succeeded")]);
+    assert_eq!(
+        events,
+        [
+            ("run.event", "start"),
+            ("run.event", "done"),
+            ("run.event", "succeeded")
+        ]
+    );
     assert_eq!(lines[3]["id"], 1);
     assert_eq!(lines[3]["result"]["status"], "succeeded");
 }

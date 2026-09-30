@@ -41,25 +41,50 @@ pub struct Split {
 
 impl Default for Split {
     fn default() -> Split {
-        Split { direction: Direction::Right, size: None, from: None, anchors: Vec::new(), recent: Vec::new() }
+        Split {
+            direction: Direction::Right,
+            size: None,
+            from: None,
+            anchors: Vec::new(),
+            recent: Vec::new(),
+        }
     }
 }
 
 impl Split {
     /// A split opening from `from` among the run's recorded `sessions`
     /// (oldest first).
-    pub fn new(direction: Direction, size: Option<Size>, from: Option<From>, sessions: &[Session]) -> Split {
-        let placed: Vec<&Session> = sessions.iter().filter(|s| s.handle.is_some() && s.pane.is_some()).collect();
-        let anchor = |s: &&Session| Anchor { handle: s.handle.clone().unwrap(), pane: s.pane.clone().unwrap() };
+    pub fn new(
+        direction: Direction,
+        size: Option<Size>,
+        from: Option<From>,
+        sessions: &[Session],
+    ) -> Split {
+        let placed: Vec<&Session> = sessions
+            .iter()
+            .filter(|s| s.handle.is_some() && s.pane.is_some())
+            .collect();
+        let anchor = |s: &&Session| Anchor {
+            handle: s.handle.clone().unwrap(),
+            pane: s.pane.clone().unwrap(),
+        };
         let mut anchors: Vec<Anchor> = Vec::new();
         // The caller's pane isn't one of the run's; launches add it.
         if let Some(from) = from.filter(|f| *f != From::Caller) {
             if from == From::Orchestrator {
-                anchors.extend(placed.iter().filter(|s| s.role == crate::orchestrator::ROLE).map(anchor));
+                anchors.extend(
+                    placed
+                        .iter()
+                        .filter(|s| s.role == crate::orchestrator::ROLE)
+                        .map(anchor),
+                );
             }
             // `last` falls back to earlier ones, down to the first.
-            let ordered: Box<dyn Iterator<Item = &&Session>> =
-                if from == From::First { Box::new(placed.iter()) } else { Box::new(placed.iter().rev()) };
+            let ordered: Box<dyn Iterator<Item = &&Session>> = if from == From::First {
+                Box::new(placed.iter())
+            } else {
+                Box::new(placed.iter().rev())
+            };
             for a in ordered.map(anchor) {
                 if !anchors.contains(&a) {
                     anchors.push(a);
@@ -67,7 +92,13 @@ impl Split {
             }
         }
         let recent = placed.iter().rev().map(anchor).collect();
-        Split { direction, size, from, anchors, recent }
+        Split {
+            direction,
+            size,
+            from,
+            anchors,
+            recent,
+        }
     }
 
     fn horizontal(&self) -> bool {
@@ -88,7 +119,9 @@ impl Split {
 fn percent(n: u32, warnings: &mut Vec<String>) -> u32 {
     let kept = n.clamp(MIN_PERCENT, MAX_PERCENT);
     if kept != n {
-        warnings.push(format!("split.size {n}% is outside {MIN_PERCENT}%..{MAX_PERCENT}%; clamped to {kept}%"));
+        warnings.push(format!(
+            "split.size {n}% is outside {MIN_PERCENT}%..{MAX_PERCENT}%; clamped to {kept}%"
+        ));
     }
     kept
 }
@@ -98,11 +131,15 @@ fn percent(n: u32, warnings: &mut Vec<String>) -> u32 {
 fn cells(n: u32, available: u32, warnings: &mut Vec<String>) -> Option<u32> {
     let max = available.saturating_sub(2);
     if max == 0 {
-        warnings.push(format!("split.size {n}: there are only {available} cells to split; skipped"));
+        warnings.push(format!(
+            "split.size {n}: there are only {available} cells to split; skipped"
+        ));
         return None;
     }
     if n > max {
-        warnings.push(format!("split.size {n} is more than the {available} cells there are; clamped to {max}"));
+        warnings.push(format!(
+            "split.size {n} is more than the {available} cells there are; clamped to {max}"
+        ));
         return Some(max);
     }
     Some(n)
@@ -121,7 +158,11 @@ pub(super) enum Opening<'a> {
 impl Tmux {
     /// The first of `split`'s anchors that's still a pane of session `id`.
     pub(super) fn anchor<'a>(&self, id: &str, split: &'a Split) -> Option<&'a str> {
-        split.anchors.iter().find(|a| a.handle == id && self.pane_exists(&a.pane)).map(|a| a.pane.as_str())
+        split
+            .anchors
+            .iter()
+            .find(|a| a.handle == id && self.pane_exists(&a.pane))
+            .map(|a| a.pane.as_str())
     }
 
     /// Open a pane in session `id` as `split` says: off the anchor pane,
@@ -190,7 +231,11 @@ impl Tmux {
     /// (008's `split`), unless the split was sized or anchored.
     pub(super) fn even_out(&self, pane: &str, split: &Split, anchored: bool) {
         if split.size.is_none() && !anchored {
-            let layout = if split.horizontal() { "even-horizontal" } else { "even-vertical" };
+            let layout = if split.horizontal() {
+                "even-horizontal"
+            } else {
+                "even-vertical"
+            };
             let _ = self.run(&["select-layout", "-t", pane, layout]);
         }
     }
@@ -203,7 +248,10 @@ impl Tmux {
             (false, true) => "#{pane_width}",
             (false, false) => "#{pane_height}",
         };
-        let out = self.run(&["display-message", "-p", "-t", target, format]).ok().filter(|o| o.status.success())?;
+        let out = self
+            .run(&["display-message", "-p", "-t", target, format])
+            .ok()
+            .filter(|o| o.status.success())?;
         String::from_utf8_lossy(&out.stdout).trim().parse().ok()
     }
 }
@@ -223,10 +271,21 @@ impl Cmux {
     /// Resize the pane holding `surface` to `split.size`, as far as cmux
     /// allows. cmux resizes by an amount rather than to a size, so this
     /// measures, resizes, and corrects once.
-    pub(super) fn size_pane(&self, workspace: &str, surface: &str, split: &Split, warnings: &mut Vec<String>) {
+    pub(super) fn size_pane(
+        &self,
+        workspace: &str,
+        surface: &str,
+        split: &Split,
+        warnings: &mut Vec<String>,
+    ) {
         let Some(size) = split.size else { return };
-        let Some(pane) = self.surfaces().and_then(|all| all.into_iter().find(|s| s.id == surface)?.pane) else {
-            warnings.push(format!("split.size {size}: cmux didn't report the new pane; skipped"));
+        let Some(pane) = self
+            .surfaces()
+            .and_then(|all| all.into_iter().find(|s| s.id == surface)?.pane)
+        else {
+            warnings.push(format!(
+                "split.size {size}: cmux didn't report the new pane; skipped"
+            ));
             return;
         };
         let horizontal = split.horizontal();
@@ -251,15 +310,31 @@ impl Cmux {
         let resize = |grow_by: f64| {
             let flag = if grow_by > 0.0 { grow } else { shrink };
             let amount = (grow_by.abs().round() as u64).max(1).to_string();
-            self.run(&["resize-pane", "--workspace", workspace, "--pane", &pane, flag, "--amount", &amount]).is_ok_and(|o| o.status.success())
+            self.run(&[
+                "resize-pane",
+                "--workspace",
+                workspace,
+                "--pane",
+                &pane,
+                flag,
+                "--amount",
+                &amount,
+            ])
+            .is_ok_and(|o| o.status.success())
         };
         let wanted = target - before.pane;
         if wanted.abs() < before.cell {
             return;
         }
-        let after = if resize(wanted) { self.extent(workspace, &pane, horizontal) } else { None };
+        let after = if resize(wanted) {
+            self.extent(workspace, &pane, horizontal)
+        } else {
+            None
+        };
         let Some(after) = after.filter(|a| (a.pane - before.pane).abs() >= 1.0) else {
-            warnings.push(format!("split.size {size}: cmux didn't resize the pane; skipped"));
+            warnings.push(format!(
+                "split.size {size}: cmux didn't resize the pane; skipped"
+            ));
             return;
         };
         // How far one unit of `grow` moved it: corrects both the unit and a
@@ -284,12 +359,33 @@ impl Cmux {
     /// `pane`'s size along the split axis; `None` if cmux didn't answer or
     /// has no geometry for the workspace (it's never been shown).
     fn extent(&self, workspace: &str, pane: &str, horizontal: bool) -> Option<Extent> {
-        let out = self.run(&["--id-format", "uuids", "--json", "list-panes", "--workspace", workspace]).ok().filter(|o| o.status.success())?;
+        let out = self
+            .run(&[
+                "--id-format",
+                "uuids",
+                "--json",
+                "list-panes",
+                "--workspace",
+                workspace,
+            ])
+            .ok()
+            .filter(|o| o.status.success())?;
         let v: Value = serde_json::from_slice(&out.stdout).ok()?;
-        let (length, cell) = if horizontal { ("width", "cell_width_points") } else { ("height", "cell_height_points") };
+        let (length, cell) = if horizontal {
+            ("width", "cell_width_points")
+        } else {
+            ("height", "cell_height_points")
+        };
         let container = v["container_frame"][length].as_f64().filter(|c| *c > 0.0)?;
-        let p = v["panes"].as_array()?.iter().find(|p| p["id"].as_str() == Some(pane))?;
-        Some(Extent { container, pane: p["pixel_frame"][length].as_f64()?, cell: p[cell].as_f64().filter(|c| *c > 0.0)? })
+        let p = v["panes"]
+            .as_array()?
+            .iter()
+            .find(|p| p["id"].as_str() == Some(pane))?;
+        Some(Extent {
+            container,
+            pane: p["pixel_frame"][length].as_f64()?,
+            cell: p[cell].as_f64().filter(|c| *c > 0.0)?,
+        })
     }
 }
 
@@ -315,12 +411,24 @@ mod tests {
 
     #[test]
     fn anchors_fall_back_to_the_last_then_the_first() {
-        let all = [session("orchestrator", "%1"), session("worker", "%2"), session("worker", "%3")];
-        let panes = |from| Split::new(Direction::Right, None, Some(from), &all).anchors.into_iter().map(|a| a.pane).collect::<Vec<_>>();
+        let all = [
+            session("orchestrator", "%1"),
+            session("worker", "%2"),
+            session("worker", "%3"),
+        ];
+        let panes = |from| {
+            Split::new(Direction::Right, None, Some(from), &all)
+                .anchors
+                .into_iter()
+                .map(|a| a.pane)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(panes(From::Orchestrator), ["%1", "%3", "%2"]);
         assert_eq!(panes(From::Last), ["%3", "%2", "%1"]);
         assert_eq!(panes(From::First), ["%1", "%2", "%3"]);
-        assert!(Split::new(Direction::Right, None, None, &all).anchors.is_empty());
+        assert!(Split::new(Direction::Right, None, None, &all)
+            .anchors
+            .is_empty());
     }
 
     #[test]

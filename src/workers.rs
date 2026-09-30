@@ -16,7 +16,9 @@ use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::placement::{self, Inputs, Role, Settings};
 use crate::session::{self, Backend, Kind, Launch, Split};
-use crate::store::{self, NewWorker, NewWorktree, Pulled, Run, RunStatus, Store, Worker, WorkerEnd, WorkerStatus};
+use crate::store::{
+    self, NewWorker, NewWorktree, Pulled, Run, RunStatus, Store, Worker, WorkerEnd, WorkerStatus,
+};
 use crate::worktree;
 use serde_json::{json, Value};
 use std::fs;
@@ -88,7 +90,11 @@ fn log_file(run_id: i64, name: &str) -> PathBuf {
 
 /// The exit code a worker's wrapper recorded, once it has.
 fn recorded_exit(run_id: i64, name: &str) -> Option<i32> {
-    fs::read_to_string(exit_file(run_id, name)).ok()?.trim().parse().ok()
+    fs::read_to_string(exit_file(run_id, name))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Run `argv`, record its exit code in `exit`, then (with `keep_open`)
@@ -98,7 +104,12 @@ fn wrap(argv: &[String], exit: &Path, keep_open: bool) -> Vec<String> {
     if keep_open {
         script.push_str("; exec \"${SHELL:-sh}\"");
     }
-    let mut out = vec!["sh".to_string(), "-c".to_string(), script, "tome-worker".to_string()];
+    let mut out = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        script,
+        "tome-worker".to_string(),
+    ];
     out.extend(argv.iter().cloned());
     out
 }
@@ -116,7 +127,10 @@ fn repo_dir(run: &Run, p: &Value) -> PathBuf {
 
 /// How a spawned worker runs.
 enum Task {
-    Agent { harness: harness::Harness, prompt: String },
+    Agent {
+        harness: harness::Harness,
+        prompt: String,
+    },
     Command(Vec<String>),
 }
 
@@ -135,11 +149,17 @@ impl Engine {
             }),
             "worker.kill" => self.kill_worker(run_id, req_str(p, "name")?),
             "group.create" => self.with_store(|store| {
-                let group = store.create_group(run_id, req_str(p, "name")?, opt_bool(p, "fail_fast"))?;
+                let group =
+                    store.create_group(run_id, req_str(p, "name")?, opt_bool(p, "fail_fast"))?;
                 Ok(json!(group))
             }),
             "group.close" => self.group_status(run_id, req_str(p, "name")?, true, false),
-            "group.status" => self.group_status(run_id, req_str(p, "name")?, opt_bool(p, "wait"), opt_bool(p, "wait")),
+            "group.status" => self.group_status(
+                run_id,
+                req_str(p, "name")?,
+                opt_bool(p, "wait"),
+                opt_bool(p, "wait"),
+            ),
             "worktree.create" => self.create_worktree(run_id, p),
             _ => self.with_store(|store| queue(store, run_id, method, p)),
         }
@@ -149,14 +169,20 @@ impl Engine {
     /// keep_open?, prompt? | command?, placement?, caller?, cwd?}`
     fn spawn_worker(&self, run_id: i64, p: &Value) -> CliResult<Value> {
         if let Some(me) = caller(p) {
-            return Err(CliError::invalid(format!("worker `{me}` can't spawn workers; only the orchestrator can"))
-                .with_hint("finish your task, or report what else is needed in your summary"));
+            return Err(CliError::invalid(format!(
+                "worker `{me}` can't spawn workers; only the orchestrator can"
+            ))
+            .with_hint("finish your task, or report what else is needed in your summary"));
         }
         let prompt = opt_str(p, "prompt").filter(|s| !s.trim().is_empty());
         let command: Option<Vec<String>> = p
             .get("command")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
             .filter(|c| !c.is_empty());
         let with_worktree = opt_bool(p, "worktree");
         let base = opt_str(p, "base");
@@ -164,38 +190,68 @@ impl Engine {
             return Err(CliError::invalid("--base only applies with --worktree"));
         }
         let run = self.with_store(|store| {
-            store.get_run(run_id, true).map_err(internal)?.ok_or_else(|| CliError::not_found(format!("run {run_id} not found")))
+            store
+                .get_run(run_id, true)
+                .map_err(internal)?
+                .ok_or_else(|| CliError::not_found(format!("run {run_id} not found")))
         })?;
         if run.status != RunStatus::Running {
-            return Err(CliError::invalid(format!("run {run_id} isn't running ({})", run.status.as_str())));
+            return Err(CliError::invalid(format!(
+                "run {run_id} isn't running ({})",
+                run.status.as_str()
+            )));
         }
         let wf = orchestrator::snapshot(&run)?;
         let task = match (prompt, command) {
             (Some(prompt), None) => {
-                let name = opt_str(p, "harness").or(wf.frontmatter.defaults.harness.as_deref()).unwrap_or(harness::DEFAULT);
-                Task::Agent { harness: harness::resolve(name, orchestrator::run_project(&run).as_deref())?, prompt: prompt.to_string() }
+                let name = opt_str(p, "harness")
+                    .or(wf.frontmatter.defaults.harness.as_deref())
+                    .unwrap_or(harness::DEFAULT);
+                Task::Agent {
+                    harness: harness::resolve(name, orchestrator::run_project(&run).as_deref())?,
+                    prompt: prompt.to_string(),
+                }
             }
             (None, Some(cmd)) => {
                 if opt_str(p, "harness").is_some() {
-                    return Err(CliError::invalid("--harness only applies to agent workers (--prompt)"));
+                    return Err(CliError::invalid(
+                        "--harness only applies to agent workers (--prompt)",
+                    ));
                 }
                 Task::Command(cmd)
             }
-            _ => {
-                return Err(CliError::invalid("give a worker either a task (--prompt/--prompt-file) or a command (after `--`)")
-                    .with_hint("e.g. `tome worker spawn --prompt \"...\"` or `tome worker spawn -- cargo test`"))
-            }
+            _ => return Err(CliError::invalid(
+                "give a worker either a task (--prompt/--prompt-file) or a command (after `--`)",
+            )
+            .with_hint(
+                "e.g. `tome worker spawn --prompt \"...\"` or `tome worker spawn -- cargo test`",
+            )),
         };
-        let flags = p.get("placement").filter(|v| !v.is_null()).map(Settings::from_json).transpose()?;
+        let flags = p
+            .get("placement")
+            .filter(|v| !v.is_null())
+            .map(Settings::from_json)
+            .transpose()?;
         if let Some(flags) = &flags {
             if flags.from == Some(placement::From::Caller) {
-                return Err(CliError::invalid(format!("--from: {}", placement::CALLER_IS_FOR_THE_ORCHESTRATOR))
-                    .with_hint("use --from orchestrator, last or first"));
+                return Err(CliError::invalid(format!(
+                    "--from: {}",
+                    placement::CALLER_IS_FOR_THE_ORCHESTRATOR
+                ))
+                .with_hint("use --from orchestrator, last or first"));
             }
-            placement::check_flag_preset(flags, "`tome worker spawn` flags", orchestrator::run_project(&run).as_deref())?;
+            placement::check_flag_preset(
+                flags,
+                "`tome worker spawn` flags",
+                orchestrator::run_project(&run).as_deref(),
+            )?;
         }
         // Resolve the base before recording anything, so a bad one spawns nothing.
-        let base = if with_worktree { Some(worktree::resolve_base(&repo_dir(&run, p), base)?) } else { None };
+        let base = if with_worktree {
+            Some(worktree::resolve_base(&repo_dir(&run, p), base)?)
+        } else {
+            None
+        };
 
         let (kind, harness_name, cmd) = match &task {
             Task::Agent { harness, .. } => ("agent", Some(harness.name.as_str()), None),
@@ -240,21 +296,48 @@ impl Engine {
                         },
                     )
                     .map_err(internal)?;
-                store.set_worker_worktree(run_id, &name, &c.path.to_string_lossy(), &c.branch, &base.name)?;
+                store.set_worker_worktree(
+                    run_id,
+                    &name,
+                    &c.path.to_string_lossy(),
+                    &c.branch,
+                    &base.name,
+                )?;
             }
-            store.worker_event(run_id, Some(&name), worker.group.as_deref(), "spawned", Some(kind))?;
+            store.worker_event(
+                run_id,
+                Some(&name),
+                worker.group.as_deref(),
+                "spawned",
+                Some(kind),
+            )?;
             self.sync(store, run_id);
             Ok(())
         })?;
 
-        let cwd = created.as_ref().map(|c| c.path.clone()).unwrap_or_else(|| orchestrator::run_cwd(&run));
+        let cwd = created
+            .as_ref()
+            .map(|c| c.path.clone())
+            .unwrap_or_else(|| orchestrator::run_cwd(&run));
         // Agent workers must show they've started; command workers report
         // by exit code.
         let agent: Agent = (run_id, Some(name.clone()));
         if matches!(task, Task::Agent { .. }) {
-            self.expect_start(agent.clone(), handshake::timeout(&wf.frontmatter), prompt_file(run_id, &name));
+            self.expect_start(
+                agent.clone(),
+                handshake::timeout(&wf.frontmatter),
+                prompt_file(run_id, &name),
+            );
         }
-        match self.launch_worker(&run, &name, &task, &cwd, created.as_ref().map(|c| c.path.as_path()), worker.keep_open, flags.as_ref()) {
+        match self.launch_worker(
+            &run,
+            &name,
+            &task,
+            &cwd,
+            created.as_ref().map(|c| c.path.as_path()),
+            worker.keep_open,
+            flags.as_ref(),
+        ) {
             Ok((s, note)) => {
                 let started = self.with_store(|store| {
                     store.add_session(&s).map_err(internal)?;
@@ -273,7 +356,15 @@ impl Engine {
             Err(e) => {
                 self.forget_start(&agent);
                 let end = self.with_store(|store| {
-                    let end = store.finish_worker(run_id, &name, WorkerStatus::Failed, Some(LAUNCH_FAILED), Some(&e.message), None, true);
+                    let end = store.finish_worker(
+                        run_id,
+                        &name,
+                        WorkerStatus::Failed,
+                        Some(LAUNCH_FAILED),
+                        Some(&e.message),
+                        None,
+                        true,
+                    );
                     self.sync(store, run_id);
                     end
                 });
@@ -305,14 +396,26 @@ impl Engine {
         let project = orchestrator::run_project(run);
         let kind = match orch.and_then(|s| Kind::parse(&s.backend)) {
             Some(kind) => kind,
-            None => Kind::choose(wf.frontmatter.defaults.backend.as_deref(), project.as_deref())?,
+            None => Kind::choose(
+                wf.frontmatter.defaults.backend.as_deref(),
+                project.as_deref(),
+            )?,
         };
         let run_flags = orchestrator::run_flags(run)?;
-        let inputs =
-            Inputs { role: Role::Worker(name), flags, run_flags: run_flags.as_ref(), spec: wf.frontmatter.defaults.layout.as_ref() };
+        let inputs = Inputs {
+            role: Role::Worker(name),
+            flags,
+            run_flags: run_flags.as_ref(),
+            spec: wf.frontmatter.defaults.layout.as_ref(),
+        };
         let mut placement = placement::resolve(&inputs, project.as_deref())?;
         let layout = placement.layout;
-        let split = Split::new(placement.direction, placement.size, placement.from, &recorded);
+        let split = Split::new(
+            placement.direction,
+            placement.size,
+            placement.from,
+            &recorded,
+        );
         let (target, note) = orchestrator::target(run, &placement);
         let dir = run_dir(run.id);
         fs::create_dir_all(&dir)?;
@@ -338,7 +441,10 @@ impl Engine {
         let mut env = orchestrator::session_env(run.id);
         env.push(("TOME_WORKER_ID".to_string(), name.to_string()));
         if let Some(wt) = worktree {
-            env.push(("TOME_WORKTREE".to_string(), wt.to_string_lossy().into_owned()));
+            env.push((
+                "TOME_WORKTREE".to_string(),
+                wt.to_string_lossy().into_owned(),
+            ));
         }
         let (s, warnings) = Backend::new(kind).launch(&Launch {
             name: &session_name,
@@ -368,15 +474,29 @@ impl Engine {
     /// `worker.report {run_id, name, event: done|fail, summary?}`
     fn report_worker(&self, run_id: i64, p: &Value) -> CliResult<Value> {
         let name = opt_str(p, "name").or(caller(p)).ok_or_else(|| {
-            CliError::invalid("which worker? `tome worker done|fail` is for workers (TOME_WORKER_ID isn't set)")
+            CliError::invalid(
+                "which worker? `tome worker done|fail` is for workers (TOME_WORKER_ID isn't set)",
+            )
         })?;
         let status = match req_str(p, "event")? {
             "done" => WorkerStatus::Done,
             "fail" => WorkerStatus::Failed,
-            other => return Err(CliError::invalid(format!("invalid event `{other}` (use done or fail)"))),
+            other => {
+                return Err(CliError::invalid(format!(
+                    "invalid event `{other}` (use done or fail)"
+                )))
+            }
         };
         let end = self.with_store(|store| {
-            let end = store.finish_worker(run_id, name, status, None, opt_str(p, "summary"), None, true)?;
+            let end = store.finish_worker(
+                run_id,
+                name,
+                status,
+                None,
+                opt_str(p, "summary"),
+                None,
+                true,
+            )?;
             self.sync(store, run_id);
             Ok(end)
         })?;
@@ -388,7 +508,15 @@ impl Engine {
     /// `worker.kill {run_id, name}`: stop it now, `cancelled`.
     fn kill_worker(&self, run_id: i64, name: &str) -> CliResult<Value> {
         let end = self.with_store(|store| {
-            let end = store.finish_worker(run_id, name, WorkerStatus::Cancelled, Some(KILLED), None, None, true)?;
+            let end = store.finish_worker(
+                run_id,
+                name,
+                WorkerStatus::Cancelled,
+                Some(KILLED),
+                None,
+                None,
+                true,
+            )?;
             self.sync(store, run_id);
             Ok(end)
         })?;
@@ -401,13 +529,21 @@ impl Engine {
 
     /// `group.status {run_id, name, wait?}`; `close` stops it taking members
     /// (the first `wait` does, and so does `group.close`).
-    fn group_status(&self, run_id: i64, name: &str, close: bool, waiting: bool) -> CliResult<Value> {
+    fn group_status(
+        &self,
+        run_id: i64,
+        name: &str,
+        close: bool,
+        waiting: bool,
+    ) -> CliResult<Value> {
         self.with_store(|store| {
             let mut group = store.require_group(run_id, name)?;
             let workers = store.members(run_id, name)?;
             if waiting && workers.is_empty() {
-                return Err(CliError::invalid(format!("group `{name}` has no members to wait for"))
-                    .with_hint("spawn workers into it with `tome worker spawn --group`"));
+                return Err(CliError::invalid(format!(
+                    "group `{name}` has no members to wait for"
+                ))
+                .with_hint("spawn workers into it with `tome worker spawn --group`"));
             }
             if close {
                 group = store.close_group(run_id, name)?.0;
@@ -424,7 +560,10 @@ impl Engine {
         store::check_name("worktree", name)?;
         let run = self.with_store(|store| store.require_run(run_id))?;
         if run.status != RunStatus::Running {
-            return Err(CliError::invalid(format!("run {run_id} isn't running ({})", run.status.as_str())));
+            return Err(CliError::invalid(format!(
+                "run {run_id} isn't running ({})",
+                run.status.as_str()
+            )));
         }
         let base = worktree::resolve_base(&repo_dir(&run, p), opt_str(p, "base"))?;
         let created = worktree::create(&base, run_id, name)?;
@@ -442,12 +581,16 @@ impl Engine {
                 )
                 .map_err(internal)
         })?;
-        Ok(json!({ "name": name, "path": created.path, "branch": created.branch, "base": base.name }))
+        Ok(
+            json!({ "name": name, "path": created.path, "branch": created.branch, "base": base.name }),
+        )
     }
 
     pub(crate) fn worker_session(&self, run_id: i64, w: &Worker) -> Option<store::Session> {
         let name = w.session.as_deref()?;
-        self.recorded_sessions(run_id).into_iter().find(|s| s.name == name)
+        self.recorded_sessions(run_id)
+            .into_iter()
+            .find(|s| s.name == name)
     }
 
     /// After a worker ended: close its session (after `grace`, unless it
@@ -455,7 +598,11 @@ impl Engine {
     /// orchestrator.
     pub(crate) fn after_end(&self, run_id: i64, end: &WorkerEnd, grace: Option<Duration>) {
         let sessions = self.recorded_sessions(run_id);
-        let session_of = |w: &Worker| w.session.as_deref().and_then(|n| sessions.iter().find(|s| s.name == n).cloned());
+        let session_of = |w: &Worker| {
+            w.session
+                .as_deref()
+                .and_then(|n| sessions.iter().find(|s| s.name == n).cloned())
+        };
         if !end.worker.keep_open {
             if let Some(s) = session_of(&end.worker) {
                 match grace {
@@ -476,13 +623,28 @@ impl Engine {
                 session::kill(&s);
             }
         }
-        let running = self.with_store(|store| store.require_run(run_id)).is_ok_and(|r| r.status == RunStatus::Running);
-        let Some(orch) = sessions.iter().find(|s| s.role == orchestrator::ROLE).filter(|_| running) else { return };
+        let running = self
+            .with_store(|store| store.require_run(run_id))
+            .is_ok_and(|r| r.status == RunStatus::Running);
+        let Some(orch) = sessions
+            .iter()
+            .find(|s| s.role == orchestrator::ROLE)
+            .filter(|_| running)
+        else {
+            return;
+        };
         let w = &end.worker;
-        let mut lines =
-            vec![format!("[tome] worker {} {}. Details: tome worker status {}", w.name, w.status.as_str(), w.name)];
+        let mut lines = vec![format!(
+            "[tome] worker {} {}. Details: tome worker status {}",
+            w.name,
+            w.status.as_str(),
+            w.name
+        )];
         if let Some(g) = &end.group_finished {
-            lines.push(format!("[tome] group {} finished. Details: tome group status {}", g.name, g.name));
+            lines.push(format!(
+                "[tome] group {} finished. Details: tome group status {}",
+                g.name, g.name
+            ));
         }
         for line in lines {
             // A missing pane just drops the nudge.
@@ -493,11 +655,15 @@ impl Engine {
     /// End running workers whose session is over: a command worker by its
     /// exit code, anything else as `worker_exited`. Called by the monitor.
     pub(crate) fn check_workers(&self) {
-        let Ok(workers) = self.with_store(|store| store.running_workers()) else { return };
+        let Ok(workers) = self.with_store(|store| store.running_workers()) else {
+            return;
+        };
         for w in workers {
             let exited = recorded_exit(w.run_id, &w.name);
             if exited.is_none() {
-                let Some(s) = self.worker_session(w.run_id, &w) else { continue };
+                let Some(s) = self.worker_session(w.run_id, &w) else {
+                    continue;
+                };
                 // Alive, or can't tell right now: look again next time.
                 if session::is_alive(&s) != Some(false) {
                     continue;
@@ -528,13 +694,26 @@ impl Engine {
                 }
             };
             let end = self.with_store(|store| {
-                let end = store.finish_worker(w.run_id, &w.name, status, reason, Some(&summary), exited, true)?;
+                let end = store.finish_worker(
+                    w.run_id,
+                    &w.name,
+                    status,
+                    reason,
+                    Some(&summary),
+                    exited,
+                    true,
+                )?;
                 self.sync(store, w.run_id);
                 Ok(end)
             });
             // Err: it reported (or was ended) meanwhile; that stands.
             if let Ok(end) = end {
-                eprintln!("tome daemon: run {} worker {} {}", w.run_id, w.name, status.as_str());
+                eprintln!(
+                    "tome daemon: run {} worker {} {}",
+                    w.run_id,
+                    w.name,
+                    status.as_str()
+                );
                 self.after_end(w.run_id, &end, None);
             }
         }
@@ -546,12 +725,19 @@ impl Engine {
 fn queue(store: &mut Store, run_id: i64, method: &str, p: &Value) -> CliResult<Value> {
     let me = caller(p).unwrap_or(orchestrator::ROLE);
     match method {
-        "queue.push" => Ok(json!(store.push_message(run_id, req_str(p, "queue")?, req_str(p, "body")?, me)?)),
-        "queue.pull" => Ok(match store.pull_message(run_id, req_str(p, "queue")?, me)? {
-            Pulled::Message(m) => json!({ "status": "message", "message": m }),
-            Pulled::Empty => json!({ "status": "empty" }),
-            Pulled::Closed => json!({ "status": "closed" }),
-        }),
+        "queue.push" => Ok(json!(store.push_message(
+            run_id,
+            req_str(p, "queue")?,
+            req_str(p, "body")?,
+            me
+        )?)),
+        "queue.pull" => Ok(
+            match store.pull_message(run_id, req_str(p, "queue")?, me)? {
+                Pulled::Message(m) => json!({ "status": "message", "message": m }),
+                Pulled::Empty => json!({ "status": "empty" }),
+                Pulled::Closed => json!({ "status": "closed" }),
+            },
+        ),
         "queue.ack" => Ok(json!(store.ack_message(run_id, req_id_at(p, "id")?)?)),
         "queue.close" => Ok(json!(store.close_queue(run_id, req_str(p, "queue")?)?)),
         "queue.ls" => {
@@ -603,7 +789,10 @@ mod tests {
 
     #[test]
     fn escapes_are_stripped() {
-        assert_eq!(strip_ansi("\u{1b}[31mred\u{1b}[0m\r\n\u{1b}]0;title\u{7}ok"), "red\nok");
+        assert_eq!(
+            strip_ansi("\u{1b}[31mred\u{1b}[0m\r\n\u{1b}]0;title\u{7}ok"),
+            "red\nok"
+        );
     }
 
     #[test]
@@ -611,7 +800,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let exit = dir.path().join("it's.exit");
         let argv = wrap(&["sh".into(), "-c".into(), "exit 3".into()], &exit, false);
-        let status = std::process::Command::new(&argv[0]).args(&argv[1..]).status().unwrap();
+        let status = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .status()
+            .unwrap();
         assert!(status.success());
         assert_eq!(fs::read_to_string(&exit).unwrap().trim(), "3");
     }

@@ -29,7 +29,8 @@ pub fn publish(cwd: &Path, topic: &str, text: String, dry_run: bool) -> CliResul
     let run = env("TOME_RUN_ID");
     let project = project_of(cwd);
     if run.is_none() && project.is_none() {
-        return Err(CliError::invalid("not inside a project").with_hint("run `tome publish` in a project (a directory with .tome/)"));
+        return Err(CliError::invalid("not inside a project")
+            .with_hint("run `tome publish` in a project (a directory with .tome/)"));
     }
     let out = call(
         "events.publish",
@@ -53,25 +54,51 @@ fn publish_human(out: &Value) -> String {
         }
         let mut s = format!("dry run: {} would be delivered to:", text(&out["topic"]));
         for m in &matches {
-            let what = m["would"].as_str().map(|w| format!(": {w}")).unwrap_or_default();
-            s.push_str(&format!("\n  {} ({}){what}", text(&m["workflow"]), text(&m["on"])));
+            let what = m["would"]
+                .as_str()
+                .map(|w| format!(": {w}"))
+                .unwrap_or_default();
+            s.push_str(&format!(
+                "\n  {} ({}){what}",
+                text(&m["workflow"]),
+                text(&m["on"])
+            ));
         }
         return s;
     }
-    let names: Vec<String> = out["delivered_to"].as_array().into_iter().flatten().map(text).collect();
-    let to = if names.is_empty() { "no subscribers".to_string() } else { names.join(", ") };
-    format!("event {} on {}: delivered to {to}", out["event"]["id"], text(&out["topic"]))
+    let names: Vec<String> = out["delivered_to"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(text)
+        .collect();
+    let to = if names.is_empty() {
+        "no subscribers".to_string()
+    } else {
+        names.join(", ")
+    };
+    format!(
+        "event {} on {}: delivered to {to}",
+        out["event"]["id"],
+        text(&out["topic"])
+    )
 }
 
 fn project(cwd: &Path) -> CliResult<String> {
     project_of(cwd)
         .map(|p| p.display().to_string())
-        .ok_or_else(|| CliError::invalid("not inside a project").with_hint("the bus belongs to a project: run this in one"))
+        .ok_or_else(|| {
+            CliError::invalid("not inside a project")
+                .with_hint("the bus belongs to a project: run this in one")
+        })
 }
 
 /// How long ago a stored (UTC) timestamp was: `42s`, `5m`, `3h`, `2d`.
 fn age(v: &Value) -> String {
-    let Some(t) = v.as_str().and_then(|t| chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%.fZ").ok()) else {
+    let Some(t) = v
+        .as_str()
+        .and_then(|t| chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%.fZ").ok())
+    else {
         return "-".into();
     };
     let secs = (chrono::Utc::now().naive_utc() - t).num_seconds().max(0);
@@ -89,7 +116,10 @@ pub fn ls(cwd: &Path) -> CliResult<Report> {
     let out = call("events.ls", json!({ "project_path": project }))?;
     let topics = out["topics"].as_array().cloned().unwrap_or_default();
     if topics.is_empty() {
-        return Ok(Report::new(out, format!("no events published in {project}")));
+        return Ok(Report::new(
+            out,
+            format!("no events published in {project}"),
+        ));
     }
     let rows = topics
         .iter()
@@ -111,7 +141,12 @@ pub fn ls(cwd: &Path) -> CliResult<Report> {
                     }
                 })
                 .collect();
-            vec![text(&t["topic"]), text(&t["events"]), format!("{} ago", age(&t["last_published"])), subs.join("; ")]
+            vec![
+                text(&t["topic"]),
+                text(&t["events"]),
+                format!("{} ago", age(&t["last_published"])),
+                subs.join("; "),
+            ]
         })
         .collect();
     let human = table(&["TOPIC", "EVENTS", "LAST", "SUBSCRIBERS"], rows);
@@ -121,7 +156,10 @@ pub fn ls(cwd: &Path) -> CliResult<Report> {
 /// `tome events show <topic> [--all]`
 pub fn show(cwd: &Path, topic: &str, all: bool) -> CliResult<Report> {
     let project = project(cwd)?;
-    let out = call("events.show", json!({ "project_path": project, "topic": topic, "all": all }))?;
+    let out = call(
+        "events.show",
+        json!({ "project_path": project, "topic": topic, "all": all }),
+    )?;
     let events = out["events"].as_array().cloned().unwrap_or_default();
     let mut human = if events.is_empty() {
         format!("no unsettled events on {topic}")
@@ -134,8 +172,17 @@ pub fn show(cwd: &Path, topic: &str, all: bool) -> CliResult<Report> {
                     .into_iter()
                     .flatten()
                     .map(|d| {
-                        let runs: Vec<String> = d["run_ids"].as_array().into_iter().flatten().map(text).collect();
-                        let runs = if runs.is_empty() { String::new() } else { format!(" (run {})", runs.join(", ")) };
+                        let runs: Vec<String> = d["run_ids"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(text)
+                            .collect();
+                        let runs = if runs.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" (run {})", runs.join(", "))
+                        };
                         format!("{}: {}{runs}", text(&d["workflow"]), text(&d["state"]))
                     })
                     .collect();
@@ -144,25 +191,47 @@ pub fn show(cwd: &Path, topic: &str, all: bool) -> CliResult<Report> {
                     (true, None) => "no subscribers".into(),
                     (false, None) => deliveries.join("; "),
                 };
-                vec![text(&e["id"]), text(&e["sender"]), age(&e["published_at"]), text(&e["preview"]), deliveries]
+                vec![
+                    text(&e["id"]),
+                    text(&e["sender"]),
+                    age(&e["published_at"]),
+                    text(&e["preview"]),
+                    deliveries,
+                ]
             })
             .collect();
         table(&["ID", "SENDER", "AGE", "PAYLOAD", "DELIVERIES"], rows)
     };
     let hidden = out["hidden"].as_u64().unwrap_or(0);
     if hidden > 0 {
-        human.push_str(&format!("\n({hidden} settled event{} hidden; --all shows them)", if hidden == 1 { "" } else { "s" }));
+        human.push_str(&format!(
+            "\n({hidden} settled event{} hidden; --all shows them)",
+            if hidden == 1 { "" } else { "s" }
+        ));
     }
     Ok(Report::new(out, human))
 }
 
-fn move_delivery(cwd: &Path, method: &str, event: i64, workflow: Option<&str>, verb: &str) -> CliResult<Report> {
+fn move_delivery(
+    cwd: &Path,
+    method: &str,
+    event: i64,
+    workflow: Option<&str>,
+    verb: &str,
+) -> CliResult<Report> {
     let project = project(cwd)?;
-    let out = call(method, json!({ "project_path": project, "event": event, "workflow": workflow }))?;
+    let out = call(
+        method,
+        json!({ "project_path": project, "event": event, "workflow": workflow }),
+    )?;
     let human = if out["deleted"] == true {
         format!("removed event {event}: it had no deliveries")
     } else {
-        format!("{verb} event {} for {}", event, text(&out["delivery"]["workflow"]))
+        format!(
+            "{verb} event {} for {}",
+            event,
+            text(&out["delivery"]["workflow"])
+        )
     };
     Ok(Report::new(out, human))
 }

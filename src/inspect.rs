@@ -30,7 +30,12 @@ fn ts(v: &Value) -> String {
 
 fn local_time(utc: &str) -> Option<String> {
     let naive = NaiveDateTime::parse_from_str(utc, "%Y-%m-%dT%H:%M:%S%.fZ").ok()?;
-    Some(Local.from_utc_datetime(&naive).format("%Y-%m-%d %H:%M:%S").to_string())
+    Some(
+        Local
+            .from_utc_datetime(&naive)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+    )
 }
 
 /// `{"ticket": "ABC-1", "n": 2}` as `ticket=ABC-1  n=2`.
@@ -47,7 +52,10 @@ fn params(v: &Value) -> String {
 }
 
 pub fn list(status: Option<String>, workflow: Option<String>, limit: usize) -> CliResult<Report> {
-    let data = call("runs.list", json!({ "status": status, "workflow": workflow, "limit": limit }))?;
+    let data = call(
+        "runs.list",
+        json!({ "status": status, "workflow": workflow, "limit": limit }),
+    )?;
     let runs = data["runs"].as_array().cloned().unwrap_or_default();
     let human = if runs.is_empty() {
         "no runs".to_string()
@@ -65,7 +73,10 @@ pub fn list(status: Option<String>, workflow: Option<String>, limit: usize) -> C
                 ]
             })
             .collect();
-        table(&["ID", "WORKFLOW", "STATUS", "STARTED", "FINISHED", "REASON"], rows)
+        table(
+            &["ID", "WORKFLOW", "STATUS", "STARTED", "FINISHED", "REASON"],
+            rows,
+        )
     };
     Ok(Report::new(data, human))
 }
@@ -105,12 +116,22 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
         }
         out.push_str(&format!("  {:<10}{cause}\n", "trigger"));
         if t.get("event_id").is_some_and(|v| !v.is_null()) {
-            out.push_str(&format!("  {:<10}{} on {} from {}\n", "event", s(&t["event_id"]), s(&t["topic"]), s(&t["sender"])));
+            out.push_str(&format!(
+                "  {:<10}{} on {} from {}\n",
+                "event",
+                s(&t["event_id"]),
+                s(&t["topic"]),
+                s(&t["sender"])
+            ));
         }
     }
     out.push_str(&format!("  {:<10}{}\n", "started", ts(&run["created_at"])));
     if !run["finished_at"].is_null() {
-        out.push_str(&format!("  {:<10}{}\n", "finished", ts(&run["finished_at"])));
+        out.push_str(&format!(
+            "  {:<10}{}\n",
+            "finished",
+            ts(&run["finished_at"])
+        ));
     }
     if run["params"].as_object().is_some_and(|p| !p.is_empty()) {
         out.push_str(&format!("  {:<10}{}\n", "params", params(&run["params"])));
@@ -134,7 +155,12 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
                 ]
             })
             .collect();
-        out.push_str(&indent(&table(&["STEP", "STATUS", "ATTEMPTS", "STARTED", "FINISHED", "MESSAGE"], rows)));
+        out.push_str(&indent(&table(
+            &[
+                "STEP", "STATUS", "ATTEMPTS", "STARTED", "FINISHED", "MESSAGE",
+            ],
+            rows,
+        )));
     }
 
     let history = data["history"].as_array().cloned().unwrap_or_default();
@@ -143,7 +169,12 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
         let rows = history
             .iter()
             .map(|h| {
-                vec![ts(&h["occurred_at"]), s(&h["event"]), s(&h["step"]), h["message"].as_str().unwrap_or("").to_string()]
+                vec![
+                    ts(&h["occurred_at"]),
+                    s(&h["event"]),
+                    s(&h["step"]),
+                    h["message"].as_str().unwrap_or("").to_string(),
+                ]
             })
             .collect();
         out.push_str(&indent(&table(&["TIME", "EVENT", "STEP", "MESSAGE"], rows)));
@@ -155,11 +186,21 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
         let rows = handshake
             .iter()
             .map(|h| {
-                let agent = h["worker"].as_str().map_or("orchestrator".to_string(), |w| format!("worker {w}"));
-                vec![ts(&h["occurred_at"]), agent, s(&h["state"]), h["message"].as_str().unwrap_or("").to_string()]
+                let agent = h["worker"]
+                    .as_str()
+                    .map_or("orchestrator".to_string(), |w| format!("worker {w}"));
+                vec![
+                    ts(&h["occurred_at"]),
+                    agent,
+                    s(&h["state"]),
+                    h["message"].as_str().unwrap_or("").to_string(),
+                ]
             })
             .collect();
-        out.push_str(&indent(&table(&["TIME", "AGENT", "STATE", "MESSAGE"], rows)));
+        out.push_str(&indent(&table(
+            &["TIME", "AGENT", "STATE", "MESSAGE"],
+            rows,
+        )));
     }
 
     let workers = data["workers"].as_array().cloned().unwrap_or_default();
@@ -182,14 +223,20 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
                 ]
             })
             .collect();
-        out.push_str(&indent(&table(&["GROUP", "STATUS", "FAIL-FAST", "FINISHED"], rows)));
+        out.push_str(&indent(&table(
+            &["GROUP", "STATUS", "FAIL-FAST", "FINISHED"],
+            rows,
+        )));
     }
 
     let worktrees = data["worktrees"].as_array().cloned().unwrap_or_default();
     if !worktrees.is_empty() {
         out.push_str("\nworktrees:\n");
         for w in &worktrees {
-            let branch = w["branch"].as_str().map(|b| format!(" ({b})")).unwrap_or_default();
+            let branch = w["branch"]
+                .as_str()
+                .map(|b| format!(" ({b})"))
+                .unwrap_or_default();
             out.push_str(&format!("  {}{branch}\n", s(&w["path"])));
         }
     }
@@ -200,17 +247,28 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
         let rows = sessions
             .iter()
             .map(|x| {
-                vec![s(&x["name"]), s(&x["role"]), x["harness"].as_str().unwrap_or("").to_string(), s(&x["attach"])]
+                vec![
+                    s(&x["name"]),
+                    s(&x["role"]),
+                    x["harness"].as_str().unwrap_or("").to_string(),
+                    s(&x["attach"]),
+                ]
             })
             .collect();
-        out.push_str(&indent(&table(&["SESSION", "ROLE", "HARNESS", "ATTACH"], rows)));
+        out.push_str(&indent(&table(
+            &["SESSION", "ROLE", "HARNESS", "ATTACH"],
+            rows,
+        )));
     }
     out.push_str(&placement(&run["placement"], &sessions));
 
     let logs = data["logs"].as_array().cloned().unwrap_or_default();
     if !logs.is_empty() {
         out.push_str("\nlogs:\n");
-        let rows = logs.iter().map(|l| vec![s(&l["step"]), size(&l["size"]), s(&l["path"])]).collect();
+        let rows = logs
+            .iter()
+            .map(|l| vec![s(&l["step"]), size(&l["size"]), s(&l["path"])])
+            .collect();
         out.push_str(&indent(&table(&["STEP", "SIZE", "PATH"], rows)));
     }
 
@@ -230,7 +288,13 @@ pub fn logs(id: &str, step: Option<String>, tail: Option<usize>) -> CliResult<Re
         [only] if step.is_some() => s(&only["content"]),
         many => many
             .iter()
-            .map(|l| format!("==> {} <==\n{}", s(&l["step"]), l["content"].as_str().unwrap_or("")))
+            .map(|l| {
+                format!(
+                    "==> {} <==\n{}",
+                    s(&l["step"]),
+                    l["content"].as_str().unwrap_or("")
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n\n"),
     };
@@ -239,8 +303,12 @@ pub fn logs(id: &str, step: Option<String>, tail: Option<usize>) -> CliResult<Re
 
 pub fn query(sql: &str) -> CliResult<Report> {
     let data = call("query", json!({ "sql": sql }))?;
-    let columns: Vec<String> =
-        data["columns"].as_array().into_iter().flatten().map(|c| c.as_str().unwrap_or("").to_string()).collect();
+    let columns: Vec<String> = data["columns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| c.as_str().unwrap_or("").to_string())
+        .collect();
     let rows: Vec<Vec<String>> = data["rows"]
         .as_array()
         .into_iter()
@@ -249,14 +317,22 @@ pub fn query(sql: &str) -> CliResult<Report> {
         .collect();
     let headers: Vec<&str> = columns.iter().map(String::as_str).collect();
     let n = rows.len();
-    let human = format!("{}({n} row{})", table(&headers, rows), if n == 1 { "" } else { "s" });
+    let human = format!(
+        "{}({n} row{})",
+        table(&headers, rows),
+        if n == 1 { "" } else { "s" }
+    );
     Ok(Report::new(data, human))
 }
 
 /// Query results show SQL NULL as `NULL`, so it isn't confused with a `-`
 /// string.
 fn query_cell(v: &Value) -> String {
-    if v.is_null() { "NULL".into() } else { s(v) }
+    if v.is_null() {
+        "NULL".into()
+    } else {
+        s(v)
+    }
 }
 
 fn size(v: &Value) -> String {
@@ -279,12 +355,27 @@ fn placement(run: &Value, sessions: &[Value]) -> String {
             continue;
         }
         out.push_str(&format!("  {}\n", s(&x["name"])));
-        let rows = [("layout", &p["layout"]), ("workspace", &p["workspace"]), ("split.direction", &p["direction"]), ("split.size", &p["size"]), ("from", &p["from"])]
-            .into_iter()
-            .filter(|(_, v)| !v.is_null())
-            .map(|(key, v)| vec![key.to_string(), s(v), p["sources"][key].as_str().unwrap_or("").to_string()])
-            .collect();
-        out.push_str(&indent(&indent(&table(&["SETTING", "VALUE", "FROM"], rows))));
+        let rows = [
+            ("layout", &p["layout"]),
+            ("workspace", &p["workspace"]),
+            ("split.direction", &p["direction"]),
+            ("split.size", &p["size"]),
+            ("from", &p["from"]),
+        ]
+        .into_iter()
+        .filter(|(_, v)| !v.is_null())
+        .map(|(key, v)| {
+            vec![
+                key.to_string(),
+                s(v),
+                p["sources"][key].as_str().unwrap_or("").to_string(),
+            ]
+        })
+        .collect();
+        out.push_str(&indent(&indent(&table(
+            &["SETTING", "VALUE", "FROM"],
+            rows,
+        ))));
         if let Some(at) = p["caller"].as_str() {
             out.push_str(&format!("    caller: opened next to {at}\n"));
         }
@@ -292,7 +383,12 @@ fn placement(run: &Value, sessions: &[Value]) -> String {
             out.push_str(&format!("    warning: {}\n", s(w)));
         }
     }
-    let notes: Vec<String> = run["notes"].as_array().into_iter().flatten().map(|n| format!("  note: {}\n", s(n))).collect();
+    let notes: Vec<String> = run["notes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|n| format!("  note: {}\n", s(n)))
+        .collect();
     if let Some(id) = run["focused"]["id"].as_str() {
         out.push_str(&format!("  focused workspace at start: {id}\n"));
     }
@@ -323,8 +419,12 @@ mod tests {
 
     #[test]
     fn timestamps_render_in_local_time() {
-        let utc = NaiveDateTime::parse_from_str("2026-01-02T03:04:05", "%Y-%m-%dT%H:%M:%S").unwrap();
-        let expected = Local.from_utc_datetime(&utc).format("%Y-%m-%d %H:%M:%S").to_string();
+        let utc =
+            NaiveDateTime::parse_from_str("2026-01-02T03:04:05", "%Y-%m-%dT%H:%M:%S").unwrap();
+        let expected = Local
+            .from_utc_datetime(&utc)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
         assert_eq!(ts(&json!("2026-01-02T03:04:05.123Z")), expected);
         assert_eq!(ts(&Value::Null), "-");
         assert_eq!(ts(&json!("not a time")), "not a time");
@@ -332,7 +432,10 @@ mod tests {
 
     #[test]
     fn params_render_as_key_value() {
-        assert_eq!(params(&json!({"ticket": "ABC-1", "n": 2, "dry": true})), "ticket=ABC-1  n=2  dry=true");
+        assert_eq!(
+            params(&json!({"ticket": "ABC-1", "n": 2, "dry": true})),
+            "ticket=ABC-1  n=2  dry=true"
+        );
     }
 
     #[test]
@@ -349,11 +452,33 @@ mod tests {
             "caller": {"surface": "S1", "pane": "P1", "workspace": "W1"},
         });
         let out = placement(&run, &sessions);
-        assert!(out.contains("  caller at start: pane P1 (surface S1) in workspace W1\n"), "{out}");
+        assert!(
+            out.contains("  caller at start: pane P1 (surface S1) in workspace W1\n"),
+            "{out}"
+        );
         assert!(out.starts_with("\nplacement:\n  tome-1-b\n"), "{out}");
-        assert!(out.lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["split.direction", "down", "preset", "`x`", "(from", "`tome", "run`", "flags)"]), "{out}");
-        assert!(out.contains("    warning: split.size 95% is outside"), "{out}");
-        assert!(out.contains("  note: workspace: focused: no tmux client"), "{out}");
+        assert!(
+            out.lines().any(|l| l.split_whitespace().collect::<Vec<_>>()
+                == [
+                    "split.direction",
+                    "down",
+                    "preset",
+                    "`x`",
+                    "(from",
+                    "`tome",
+                    "run`",
+                    "flags)"
+                ]),
+            "{out}"
+        );
+        assert!(
+            out.contains("    warning: split.size 95% is outside"),
+            "{out}"
+        );
+        assert!(
+            out.contains("  note: workspace: focused: no tmux client"),
+            "{out}"
+        );
         assert!(!out.contains("old"), "{out}");
         assert_eq!(placement(&json!(null), &[json!({"name": "old"})]), "");
     }

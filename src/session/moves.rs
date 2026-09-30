@@ -27,20 +27,37 @@ pub struct Move<'a> {
 /// (the caller fills in the placement), and any placement warnings.
 pub fn move_to(s: &Session, m: &Move) -> CliResult<(Session, Vec<String>)> {
     let pane = s.pane.as_deref().ok_or_else(|| {
-        CliError::invalid(format!("session `{}` was started before tome tracked panes, so it can't be moved", s.name))
+        CliError::invalid(format!(
+            "session `{}` was started before tome tracked panes, so it can't be moved",
+            s.name
+        ))
     })?;
     let mut warnings = Vec::new();
     let handle = match Kind::parse(&s.backend) {
-        Some(Kind::Tmux) => Tmux { socket: s.socket.clone() }.move_pane(s, pane, m, &mut warnings)?,
+        Some(Kind::Tmux) => Tmux {
+            socket: s.socket.clone(),
+        }
+        .move_pane(s, pane, m, &mut warnings)?,
         Some(Kind::Cmux) => Some(Cmux.move_surface(s, pane, m, &mut warnings)?),
-        None => return Err(CliError::invalid(format!("session `{}` has an unknown backend `{}`", s.name, s.backend))),
+        None => {
+            return Err(CliError::invalid(format!(
+                "session `{}` has an unknown backend `{}`",
+                s.name, s.backend
+            )))
+        }
     };
-    let moved = Session { handle, layout: Some(m.layout.as_str().to_string()), ..s.clone() };
+    let moved = Session {
+        handle,
+        layout: Some(m.layout.as_str().to_string()),
+        ..s.clone()
+    };
     Ok((moved, warnings))
 }
 
 fn home(m: &Move) -> std::path::PathBuf {
-    m.project.map(Path::to_path_buf).unwrap_or_else(paths::user_home)
+    m.project
+        .map(Path::to_path_buf)
+        .unwrap_or_else(paths::user_home)
 }
 
 fn stderr(out: &Output) -> String {
@@ -53,9 +70,19 @@ impl Tmux {
     /// Move `pane` (session `s`'s): into a tmux session of its own named
     /// like `s`, a new window of the target session, or a new pane there.
     /// Returns the tome session it's in (`None` for its own).
-    fn move_pane(&self, s: &Session, pane: &str, m: &Move, warnings: &mut Vec<String>) -> CliResult<Option<String>> {
+    fn move_pane(
+        &self,
+        s: &Session,
+        pane: &str,
+        m: &Move,
+        warnings: &mut Vec<String>,
+    ) -> CliResult<Option<String>> {
         let failed = |what: &str, out: &Output| {
-            CliError::internal(format!("tmux couldn't move `{}` {what}: {}; it was left where it was", s.name, stderr(out)))
+            CliError::internal(format!(
+                "tmux couldn't move `{}` {what}: {}; it was left where it was",
+                s.name,
+                stderr(out)
+            ))
         };
         if m.layout == Layout::Workspace {
             if Layout::of(s) == Layout::Workspace {
@@ -64,7 +91,18 @@ impl Tmux {
             // A placeholder window holds the new session open until the
             // pane arrives.
             let out = self.run(&[
-                "new-session", "-d", "-P", "-F", "#{session_id} #{window_id}", "-s", &s.name, "-n", "tome-move", "-x", "200", "-y",
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                "#{session_id} #{window_id}",
+                "-s",
+                &s.name,
+                "-n",
+                "tome-move",
+                "-x",
+                "200",
+                "-y",
                 "50",
             ])?;
             if !out.status.success() {
@@ -72,7 +110,16 @@ impl Tmux {
             }
             let ids = String::from_utf8_lossy(&out.stdout).trim().to_string();
             let (sid, placeholder) = ids.split_once(' ').unwrap_or((&ids, ""));
-            let out = self.run(&["break-pane", "-d", "-s", pane, "-t", &format!("{sid}:"), "-n", m.title])?;
+            let out = self.run(&[
+                "break-pane",
+                "-d",
+                "-s",
+                pane,
+                "-t",
+                &format!("{sid}:"),
+                "-n",
+                m.title,
+            ])?;
             if !out.status.success() {
                 let _ = self.run(&["kill-session", "-t", sid]);
                 return Err(failed("to a session of its own", &out));
@@ -87,7 +134,8 @@ impl Tmux {
         let label = format!("to {}", m.target.label(m.project));
         match m.layout {
             Layout::Split => {
-                let (out, anchored) = self.split_window(&id, m.split, Opening::Join(pane), warnings)?;
+                let (out, anchored) =
+                    self.split_window(&id, m.split, Opening::Join(pane), warnings)?;
                 if !out.status.success() {
                     return Err(failed(&label, &out));
                 }
@@ -95,7 +143,16 @@ impl Tmux {
                 let _ = self.run(&["select-pane", "-t", pane, "-T", m.title]);
             }
             _ => {
-                let out = self.run(&["break-pane", "-d", "-s", pane, "-t", &format!("{id}:"), "-n", m.title])?;
+                let out = self.run(&[
+                    "break-pane",
+                    "-d",
+                    "-s",
+                    pane,
+                    "-t",
+                    &format!("{id}:"),
+                    "-n",
+                    m.title,
+                ])?;
                 if !out.status.success() {
                     return Err(failed(&label, &out));
                 }
@@ -118,8 +175,16 @@ impl Cmux {
     /// Move `surface` (session `s`'s): to a workspace of its own, a tab of
     /// a pane in the target workspace, or a new split there. Returns the
     /// workspace it's in. A workspace of its own it leaves empty is closed.
-    fn move_surface(&self, s: &Session, surface: &str, m: &Move, warnings: &mut Vec<String>) -> CliResult<String> {
-        let all = self.surfaces().ok_or_else(|| CliError::internal("cmux isn't answering"))?;
+    fn move_surface(
+        &self,
+        s: &Session,
+        surface: &str,
+        m: &Move,
+        warnings: &mut Vec<String>,
+    ) -> CliResult<String> {
+        let all = self
+            .surfaces()
+            .ok_or_else(|| CliError::internal("cmux isn't answering"))?;
         let me = all
             .iter()
             .find(|x| x.id == surface)
@@ -135,7 +200,10 @@ impl Cmux {
         let moved = self.move_surface_to(surface, &old_workspace, m, warnings);
         match &moved {
             Ok(workspace) if own && *workspace != old_workspace => {
-                let empty = self.surfaces().is_some_and(|all| all.iter().all(|x| x.workspace != old_workspace || x.id.is_empty()));
+                let empty = self.surfaces().is_some_and(|all| {
+                    all.iter()
+                        .all(|x| x.workspace != old_workspace || x.id.is_empty())
+                });
                 if empty {
                     self.kill(&old_workspace);
                 }
@@ -144,31 +212,63 @@ impl Cmux {
             // Put it back.
             Err(_) => {
                 if let Some(pane) = old_pane {
-                    let _ = self.run(&["move-surface", "--surface", surface, "--pane", &pane, "--focus", "false"]);
+                    let _ = self.run(&[
+                        "move-surface",
+                        "--surface",
+                        surface,
+                        "--pane",
+                        &pane,
+                        "--focus",
+                        "false",
+                    ]);
                 }
             }
         }
         if let Some((focused, workspace)) = focused {
             if self.focused_surface().is_some_and(|now| now.0 != focused) {
-                let _ = self.run(&["focus-panel", "--panel", &focused, "--workspace", &workspace]);
+                let _ = self.run(&[
+                    "focus-panel",
+                    "--panel",
+                    &focused,
+                    "--workspace",
+                    &workspace,
+                ]);
             }
         }
-        moved.map_err(|e| CliError { message: format!("{}; it was put back where it was", e.message), ..e })
+        moved.map_err(|e| CliError {
+            message: format!("{}; it was put back where it was", e.message),
+            ..e
+        })
     }
 
     /// The focused cmux surface and its workspace.
     fn focused_surface(&self) -> Option<(String, String)> {
-        let out = self.run(&["--id-format", "uuids", "identify", "--json"]).ok().filter(|o| o.status.success())?;
+        let out = self
+            .run(&["--id-format", "uuids", "identify", "--json"])
+            .ok()
+            .filter(|o| o.status.success())?;
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
         let f = &v["focused"];
-        Some((f["surface_id"].as_str()?.to_string(), f["workspace_id"].as_str()?.to_string()))
+        Some((
+            f["surface_id"].as_str()?.to_string(),
+            f["workspace_id"].as_str()?.to_string(),
+        ))
     }
 
-    fn move_surface_to(&self, surface: &str, old_workspace: &str, m: &Move, warnings: &mut Vec<String>) -> CliResult<String> {
+    fn move_surface_to(
+        &self,
+        surface: &str,
+        old_workspace: &str,
+        m: &Move,
+        warnings: &mut Vec<String>,
+    ) -> CliResult<String> {
         let step = |what: &str, args: &[&str]| -> CliResult<Output> {
             let out = self.run(args)?;
             if !out.status.success() {
-                return Err(CliError::internal(format!("cmux couldn't move the session {what}: {}", stderr(&out))));
+                return Err(CliError::internal(format!(
+                    "cmux couldn't move the session {what}: {}",
+                    stderr(&out)
+                )));
             }
             Ok(out)
         };
@@ -176,19 +276,33 @@ impl Cmux {
             step(
                 "to a workspace of its own",
                 &[
-                    "--id-format", "uuids", "move-tab-to-new-workspace", "--surface", surface, "--workspace", old_workspace, "--title",
-                    m.title, "--focus", "false",
+                    "--id-format",
+                    "uuids",
+                    "move-tab-to-new-workspace",
+                    "--surface",
+                    surface,
+                    "--workspace",
+                    old_workspace,
+                    "--title",
+                    m.title,
+                    "--focus",
+                    "false",
                 ],
             )?;
             return self
                 .surfaces()
                 .and_then(|all| all.into_iter().find(|x| x.id == surface))
                 .map(|x| x.workspace)
-                .ok_or_else(|| CliError::internal("cmux moved the session but tome couldn't find its new workspace"));
+                .ok_or_else(|| {
+                    CliError::internal(
+                        "cmux moved the session but tome couldn't find its new workspace",
+                    )
+                });
         }
         let _held = workspace::lock();
         let places = workspace::Places::open();
-        let (mut record, kept) = self.workspace(&places, m.target, m.project, &home(m), warnings)?;
+        let (mut record, kept) =
+            self.workspace(&places, m.target, m.project, &home(m), warnings)?;
         let what = format!("to {}", m.target.label(m.project));
         let split = m.split;
         let here: Vec<Surface> = self
@@ -197,40 +311,100 @@ impl Cmux {
             .into_iter()
             .filter(|x| x.workspace == record.id && !x.id.is_empty() && x.id != surface)
             .collect();
-        let pane_of = |id: &str| here.iter().find(|x| x.id == id).and_then(|x| x.pane.clone());
+        let pane_of = |id: &str| {
+            here.iter()
+                .find(|x| x.id == id)
+                .and_then(|x| x.pane.clone())
+        };
         let tabs = match kept {
-            true => record.tabs.clone().filter(|p| here.iter().any(|x| x.pane.as_deref() == Some(p.as_str()))),
+            true => record
+                .tabs
+                .clone()
+                .filter(|p| here.iter().any(|x| x.pane.as_deref() == Some(p.as_str()))),
             false => split.recent.iter().find_map(|a| pane_of(&a.pane)),
         };
-        let anchor = split.anchors.iter().find_map(|a| here.iter().find(|x| a.handle == record.id && x.id == a.pane));
+        let anchor = split.anchors.iter().find_map(|a| {
+            here.iter()
+                .find(|x| a.handle == record.id && x.id == a.pane)
+        });
         split.missing_anchor(anchor.is_some(), warnings);
-        let join = anchor.and_then(|a| a.pane.clone()).filter(|_| m.layout == Layout::Tab);
+        let join = anchor
+            .and_then(|a| a.pane.clone())
+            .filter(|_| m.layout == Layout::Tab);
         match (m.layout, join.or(tabs)) {
             (Layout::Tab, Some(pane)) => {
-                step(&what, &["move-surface", "--surface", surface, "--pane", &pane, "--focus", "false"])?;
+                step(
+                    &what,
+                    &[
+                        "move-surface",
+                        "--surface",
+                        surface,
+                        "--pane",
+                        &pane,
+                        "--focus",
+                        "false",
+                    ],
+                )?;
             }
             _ => {
                 // Into the anchor's pane (else the last one), then out of it
                 // as a new split.
                 match anchor.or(here.last()).and_then(|x| x.pane.as_deref()) {
-                    Some(pane) => step(&what, &["move-surface", "--surface", surface, "--pane", pane, "--focus", "false"])?,
-                    None => step(&what, &["move-surface", "--surface", surface, "--workspace", &record.id, "--focus", "false"])?,
+                    Some(pane) => step(
+                        &what,
+                        &[
+                            "move-surface",
+                            "--surface",
+                            surface,
+                            "--pane",
+                            pane,
+                            "--focus",
+                            "false",
+                        ],
+                    )?,
+                    None => step(
+                        &what,
+                        &[
+                            "move-surface",
+                            "--surface",
+                            surface,
+                            "--workspace",
+                            &record.id,
+                            "--focus",
+                            "false",
+                        ],
+                    )?,
                 };
                 step(
                     &what,
                     &[
-                        "drag-surface-to-split", "--surface", surface, split.direction.as_str(), "--workspace", &record.id, "--focus",
+                        "drag-surface-to-split",
+                        "--surface",
+                        surface,
+                        split.direction.as_str(),
+                        "--workspace",
+                        &record.id,
+                        "--focus",
                         "false",
                     ],
                 )?;
                 self.size_pane(&record.id, surface, split, warnings);
                 if m.layout == Layout::Tab && kept {
-                    record.tabs = self.surfaces().and_then(|all| all.into_iter().find(|x| x.id == surface)?.pane);
+                    record.tabs = self
+                        .surfaces()
+                        .and_then(|all| all.into_iter().find(|x| x.id == surface)?.pane);
                     places.put(&record)?;
                 }
             }
         }
-        let _ = self.run(&["rename-tab", "--workspace", &record.id, "--surface", surface, m.title]);
+        let _ = self.run(&[
+            "rename-tab",
+            "--workspace",
+            &record.id,
+            "--surface",
+            surface,
+            m.title,
+        ]);
         Ok(record.id)
     }
 }

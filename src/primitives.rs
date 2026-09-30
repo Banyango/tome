@@ -17,13 +17,16 @@ fn call(method: &str, params: Value) -> CliResult<Value> {
 }
 
 fn run_id(run: Option<String>) -> CliResult<String> {
-    run.filter(|r| !r.trim().is_empty())
-        .ok_or_else(|| CliError::invalid("no run given").with_hint("pass --run <id>, or set TOME_RUN_ID"))
+    run.filter(|r| !r.trim().is_empty()).ok_or_else(|| {
+        CliError::invalid("no run given").with_hint("pass --run <id>, or set TOME_RUN_ID")
+    })
 }
 
 /// The worker this process is, if it's one.
 fn me() -> Option<String> {
-    std::env::var("TOME_WORKER_ID").ok().filter(|s| !s.is_empty())
+    std::env::var("TOME_WORKER_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 pub struct Spawn {
@@ -44,16 +47,21 @@ pub struct Spawn {
 pub fn spawn(a: Spawn) -> CliResult<Report> {
     let run = run_id(a.run)?;
     let prompt = match (a.prompt, a.prompt_file) {
-        (Some(_), Some(_)) => return Err(CliError::invalid("give --prompt or --prompt-file, not both")),
+        (Some(_), Some(_)) => {
+            return Err(CliError::invalid(
+                "give --prompt or --prompt-file, not both",
+            ))
+        }
         (Some(p), None) => Some(p),
-        (None, Some(path)) => Some(
-            std::fs::read_to_string(&path)
-                .map_err(|e| CliError::invalid(format!("can't read prompt file {}: {e}", path.display())))?,
-        ),
+        (None, Some(path)) => Some(std::fs::read_to_string(&path).map_err(|e| {
+            CliError::invalid(format!("can't read prompt file {}: {e}", path.display()))
+        })?),
         (None, None) => None,
     };
     if prompt.is_some() && !a.command.is_empty() {
-        return Err(CliError::invalid("give a worker a task (--prompt) or a command (after `--`), not both"));
+        return Err(CliError::invalid(
+            "give a worker a task (--prompt) or a command (after `--`), not both",
+        ));
     }
     let w = call(
         "worker.spawn",
@@ -83,10 +91,16 @@ pub fn spawn(a: Spawn) -> CliResult<Report> {
 pub fn session_move(session: &str, placement: &crate::placement::Settings) -> CliResult<Report> {
     let (run, name) = match session.split_once('/') {
         Some((run, name)) => (run.to_string(), name),
-        None => (run_id(std::env::var("TOME_RUN_ID").ok()).map_err(|e| e.with_hint("give the session as <run>/<name>"))?, session),
+        None => (
+            run_id(std::env::var("TOME_RUN_ID").ok())
+                .map_err(|e| e.with_hint("give the session as <run>/<name>"))?,
+            session,
+        ),
     };
     if name.is_empty() {
-        return Err(CliError::invalid("which session? give it as <run>/<name>, e.g. 42/orchestrator or 42/w1"));
+        return Err(CliError::invalid(
+            "which session? give it as <run>/<name>, e.g. 42/orchestrator or 42/w1",
+        ));
     }
     let mut params = json!({ "run_id": run, "name": name, "placement": placement });
     if let Some(caller) = crate::session::caller_env() {
@@ -100,7 +114,12 @@ pub fn session_move(session: &str, placement: &crate::placement::Settings) -> Cl
         (None, Some(w)) => human.push_str(&format!(" in workspace {w}")),
         (None, None) => {}
     }
-    for w in p["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+    for w in p["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
         human.push_str(&format!("\nwarning: {w}"));
     }
     human.push_str(&format!("\nattach: {}", s(&moved["attach_command"])));
@@ -108,9 +127,17 @@ pub fn session_move(session: &str, placement: &crate::placement::Settings) -> Cl
 }
 
 /// `tome worker done|fail [--summary ...]`
-pub fn report(event: &str, summary: Option<String>, name: Option<String>, run: Option<String>) -> CliResult<Report> {
+pub fn report(
+    event: &str,
+    summary: Option<String>,
+    name: Option<String>,
+    run: Option<String>,
+) -> CliResult<Report> {
     let run = run_id(run)?;
-    let w = call("worker.report", json!({ "run_id": run, "name": name, "caller": me(), "event": event, "summary": summary }))?;
+    let w = call(
+        "worker.report",
+        json!({ "run_id": run, "name": name, "caller": me(), "event": event, "summary": summary }),
+    )?;
     let human = worker_line(&w);
     Ok(Report::new(w, human))
 }
@@ -120,7 +147,12 @@ pub fn worker_status(name: Option<String>, wait: bool, run: Option<String>) -> C
     let run = run_id(run)?;
     let Some(name) = name else {
         let all = call("worker.status", json!({ "run_id": run }))?;
-        let human = workers_table(all["workers"].as_array().map(Vec::as_slice).unwrap_or_default());
+        let human = workers_table(
+            all["workers"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        );
         return Ok(Report::new(all, human));
     };
     loop {
@@ -144,8 +176,15 @@ pub fn kill(name: String, run: Option<String>) -> CliResult<Report> {
 /// `tome group create <g> [--fail-fast]`
 pub fn group_create(name: String, fail_fast: bool, run: Option<String>) -> CliResult<Report> {
     let run = run_id(run)?;
-    let g = call("group.create", json!({ "run_id": run, "name": name, "fail_fast": fail_fast }))?;
-    let human = format!("group {} created{}", s(&g["name"]), if fail_fast { " (fail-fast)" } else { "" });
+    let g = call(
+        "group.create",
+        json!({ "run_id": run, "name": name, "fail_fast": fail_fast }),
+    )?;
+    let human = format!(
+        "group {} created{}",
+        s(&g["name"]),
+        if fail_fast { " (fail-fast)" } else { "" }
+    );
     Ok(Report::new(g, human))
 }
 
@@ -159,7 +198,12 @@ pub fn group(method: &str, name: String, wait: bool, run: Option<String>) -> Cli
                 "group {} {}\n{}",
                 s(&g["group"]["name"]),
                 s(&g["group"]["status"]),
-                workers_table(g["workers"].as_array().map(Vec::as_slice).unwrap_or_default())
+                workers_table(
+                    g["workers"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                )
             );
             return Ok(Report::new(g, human));
         }
@@ -168,13 +212,22 @@ pub fn group(method: &str, name: String, wait: bool, run: Option<String>) -> Cli
 }
 
 /// `tome worktree create <name> [--base <ref>]`
-pub fn worktree_create(name: String, base: Option<String>, run: Option<String>) -> CliResult<Report> {
+pub fn worktree_create(
+    name: String,
+    base: Option<String>,
+    run: Option<String>,
+) -> CliResult<Report> {
     let run = run_id(run)?;
     let wt = call(
         "worktree.create",
         json!({ "run_id": run, "name": name, "base": base, "cwd": std::env::current_dir().ok() }),
     )?;
-    let human = format!("{} (branch {}, from {})", s(&wt["path"]), s(&wt["branch"]), s(&wt["base"]));
+    let human = format!(
+        "{} (branch {}, from {})",
+        s(&wt["path"]),
+        s(&wt["branch"]),
+        s(&wt["base"])
+    );
     Ok(Report::new(wt, human))
 }
 
@@ -188,7 +241,10 @@ pub fn push(queue: String, text: String, run: Option<String>) -> CliResult<Repor
     } else {
         text
     };
-    let m = call("queue.push", json!({ "run_id": run, "queue": queue, "body": body, "caller": me() }))?;
+    let m = call(
+        "queue.push",
+        json!({ "run_id": run, "queue": queue, "body": body, "caller": me() }),
+    )?;
     let human = format!("message {} on {}", m["id"], s(&m["queue"]));
     Ok(Report::new(m, human))
 }
@@ -200,17 +256,25 @@ pub fn pull(queue: String, wait: Option<String>, run: Option<String>) -> CliResu
     let deadline = match wait.as_deref() {
         None => Some(Instant::now()),
         Some("forever") => None,
-        Some(d) => Some(Instant::now() + duration::parse(d).map_err(|e| CliError::invalid(format!("invalid --wait: {e}")))?),
+        Some(d) => Some(
+            Instant::now()
+                + duration::parse(d)
+                    .map_err(|e| CliError::invalid(format!("invalid --wait: {e}")))?,
+        ),
     };
     loop {
-        let r = call("queue.pull", json!({ "run_id": run, "queue": queue, "caller": me() }))?;
+        let r = call(
+            "queue.pull",
+            json!({ "run_id": run, "queue": queue, "caller": me() }),
+        )?;
         match r["status"].as_str() {
             Some("message") => {
                 let human = format!("{}\t{}", r["message"]["id"], s(&r["message"]["body"]));
                 return Ok(Report::new(r, human));
             }
             Some("closed") => {
-                return Ok(Report::new(r, format!("queue {queue} is closed and empty")).with_exit(exit::EMPTY));
+                return Ok(Report::new(r, format!("queue {queue} is closed and empty"))
+                    .with_exit(exit::EMPTY));
             }
             _ if deadline.is_some_and(|d| Instant::now() >= d) => {
                 return Ok(Report::new(r, format!("queue {queue} is empty")).with_exit(exit::EMPTY));
@@ -248,7 +312,12 @@ pub fn ls(run: Option<String>) -> CliResult<Report> {
         .map(|q| {
             vec![
                 s(&q["name"]),
-                if q["closed"] == true { "closed" } else { "open" }.to_string(),
+                if q["closed"] == true {
+                    "closed"
+                } else {
+                    "open"
+                }
+                .to_string(),
                 q["pending"].to_string(),
                 q["claimed"].to_string(),
             ]
@@ -272,7 +341,11 @@ fn worker_line(w: &Value) -> String {
 
 fn worker_detail(w: &Value) -> String {
     let mut out = worker_line(w);
-    for (label, key) in [("worktree", "worktree"), ("branch", "branch"), ("session", "session")] {
+    for (label, key) in [
+        ("worktree", "worktree"),
+        ("branch", "branch"),
+        ("session", "session"),
+    ] {
         if let Some(v) = w[key].as_str() {
             out.push_str(&format!("\n  {label}: {v}"));
         }
@@ -290,13 +363,25 @@ pub fn workers_table(workers: &[Value]) -> String {
                 s(&w["status"]),
                 w["group"].as_str().unwrap_or("-").to_string(),
                 w["branch"].as_str().unwrap_or("-").to_string(),
-                w["summary"].as_str().or(w["reason"].as_str()).unwrap_or("").lines().next().unwrap_or("").to_string(),
+                w["summary"]
+                    .as_str()
+                    .or(w["reason"].as_str())
+                    .unwrap_or("")
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
             ]
         })
         .collect();
-    table(&["WORKER", "KIND", "STATUS", "GROUP", "BRANCH", "SUMMARY"], rows)
+    table(
+        &["WORKER", "KIND", "STATUS", "GROUP", "BRANCH", "SUMMARY"],
+        rows,
+    )
 }
 
 fn s(v: &Value) -> String {
-    v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())
+    v.as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| v.to_string())
 }
