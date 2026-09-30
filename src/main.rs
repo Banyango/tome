@@ -114,7 +114,7 @@ enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
-    /// Pass messages between a run's orchestrator and workers.
+    /// Project message queues: work for runs, workers and you to pass around.
     Queue {
         #[command(subcommand)]
         command: QueueCommand,
@@ -404,6 +404,15 @@ enum QueueCommand {
         #[command(flatten)]
         run: RunArg,
     },
+    /// Show a queue's oldest messages without claiming any.
+    Peek {
+        queue: String,
+        /// How many messages to show.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[command(flatten)]
+        run: RunArg,
+    },
     /// Remove a message you've claimed.
     Ack {
         id: String,
@@ -416,7 +425,7 @@ enum QueueCommand {
         #[command(flatten)]
         run: RunArg,
     },
-    /// List the run's queues.
+    /// List the project's queues.
     Ls {
         #[command(flatten)]
         run: RunArg,
@@ -778,11 +787,20 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 },
         } => primitives::worktree_create(name, base, branch, run.run),
         Command::Queue { command } => match command {
-            QueueCommand::Push { queue, text, run } => primitives::push(queue, text, run.run),
-            QueueCommand::Pull { queue, wait, run } => primitives::pull(queue, wait, run.run),
-            QueueCommand::Ack { id, run } => primitives::ack(id, run.run),
-            QueueCommand::Close { queue, run } => primitives::close(queue, run.run),
-            QueueCommand::Ls { run } => primitives::ls(run.run),
+            QueueCommand::Push { queue, text, run } => {
+                primitives::push(&current_dir()?, queue, text, run.run)
+            }
+            QueueCommand::Pull { queue, wait, run } => {
+                primitives::pull(&current_dir()?, queue, wait, run.run)
+            }
+            QueueCommand::Peek { queue, limit, run } => {
+                primitives::peek(&current_dir()?, queue, limit, run.run)
+            }
+            QueueCommand::Ack { id, run } => primitives::ack(&current_dir()?, id, run.run),
+            QueueCommand::Close { queue, run } => {
+                primitives::close(&current_dir()?, queue, run.run)
+            }
+            QueueCommand::Ls { run } => primitives::ls(&current_dir()?, run.run),
         },
         Command::Runs { command } => match command {
             RunsCommand::List {

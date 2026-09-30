@@ -14,6 +14,6 @@ Start with:
 {{trigger.payload}}
 
 ## Loop
-Do the item. Then pull the next message from your `events` queue with
-`tome queue pull events --wait 5m`, ack it, and do that item. When the queue
+Do the item. Then pull the next message from your `events-$TOME_RUN_ID` queue with
+`tome queue pull events-$TOME_RUN_ID --wait 5m`, ack it, and do that item. When the queue
 is empty after the wait, finish the run successfully.

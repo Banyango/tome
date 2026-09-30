@@ -25,9 +25,13 @@ pub const METHODS: &[&str] = &[
     "project.register",
 ];
 
-/// The queue signals are delivered on, and who they're from.
-pub const QUEUE: &str = "events";
+/// Who signals to a run are from.
 const SENDER: &str = "trigger";
+
+/// The project queue signals to a run are delivered on.
+pub fn signal_queue(run_id: i64) -> String {
+    format!("events-{run_id}")
+}
 
 /// Fire outcomes, as recorded.
 pub mod outcome {
@@ -606,8 +610,13 @@ impl Engine {
         let mut signalled = Vec::new();
         let mut errors = Vec::new();
         for run in active {
+            let queue = signal_queue(run.id);
             let pushed = self.with_store(|store| {
-                store.push_message(run.id, QUEUE, &body, SENDER)?;
+                let project = run
+                    .project_path
+                    .as_deref()
+                    .ok_or_else(|| CliError::invalid("the run has no project to signal through"))?;
+                store.push_message(project, &queue, &body, SENDER)?;
                 store.worker_event(run.id, None, None, "trigger", Some(&what))
             });
             match pushed {
@@ -617,11 +626,11 @@ impl Engine {
             if run.status == RunStatus::Running {
                 let nudge = match &req.event.bus {
                     Some((e, _)) => format!(
-                        "[tome] event {} on {}. Details: tome queue pull {QUEUE}",
+                        "[tome] event {} on {}. Details: tome queue pull {queue}",
                         e.id, e.topic
                     ),
                     None => format!(
-                        "[tome] trigger {} fired. Details: tome queue pull {QUEUE}",
+                        "[tome] trigger {} fired. Details: tome queue pull {queue}",
                         trigger.kind_name()
                     ),
                 };

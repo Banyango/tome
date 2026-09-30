@@ -510,7 +510,7 @@ fn queues_claim_ack_and_release() {
     assert_eq!((code, empty["status"].as_str()), (3, Some("empty")));
 
     let m1 = ok(&env, &run, &["queue", "push", "jobs", "one"]);
-    assert_eq!(m1["sender"], "orchestrator");
+    assert_eq!(m1["sender"], format!("run {run}"));
     let mut push = env
         .cmd(&["--json", "queue", "push", "jobs", "-"])
         .env("TOME_RUN_ID", &run)
@@ -678,4 +678,44 @@ fn worker_events_are_streamed() {
 
     let shown = env.json(&["runs", "show", "1"]).1;
     assert_eq!(shown["workers"][0]["status"], "done", "{shown}");
+}
+
+#[test]
+fn queues_belong_to_the_project_not_a_run() {
+    let env = setup(&[], "claude");
+
+    // From the shell, outside any run.
+    let (code, m) = env.json(&["queue", "push", "review", "PR 1"]);
+    assert_eq!(code, 0, "{m}");
+    assert_eq!(m["sender"], "user");
+    env.json(&["queue", "push", "review", "PR 2"]);
+
+    let (_, peek) = env.json(&["queue", "peek", "review"]);
+    let bodies: Vec<&str> = peek["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, ["PR 1", "PR 2"]);
+    let (_, ls) = env.json(&["queue", "ls"]);
+    assert_eq!(
+        (&ls["queues"][0]["pending"], &ls["queues"][0]["claimed"]),
+        (&2.into(), &0.into()),
+        "peeking claims nothing"
+    );
+
+    // A run sees the same queue, and a pull there claims for the run.
+    let run = start(&env);
+    let (_, pulled) = tome(&env, &run, &["queue", "pull", "review"]);
+    assert_eq!(pulled["message"]["body"], "PR 1");
+    assert_eq!(pulled["message"]["claimed_by"], format!("run {run}"));
+    let id = pulled["message"]["id"].to_string();
+    assert_eq!(tome(&env, &run, &["queue", "ack", &id]).0, 0);
+
+    // The run is gone, the queue isn't.
+    env.json(&["run", "cancel", &run]);
+    let (_, pulled) = env.json(&["queue", "pull", "review"]);
+    assert_eq!(pulled["message"]["body"], "PR 2");
+    assert_eq!(pulled["message"]["claimed_by"], "user");
 }

@@ -21,8 +21,8 @@ A **group** tracks a set of workers together. Add workers to a group when you st
 
 ## Queue
 
-A **queue** is a named list of messages inside a run. The orchestrator and workers push messages onto it and pull them off. A message is text up to about 1 MiB. Pulling claims a message, and acking removes it; a message that was claimed but never acked goes back on the queue when the worker finishes.
+A **queue** is a named list of messages that belongs to the project. Runs, workers and you can all push messages onto it and pull them off, and it outlives any run. A message is text up to about 1 MiB. Pulling claims a message, and acking removes it; a message that was claimed but never acked goes back on the queue when the worker that claimed it finishes. `tome queue peek` shows what is waiting without claiming anything.
 
-Signals from outside a run, such as a trigger that signals a running run, arrive on the run's `events` queue.
+Signals from outside a run, such as a trigger that signals a running run, arrive on that run's `events-<run id>` queue.
 
 See [Workers, worktrees and fan-out](../guides/workers.md).

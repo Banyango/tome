@@ -275,13 +275,17 @@ fn running_targets_are_signalled_through_the_events_queue() {
 
     let typed = env.home().join("typed.txt");
     common::eventually("nudge typed", || {
-        fs::read_to_string(&typed)
-            .is_ok_and(|t| t.contains("[tome] trigger cron fired. Details: tome queue pull events"))
+        fs::read_to_string(&typed).is_ok_and(|t| {
+            t.contains(&format!(
+                "[tome] trigger cron fired. Details: tome queue pull events-{run}"
+            ))
+        })
     });
 
+    let signals = format!("events-{run}");
     let pull = |env: &Env| {
         let out = env
-            .cmd(&["--json", "queue", "pull", "events"])
+            .cmd(&["--json", "queue", "pull", &signals])
             .env("TOME_RUN_ID", run.to_string())
             .output()
             .unwrap();

@@ -823,9 +823,10 @@ fn running_targets_signal_their_runs_and_settle_when_one_ends() {
         fs::read_to_string(&typed)
             .is_ok_and(|t| t.contains(&format!("[tome] event {look} on review.")))
     });
+    let signals = format!("events-{run}");
     let pull = || {
         let out = env
-            .cmd(&["--json", "queue", "pull", "events"])
+            .cmd(&["--json", "queue", "pull", &signals])
             .env("TOME_RUN_ID", run.to_string())
             .output()
             .unwrap();

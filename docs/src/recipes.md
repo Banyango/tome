@@ -149,7 +149,7 @@ tome publish factory.ship <branch>
 {{#include ../examples/factory-perf.md}}
 ```
 
-`factory-sevbot` keeps one run going for an incident. More alerts and people's questions reach it on its `events` queue:
+`factory-sevbot` keeps one run going for an incident. More alerts and people's questions reach it on its `events-<run id>` queue:
 
 ```markdown title=.tome/workflows/factory-sevbot.md
 {{#include ../examples/factory-sevbot.md}}

@@ -56,6 +56,7 @@ pub const METHODS: &[&str] = &[
     "worktree.create",
     "queue.push",
     "queue.pull",
+    "queue.peek",
     "queue.ack",
     "queue.close",
     "queue.ls",
@@ -136,6 +137,9 @@ enum Task {
 
 impl Engine {
     pub(crate) fn dispatch_primitive(&self, method: &str, p: &Value) -> CliResult<Value> {
+        if method.starts_with("queue.") {
+            return self.with_store(|store| queue(store, method, p));
+        }
         let run_id = req_id_at(p, "run_id")?;
         match method {
             "worker.spawn" => self.spawn_worker(run_id, p),
@@ -161,7 +165,7 @@ impl Engine {
                 opt_bool(p, "wait"),
             ),
             "worktree.create" => self.create_worktree(run_id, p),
-            _ => self.with_store(|store| queue(store, run_id, method, p)),
+            _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
     }
 
@@ -724,30 +728,52 @@ impl Engine {
     }
 }
 
-/// The queue RPCs. The sender or claimer is the `caller` worker, else the
-/// orchestrator.
-fn queue(store: &mut Store, run_id: i64, method: &str, p: &Value) -> CliResult<Value> {
-    let me = caller(p).unwrap_or(orchestrator::ROLE);
+/// The queue RPCs: `{queue?, body?, id?, limit?, run_id?, project_path?,
+/// caller?}`. A queue belongs to a project: the run's (`run_id`), else
+/// `project_path`. The sender or claimer is `user` outside a run, else the
+/// run or its `caller` worker.
+fn queue(store: &mut Store, method: &str, p: &Value) -> CliResult<Value> {
+    let run = match p.get("run_id").filter(|v| !v.is_null()) {
+        Some(_) => Some(store.require_run(req_id_at(p, "run_id")?)?),
+        None => None,
+    };
+    let project = match (&run, opt_str(p, "project_path")) {
+        (Some(run), _) => run.project_path.clone().ok_or_else(|| {
+            CliError::invalid(format!("run {} has no project", run.id))
+                .with_hint("queues belong to a project: run the workflow inside one")
+        })?,
+        (None, Some(path)) => path.to_string(),
+        (None, None) => {
+            return Err(CliError::invalid("not inside a project")
+                .with_hint("run `tome queue` in a project (a directory with .tome/)"))
+        }
+    };
+    let me = match &run {
+        Some(run) => crate::bus::run_sender(run.id, caller(p)),
+        None => "user".to_string(),
+    };
     match method {
         "queue.push" => Ok(json!(store.push_message(
-            run_id,
+            &project,
             req_str(p, "queue")?,
             req_str(p, "body")?,
-            me
+            &me
         )?)),
         "queue.pull" => Ok(
-            match store.pull_message(run_id, req_str(p, "queue")?, me)? {
+            match store.pull_message(&project, req_str(p, "queue")?, &me)? {
                 Pulled::Message(m) => json!({ "status": "message", "message": m }),
                 Pulled::Empty => json!({ "status": "empty" }),
                 Pulled::Closed => json!({ "status": "closed" }),
             },
         ),
-        "queue.ack" => Ok(json!(store.ack_message(run_id, req_id_at(p, "id")?)?)),
-        "queue.close" => Ok(json!(store.close_queue(run_id, req_str(p, "queue")?)?)),
-        "queue.ls" => {
-            store.require_run(run_id)?;
-            Ok(json!({ "queues": store.queues(run_id)? }))
+        "queue.peek" => {
+            let limit = p.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+            let messages = store.peek_messages(&project, req_str(p, "queue")?, limit)?;
+            Ok(json!({ "queue": req_str(p, "queue")?, "messages": messages }))
         }
+        "queue.ack" => Ok(json!(store.ack_message(&project, req_id_at(p, "id")?)?)),
+        "queue.close" => Ok(json!(store.close_queue(&project, req_str(p, "queue")?)?)),
+        "queue.ls" => Ok(json!({ "project": project, "queues": store.queues(&project)? })),
         _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
     }
 }

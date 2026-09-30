@@ -58,7 +58,7 @@ A topic is words separated by dots. A subscription is a pattern: `*` stands for 
 Every workflow that subscribes to a matching topic gets its own **delivery** of the event, and it is durable. If the daemon is down when you publish, the deliveries wait, and they are picked up when the daemon starts. What a delivery does depends on `to:`:
 
 - `new` starts one run per event. `concurrency` limits how many run at once, and the rest queue.
-- `running` gives the event to the runs that are going, on their `events` queue, and nudges the orchestrator to look. If no run is going, the delivery is marked done.
+- `running` gives the event to the runs that are going, on their `events-<run id>` queue, and nudges the orchestrator to look. If no run is going, the delivery is marked done.
 - `running-or-new` does one or the other.
 
 The event reaches a new run in the body as `{{trigger.topic}}`, `{{trigger.payload}}`, `{{trigger.event_id}}` and `{{trigger.sender}}`.
@@ -71,7 +71,7 @@ This example receives requests one at a time. `concurrency: 1` makes extra ones 
 
 ### Keeping a run alive
 
-Set `to: running-or-new` and the run gets later events on its `events` queue instead of starting more runs:
+Set `to: running-or-new` and the run gets later events on its `events-<run id>` queue instead of starting more runs:
 
 ```markdown title=.tome/workflows/watcher.md
 {{#include ../../examples/signal-running.md}}

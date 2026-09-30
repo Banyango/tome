@@ -29,7 +29,7 @@ apply any of them. Publish the top one so an engineer can act on it:
     tome publish incident.proposed "<cause>: <mitigation>"
 
 ## Answer
-Pull from your `events` queue with `tome queue pull events --wait 15m`. An
+Pull from your `events-$TOME_RUN_ID` queue with `tome queue pull events-$TOME_RUN_ID --wait 15m`. An
 event on `alert.outage` is more evidence: add it to the log and look again
 at the cause. An event on `incident.question` is a question: answer it in the
 log and publish the answer on `incident.answer`. Ack each one. Keep going

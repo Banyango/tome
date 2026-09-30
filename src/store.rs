@@ -224,6 +224,28 @@ const MIGRATIONS: &[&str] = &[
     // 10: a run's placement state (JSON: its `tome run` flags, the
     // workspace focused when it started, and notes)
     "ALTER TABLE runs ADD COLUMN placement VARCHAR;",
+    // 11: queues belong to the project, not a run (run queues are dropped)
+    "
+    DROP TABLE queue_messages;
+    DROP TABLE queues;
+    CREATE TABLE queues (
+        project_path VARCHAR NOT NULL,
+        name         VARCHAR NOT NULL,
+        closed       BOOLEAN NOT NULL,
+        created_at   TIMESTAMP NOT NULL,
+        PRIMARY KEY (project_path, name)
+    );
+    CREATE TABLE queue_messages (
+        id           BIGINT PRIMARY KEY DEFAULT nextval('queue_message_seq'),
+        project_path VARCHAR NOT NULL,
+        queue        VARCHAR NOT NULL,
+        body         VARCHAR NOT NULL,
+        sender       VARCHAR NOT NULL,
+        created_at   TIMESTAMP NOT NULL,
+        claimed_by   VARCHAR,
+        claimed_at   TIMESTAMP
+    );
+    ",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -645,13 +667,16 @@ impl Store {
             "workers",
             "worker_groups",
             "worker_events",
-            "queues",
-            "queue_messages",
         ] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE run_id = ?"),
                 params![id],
             )?;
+        }
+        // The run's signal queue (see `triggers::signal_queue`).
+        let signals = crate::triggers::signal_queue(id);
+        for table in ["queue_messages WHERE queue", "queues WHERE name"] {
+            tx.execute(&format!("DELETE FROM {table} = ?"), params![signals])?;
         }
         tx.execute("DELETE FROM runs WHERE id = ?", params![id])?;
         tx.commit()?;

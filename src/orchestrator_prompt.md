@@ -66,9 +66,11 @@ can spawn workers; there is no limit on how many run at once.
 - `tome group close <g>`: take no new members.
 - `tome worktree create <name> [--base <ref>] [--branch <name>]`: a worktree not tied to a worker.
 - `tome queue push <q> "<text>"`, `tome queue pull <q> [--wait [<dur>]]`,
-  `tome queue ack <id>`, `tome queue close <q>`, `tome queue ls`: run-scoped
-  message queues. A pulled message is claimed until acked; a worker's unacked
-  messages go back on the queue when it finishes. `pull` exits `3` when
+  `tome queue peek <q>`, `tome queue ack <id>`, `tome queue close <q>`,
+  `tome queue ls`: the project's message queues, shared with other runs and
+  the user. `peek` shows messages without claiming them. A pulled message is
+  claimed until acked; a worker's unacked messages go back on the queue when
+  it finishes. `pull` exits `3` when
   there's nothing to claim.
 
 When a worker or group finishes, tome types a line starting with `[tome]`

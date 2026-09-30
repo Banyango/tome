@@ -30,7 +30,7 @@ and asks for JSON output, so none of these need ids.
 - `tome worker done [--summary "<text>"]`: the task succeeded.
 - `tome worker fail [--summary "<text>"]`: the task failed.
 - `tome queue pull <queue> [--wait [<duration>]]`: claim the next message on
-  a run queue. Exit `3` means there's none (JSON `status` is `empty`, or
+  a project queue. Exit `3` means there's none (JSON `status` is `empty`, or
   `closed` when no more will come).
 - `tome queue ack <id>`: remove a message you've finished with. Messages you
   claim but don't ack go back on the queue when you finish.

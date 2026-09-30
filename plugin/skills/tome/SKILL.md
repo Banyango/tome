@@ -155,9 +155,14 @@ Work through the queue `tasks` until it is closed and empty:
 ```
 
 And the orchestrator has to `tome queue close tasks` after its last push, or
-the workers wait forever. A closed queue can't be reopened for the rest of
-the run, so a workflow that loops and pushes more items later needs a new
-queue name each time round, such as `tasks-<round>`.
+the workers wait forever. A closed queue can't be reopened, so a workflow
+that loops and pushes more items later needs a new queue name each time
+round, such as `tasks-<round>`.
+
+Queues belong to the project, not the run: they outlive runs, and a run, a
+worker or the user at a shell can push to and pull from the same queue.
+Names are shared across runs, so pick ones that won't collide. `tome queue
+peek <q>` shows what's waiting without claiming it.
 
 If each item gets its own worker anyway, don't use a queue: put the item in
 the worker's prompt.

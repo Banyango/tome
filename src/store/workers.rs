@@ -373,7 +373,7 @@ impl Store {
             status.as_str(),
             message,
         )?;
-        self.release_claims(w.run_id, &w.name)?;
+        self.release_claims(&crate::bus::run_sender(w.run_id, Some(&w.name)))?;
         Ok(())
     }
 

@@ -84,19 +84,22 @@ When workers change code, give each its own worktree, then merge in a final step
 
 ## Queues
 
-Use a queue when workers and the orchestrator need to pass work around while they run, instead of at the end.
+Use a queue when workers and the orchestrator need to pass work around while they run, instead of at the end. A queue belongs to the project, so it also works from your shell, and a run can leave messages for the next one.
 
 ```sh
 tome queue push tasks "refactor the parser"     # add a message (`-` reads stdin)
 tome queue pull tasks --wait 30s                # claim one; exit 3 if there is none
+tome queue peek tasks                           # look at what is waiting, claiming nothing
 tome queue ack <id>                             # remove it once handled
 tome queue close tasks                          # no more messages; pulls report `closed` when drained
-tome queue ls
+tome queue ls                                   # the project's queues and their counts
 ```
+
+Outside a run, `tome queue` uses the project of the directory you are in. Inside a run it uses the run's project.
 
 A message is text up to about 1 MiB. Put bigger data in a file and send its path. A claimed message that is never acked goes back on the queue when the worker that claimed it finishes, so another worker can pick it up.
 
-A worker reports once, and its session closes when it does, so a worker only works through a queue if its prompt tells it to loop. Say it in the prompt: pull, do the item, ack, and pull again until `pull` reports `closed`, then report once. `pull` exits 3 in two cases, and the JSON `status` tells them apart: `empty` means nothing is there yet, and `closed` means nothing more will come. That is why the orchestrator has to close the queue after its last push. A closed queue stays closed for the rest of the run, so a workflow that pushes more work in a later round needs a new queue name for that round.
+A worker reports once, and its session closes when it does, so a worker only works through a queue if its prompt tells it to loop. Say it in the prompt: pull, do the item, ack, and pull again until `pull` reports `closed`, then report once. `pull` exits 3 in two cases, and the JSON `status` tells them apart: `empty` means nothing is there yet, and `closed` means nothing more will come. That is why the orchestrator has to close the queue after its last push. A closed queue stays closed for good, so a workflow that pushes more work in a later round needs a new queue name for that round. Queues outlive runs, so pick names that won't collide with another run's, such as `tasks-<round>`. Workflows that don't need to stop workers can skip `close` and have them stop on `empty` instead.
 
 If every item gets its own worker, you don't need a queue. Put the item in the worker's prompt.
 
