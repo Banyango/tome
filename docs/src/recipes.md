@@ -12,6 +12,7 @@ Workflows to copy into `.tome/workflows/` and adapt. Each is a real file under `
 | [A weekday-morning check](#a-weekday-morning-check) | a schedule |
 | [Keep one agent on call](#keep-one-agent-on-call) | messages arrive |
 | [Tidy docs as you write](#tidy-docs-as-you-write) | a doc file changes |
+| [A software factory](#a-software-factory) | a request, an alert, a schedule, or another workflow |
 
 ## Plan a feature, then build it
 
@@ -112,6 +113,60 @@ A file trigger that fixes only the files that changed, so it never triggers itse
 ```markdown title=.tome/workflows/doc-check.md
 {{#include ../examples/watch-files.md}}
 ```
+
+## A software factory
+
+Four workflows that pass work to each other on the message bus, so a change goes from request to production with a person involved only for risky changes. It's modelled on the ["agentic software factory"](https://newsletter.pragmaticengineer.com/) that The Pragmatic Engineer described inside OpenAI.
+
+| Workflow | Starts on | Publishes |
+| --- | --- | --- |
+| `factory-build` | `factory.requested` | `factory.ship` or `factory.review-needed` |
+| `factory-deploy` | `factory.ship` | `alert.outage` if the rollout regresses |
+| `factory-perf` | every hour, or `alert.latency` | `factory.requested` for each fix |
+| `factory-sevbot` | `alert.outage` or `incident.question` | `incident.proposed`, `incident.answer`, `factory.requested` |
+
+`factory-build` builds the change, loops until CI and four specialist reviewers pass, and sorts it into low or high risk:
+
+```markdown title=.tome/workflows/factory-build.md
+{{#include ../examples/factory-build.md}}
+```
+
+A low-risk change goes straight to `factory-deploy`. A high-risk one waits for an engineer, who reviews the branch and ships it by hand:
+
+```sh
+tome publish factory.ship <branch>
+```
+
+`factory-deploy` merges and deploys it, then rolls it out behind a flag while it watches a dashboard it made for the change:
+
+```markdown title=.tome/workflows/factory-deploy.md
+{{#include ../examples/factory-deploy.md}}
+```
+
+`factory-perf` looks for latency regressions and sends each fix back to `factory-build`, which closes the loop:
+
+```markdown title=.tome/workflows/factory-perf.md
+{{#include ../examples/factory-perf.md}}
+```
+
+`factory-sevbot` keeps one run going for an incident. More alerts and people's questions reach it on its `events` queue:
+
+```markdown title=.tome/workflows/factory-sevbot.md
+{{#include ../examples/factory-sevbot.md}}
+```
+
+```sh
+tome publish factory.requested "Add a --since flag to the export command"
+tome publish incident.question "Is the EU region affected?"
+tome publish incident.question "Resolved: rolled back the uploader deploy"
+```
+
+Some things to know before you use it:
+
+- **Context comes from the harness.** Slack, Notion, metrics and deploy tools are whatever MCP servers and CLIs your agents have. The `./scripts/deploy` and `./scripts/flag` commands are placeholders.
+- **Alerts need a bridge.** tome doesn't receive webhooks. Point your alerting at a small script, or a cron job, that runs `tome publish alert.outage "..."`.
+- **Loops stop themselves.** A rollout that regresses goes deploy → sevbot → build → deploy, and each hop adds one to the event's depth. Events deeper than 8 aren't delivered, so the factory gets about two tries at fixing its own outage before a person has to step in. Each `factory-perf` run on the hourly schedule starts again at depth 0.
+- **Runs aren't timed out.** The deploy and sevbot runs say in their bodies when to stop, because tome doesn't enforce `timeout`.
 
 ## Next
 
