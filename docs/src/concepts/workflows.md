@@ -14,7 +14,7 @@ Workflows live in two places:
 | `.tome/workflows/` in a project | that project |
 | `~/.tome/workflows/` | every project |
 
-If a project workflow and a global one share a name, the project one wins. That makes copying a workflow to a new project a matter of copying one file. `tome workflow new <name>` writes a starter file, and `tome validate` checks your files and reports problems with line numbers.
+If a project workflow and a global one share a name, the project one wins. That makes copying a workflow to a new project a matter of copying one file. `tome workflow new <name>` writes a starter file, `tome workflow ls` lists the ones you can run, and `tome validate` checks your files and reports problems with line numbers.
 
 ## Step
 

@@ -39,6 +39,13 @@ pub fn harness_for(fm: &Frontmatter, project: Option<&Path>) -> CliResult<Harnes
     )
 }
 
+/// The model a workflow's orchestrator runs: `defaults.orchestrator_model`,
+/// else `defaults.model`, else the harness's own default.
+pub fn model_for(fm: &Frontmatter) -> Option<&str> {
+    let d = &fm.defaults;
+    d.orchestrator_model.as_deref().or(d.model.as_deref())
+}
+
 /// Where a run's orchestrator goes.
 pub fn placement(
     fm: &Frontmatter,
@@ -155,6 +162,7 @@ pub fn run_flags(run: &Run) -> CliResult<Option<Settings>> {
 /// A run's orchestrator, ready to launch.
 pub struct Plan {
     pub harness: Harness,
+    pub model: Option<String>,
     pub backend: Kind,
     pub placement: Placement,
     pub session: String,
@@ -194,8 +202,12 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
     let cwd = run_cwd(run);
     let project = run_project(run);
     let project = project.as_deref();
+    let harness = harness_for(&wf.frontmatter, project)?;
+    let model = model_for(&wf.frontmatter).map(str::to_string);
+    harness.check_model(model.as_deref())?;
     Ok(Plan {
-        harness: harness_for(&wf.frontmatter, project)?,
+        harness,
+        model,
         backend: Kind::choose(wf.frontmatter.defaults.backend.as_deref(), project)?,
         placement: placement(&wf.frontmatter, run_flags(run)?.as_ref(), project)?,
         session: session::run_session_name(run.id, &run.workflow_name, ROLE),
@@ -266,6 +278,7 @@ pub fn launch(
         run_id: run.id,
         session: &plan.session,
         cwd: &plan.cwd.to_string_lossy(),
+        model: plan.model.as_deref(),
     });
     // An orchestrator relaunched after a restart may open from what's left.
     let mut placement = plan.placement.clone();

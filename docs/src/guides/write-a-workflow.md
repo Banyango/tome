@@ -65,6 +65,8 @@ Workflow-wide settings.
 | `backend` | `tmux` or `cmux`. Falls back to `TOME_BACKEND`, then config, then cmux when inside cmux and tmux otherwise. |
 | `harness` | The agent CLI for workers. Defaults to `claude`. Defined in config; see [Sessions and backends](sessions.md). |
 | `orchestrator_harness` | The agent CLI for the orchestrator. Defaults to `harness`. |
+| `model` | The model workers run, such as `opus`. Passed to the harness; unset uses the harness's own default. Override for one worker with `tome worker spawn --model`. |
+| `orchestrator_model` | The model the orchestrator runs. Defaults to `model`. |
 | `layout` | Where sessions open. A name (`tab`, `split`, `workspace`) or a block of settings; see [Sessions and backends](sessions.md). |
 | `start_timeout` | How long the orchestrator and each agent worker have to make their first `tome` call. A duration like `90s` or `2m`, or `off`. The default is 60s. If it passes, tome nudges the agent once and fails it after a second wait. |
 | `timeout` | A duration, like `30m`, or a number of seconds. tome accepts and records it, but doesn't enforce a run timeout today. |

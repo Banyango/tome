@@ -57,7 +57,7 @@ enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
-    /// Create and remove workflows.
+    /// Create, list and remove workflows.
     Workflow {
         #[command(subcommand)]
         command: WorkflowCommand,
@@ -203,6 +203,12 @@ enum WorkflowCommand {
         #[arg(long)]
         force: bool,
     },
+    /// List the workflows `tome run` can see, project ones first.
+    Ls {
+        /// Only the ones in ~/.tome/workflows.
+        #[arg(long)]
+        global: bool,
+    },
     /// Delete a workflow file (no prompt; runs and logs are kept).
     Rm {
         /// Workflow name, or path to a `.md` file in a workflows directory.
@@ -280,6 +286,9 @@ enum WorkerCommand {
         /// Harness for an agent worker (default: the workflow's, else claude).
         #[arg(long)]
         harness: Option<String>,
+        /// Model for an agent worker (default: the workflow's `defaults.model`).
+        #[arg(long)]
+        model: Option<String>,
         /// Keep the worker's session open after it finishes.
         #[arg(long)]
         keep_open: bool,
@@ -671,6 +680,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 global,
                 force,
             ),
+            WorkflowCommand::Ls { global } => scaffold::ls(&current_dir()?, global),
             WorkflowCommand::Rm {
                 workflow,
                 global,
@@ -726,6 +736,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 base,
                 branch,
                 harness,
+                model,
                 keep_open,
                 placement,
                 prompt,
@@ -741,6 +752,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 base,
                 branch,
                 harness,
+                model,
                 keep_open,
                 prompt,
                 prompt_file,

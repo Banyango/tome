@@ -40,7 +40,7 @@ output (`TOME_OUTPUT=json`), so none of these need a run id.
 You can hand parts of the work to workers, each in its own session. Only you
 can spawn workers; there is no limit on how many run at once.
 
-- `tome worker spawn [--name <n>] [--group <g>] [--worktree [--base <ref>]] [--harness <h>] [--keep-open] --prompt "<task>"`
+- `tome worker spawn [--name <n>] [--group <g>] [--worktree [--base <ref>]] [--harness <h>] [--model <m>] [--keep-open] --prompt "<task>"`
   (or `--prompt-file <path>`): start an agent worker with a task. It reports
   back with a summary.
 - `tome worker spawn [--name <n>] [--group <g>] [--worktree] -- <command> [args...]`:

@@ -73,9 +73,21 @@ suggested answer for each, and use your question tool if you have one.
    custom pattern needs something unique in it, such as the task id, or
    `{{run.id}}` when the same item can come round again.
 
+9. **Which model should the agents use?** Ask, and don't pick for them: the
+   choice trades cost and speed against quality. Ask about the workers and
+   the orchestrator separately, since the orchestrator mostly coordinates and
+   often does fine on a cheaper model while workers doing the hard work may
+   want a stronger one. Suggest the model this session is running, or say
+   that leaving it out uses the harness's own default. Set the answers with
+   `defaults.model` (workers) and `defaults.orchestrator_model`, and a single
+   worker can differ with `tome worker spawn --model <m>`. Use the names the
+   harness understands (`opus`, `sonnet`, `haiku` for `claude`). A custom
+   harness only takes a model if it has `model_flag` or `{{model}}` (see the
+   docs), so `tome validate` and `tome run` refuse one that can't.
+
 Then say back, in two or three lines, what the workflow will do (for example,
 "one agent at a time, one branch per task, merged when tests pass, stops when
-no task is ready, branches named `task/<id>-<slug>`") before you write it. For the first run, suggest a small
+no task is ready, branches named `task/<id>-<slug>`, sonnet for the workers") before you write it. For the first run, suggest a small
 one, such as a single item, so the user sees it work before it does
 everything.
 
@@ -97,6 +109,7 @@ Workflows live in `.tome/workflows/<name>.md` (one project) or
 `~/.tome/workflows/<name>.md` (every project).
 
 ```sh
+tome workflow ls                # what can `tome run` see? (--global for ~/.tome only)
 tome workflow new my-workflow   # writes a starter file
 tome validate my-workflow       # always run after editing; exit code 2 on errors
 ```
@@ -135,7 +148,7 @@ Rules that matter:
 - `tome validate` rejects unknown frontmatter keys and `{{placeholders}}` that
   name no param.
 - Other frontmatter: `defaults` (`backend`, `harness`, `orchestrator_harness`,
-  `layout`, `start_timeout`), `concurrency` with `on_conflict: queue|reject`,
+  `model`, `orchestrator_model`, `layout`, `start_timeout`), `concurrency` with `on_conflict: queue|reject`,
   and `orchestrator` (extra instructions for the orchestrator only).
 
 ## Queues

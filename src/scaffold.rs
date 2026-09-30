@@ -1,18 +1,73 @@
-//! `tome workflow new <name>`: write a starter workflow file, and
-//! `tome workflow rm <name|path>`: delete one.
+//! `tome workflow new <name>`: write a starter workflow file,
+//! `tome workflow rm <name|path>`: delete one, and
+//! `tome workflow ls`: list the ones `tome run` can see.
 //!
-//! Both run locally (they only touch a file), though `rm` first asks the daemon
+//! All run locally (they only touch a file), though `rm` first asks the daemon
 //! whether the file has live runs unless given `--force`. The file lands where `tome run <name>` will find it: the nearest project
 //! `.tome/workflows` (created in the working directory if there is none), or
 //! `~/.tome/workflows` with `--global`.
 
-use crate::output::{CliError, CliResult, ErrorKind, Report};
+use crate::output::{table, CliError, CliResult, ErrorKind, Report};
 use crate::paths;
 use crate::rpc;
 use crate::workflow::{self, Entry, Library, Scope};
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// `tome workflow ls`: every workflow visible from `cwd`, project ones
+/// first. A global workflow a project one shadows is marked as such.
+pub fn ls(cwd: &Path, global_only: bool) -> CliResult<Report> {
+    let library = Library::discover(cwd);
+    let entries: Vec<Entry> = library
+        .entries()
+        .into_iter()
+        .filter(|e| !global_only || e.scope == Scope::Global)
+        .collect();
+    let shadowed = |e: &Entry| {
+        e.scope == Scope::Global
+            && e.name().is_some_and(|n| {
+                entries
+                    .iter()
+                    .any(|o| o.scope == Scope::Project && o.name() == Some(n))
+            })
+    };
+    let mut ordered: Vec<&Entry> = entries.iter().collect();
+    ordered.sort_by_key(|e| e.scope == Scope::Global);
+
+    let mut rows = Vec::new();
+    let mut data = Vec::new();
+    for e in ordered {
+        let (description, valid) = match &e.result {
+            Ok(wf) => (wf.frontmatter.description.clone().unwrap_or_default(), true),
+            Err(_) => ("invalid; run `tome validate`".to_string(), false),
+        };
+        let name = e.name().unwrap_or("<unnamed>").to_string();
+        let scope = match e.scope {
+            Scope::Project => "project",
+            Scope::Global if shadowed(e) => "global (shadowed)",
+            Scope::Global => "global",
+        };
+        data.push(json!({
+            "name": e.name(),
+            "scope": e.scope,
+            "description": description,
+            "path": e.path,
+            "valid": valid,
+            "shadowed": shadowed(e),
+        }));
+        rows.push(vec![name, scope.to_string(), description]);
+    }
+    let human = if rows.is_empty() {
+        match (&library.project_dir, global_only) {
+            (None, false) => "no workflows found (no .tome/workflows here; `tome workflow new <name>` creates one)".to_string(),
+            _ => "no workflows found".to_string(),
+        }
+    } else {
+        table(&["NAME", "SCOPE", "DESCRIPTION"], rows)
+    };
+    Ok(Report::new(json!({ "workflows": data }), human))
+}
 
 pub fn new(
     cwd: &Path,
@@ -323,6 +378,8 @@ params:
 #   backend: cmux               # where agents run: tmux or cmux (default: cmux inside cmux, else tmux)
 #   harness: claude             # agent CLI for the steps (see ~/.tome/config.yaml)
 #   orchestrator_harness: claude
+#   model: opus                 # model for the workers (default: the harness's own)
+#   orchestrator_model: opus    # model for the orchestrator (default: model)
 #   timeout: 30m
 # concurrency: 1                # max simultaneous runs of this workflow
 # on_conflict: queue            # (default) wait for a slot, or reject

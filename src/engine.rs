@@ -145,7 +145,17 @@ impl Engine {
         // An unknown harness, backend, placement value or preset is a bad
         // request: refuse before recording a run.
         let project = opt_str(p, "project_path").map(std::path::Path::new);
-        orchestrator::harness_for(fm, project)?;
+        orchestrator::harness_for(fm, project)?.check_model(orchestrator::model_for(fm))?;
+        // Workers use `defaults.harness`; `--harness` at spawn time is
+        // checked when it happens.
+        if let Some(model) = fm.defaults.model.as_deref() {
+            let name = fm
+                .defaults
+                .harness
+                .as_deref()
+                .unwrap_or(crate::harness::DEFAULT);
+            crate::harness::resolve(name, project)?.check_model(Some(model))?;
+        }
         let kind = session::Kind::choose(fm.defaults.backend.as_deref(), project)?;
         let flags = p
             .get("placement")

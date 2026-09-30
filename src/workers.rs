@@ -130,6 +130,7 @@ fn repo_dir(run: &Run, p: &Value) -> PathBuf {
 enum Task {
     Agent {
         harness: harness::Harness,
+        model: Option<String>,
         prompt: String,
     },
     Command(Vec<String>),
@@ -169,7 +170,7 @@ impl Engine {
         }
     }
 
-    /// `worker.spawn {run_id, name?, group?, worktree?, base?, harness?,
+    /// `worker.spawn {run_id, name?, group?, worktree?, base?, harness?, model?,
     /// keep_open?, prompt? | command?, placement?, caller?, cwd?}`
     fn spawn_worker(&self, run_id: i64, p: &Value) -> CliResult<Value> {
         if let Some(me) = caller(p) {
@@ -215,16 +216,24 @@ impl Engine {
                 let name = opt_str(p, "harness")
                     .or(wf.frontmatter.defaults.harness.as_deref())
                     .unwrap_or(harness::DEFAULT);
+                let harness = harness::resolve(name, orchestrator::run_project(&run).as_deref())?;
+                let model = opt_str(p, "model")
+                    .or(wf.frontmatter.defaults.model.as_deref())
+                    .map(str::to_string);
+                harness.check_model(model.as_deref())?;
                 Task::Agent {
-                    harness: harness::resolve(name, orchestrator::run_project(&run).as_deref())?,
+                    harness,
+                    model,
                     prompt: prompt.to_string(),
                 }
             }
             (None, Some(cmd)) => {
-                if opt_str(p, "harness").is_some() {
-                    return Err(CliError::invalid(
-                        "--harness only applies to agent workers (--prompt)",
-                    ));
+                for flag in ["harness", "model"] {
+                    if opt_str(p, flag).is_some() {
+                        return Err(CliError::invalid(format!(
+                            "--{flag} only applies to agent workers (--prompt)"
+                        )));
+                    }
                 }
                 Task::Command(cmd)
             }
@@ -431,7 +440,11 @@ impl Engine {
         let _ = fs::remove_file(&exit);
         let session_name = session::run_session_name(run.id, &run.workflow_name, name);
         let (argv, harness) = match task {
-            Task::Agent { harness, prompt } => {
+            Task::Agent {
+                harness,
+                model,
+                prompt,
+            } => {
                 let full = format!("{}\n\n{}\n", PROMPT.trim_end(), prompt.trim());
                 let prompt_file = prompt_file(run.id, name);
                 fs::write(&prompt_file, &full)?;
@@ -441,6 +454,7 @@ impl Engine {
                     run_id: run.id,
                     session: &session_name,
                     cwd: &cwd.to_string_lossy(),
+                    model: model.as_deref(),
                 });
                 (argv, Some(harness.name.clone()))
             }

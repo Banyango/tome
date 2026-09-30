@@ -1116,6 +1116,8 @@ pub fn resolve_in(
     let direction = pick!(direction, "split.direction");
     let size = pick!(size, "split.size");
     let from = pick!(from, "from");
+    // Nothing chose a worker's place: it splits below the run's last pane.
+    let split_by_default = worker && layout.is_none() && workspace.is_none();
 
     // `layout: workspace` is `workspace: own`, unless a higher level chose
     // the workspace itself.
@@ -1130,7 +1132,16 @@ pub fn resolve_in(
             (Layout::Workspace, Workspace::Own)
         }
         (layout, workspace) => {
-            let layout = layout.map(|(_, l)| l).unwrap_or(Layout::Tab);
+            // Unless configured, the orchestrator gets a tab and its workers
+            // split off below it, so a run reads as one tab.
+            // A worker sent to another workspace has no orchestrator there to
+            // split from, so it keeps a tab.
+            let default_layout = if split_by_default {
+                Layout::Split
+            } else {
+                Layout::Tab
+            };
+            let layout = layout.map(|(_, l)| l).unwrap_or(default_layout);
             let workspace = workspace.map(|(_, w)| w).unwrap_or(Workspace::Project);
             (
                 if workspace == Workspace::Own {
@@ -1142,7 +1153,10 @@ pub fn resolve_in(
             )
         }
     };
-    for key in ["layout", "workspace", "split.direction"] {
+    for key in ["layout", "workspace", "split.direction"]
+        .into_iter()
+        .chain(split_by_default.then_some("from"))
+    {
         sources
             .entry(key.to_string())
             .or_insert_with(|| "the default".into());
@@ -1150,9 +1164,15 @@ pub fn resolve_in(
     Ok(Placement {
         layout,
         workspace,
-        direction: direction.map(|(_, d)| d).unwrap_or(Direction::Right),
+        direction: direction.map(|(_, d)| d).unwrap_or(if split_by_default {
+            Direction::Down
+        } else {
+            Direction::Right
+        }),
         size: size.map(|(_, s)| s),
-        from: from.map(|(_, f)| f),
+        from: from
+            .map(|(_, f)| f)
+            .or(split_by_default.then_some(From::Last)),
         sources,
         caller: None,
         warnings: Vec::new(),

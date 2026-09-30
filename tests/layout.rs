@@ -228,9 +228,13 @@ fn status(env: &Env, run: i64) -> Value {
 }
 
 #[test]
-fn tab_is_the_default_and_puts_sessions_in_windows_of_the_project_session() {
+fn tab_puts_sessions_in_windows_of_the_project_session() {
     let env = env();
-    write_wf(&env, "build", "");
+    write_wf(
+        &env,
+        "build",
+        "defaults:\n  layout:\n    workers:\n      layout: tab\n",
+    );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     let orch = &sessions(&env, 1)[0];
@@ -356,7 +360,11 @@ fn split_puts_each_session_in_its_own_pane() {
 #[test]
 fn a_restart_kills_the_sessions_but_leaves_the_tome_session() {
     let env = env();
-    write_wf(&env, "build", "");
+    write_wf(
+        &env,
+        "build",
+        "defaults:\n  layout:\n    workers:\n      layout: tab\n",
+    );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     spawn(&env, 1, "w1", &["sleep", "30"]);
@@ -883,7 +891,11 @@ fn session_named(env: &Env, name: &str) -> Value {
 fn session_move_moves_a_live_worker_without_restarting_it() {
     let env = env();
     env.set_config(common::IDLE_CONFIG);
-    write_wf(&env, "build", "");
+    write_wf(
+        &env,
+        "build",
+        "defaults:\n  layout:\n    workers:\n      layout: tab\n",
+    );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     let pidfile = env.home().join("w1.pid");
@@ -1105,7 +1117,7 @@ fn from_caller_is_for_the_orchestrator_and_falls_back_off_cmux() {
 
     spawn(&env, 1, "w1", &["sleep", "600"]);
     let w = session_named(&env, "tome-1-build-w1");
-    assert!(w["placement"]["from"].is_null(), "{w}");
+    assert_ne!(w["placement"]["from"], "caller", "{w}");
 
     // A worker can't be given it.
     let out = env
@@ -1170,4 +1182,37 @@ fn from_caller_is_for_the_orchestrator_and_falls_back_off_cmux() {
         shown["run"]["placement"]["caller"]["unknown"], "`tome run` wasn't run from a cmux pane",
         "{shown}"
     );
+}
+
+#[test]
+fn by_default_the_orchestrator_gets_a_tab_and_workers_split_below() {
+    let env = env();
+    write_wf(&env, "build", "");
+    env.start_daemon();
+    env.json(&["run", "build", "--detach"]);
+    spawn(&env, 1, "w1", &["sleep", "600"]);
+    spawn(&env, 1, "w2", &["sleep", "600"]);
+    let all = sessions(&env, 1);
+    let find = |n: &str| all.iter().find(|s| s["name"] == n).unwrap().clone();
+    let (o, w1, w2) = (
+        find("tome-1-build"),
+        find("tome-1-build-w1"),
+        find("tome-1-build-w2"),
+    );
+    assert_eq!(o["layout"], "tab", "{o}");
+    for w in [&w1, &w2] {
+        let p = &w["placement"];
+        assert_eq!(
+            (
+                w["layout"].as_str(),
+                p["direction"].as_str(),
+                p["from"].as_str()
+            ),
+            (Some("split"), Some("down"), Some("last")),
+            "{w}"
+        );
+    }
+    // One window for the run: the orchestrator's, holding all three panes.
+    let in_window = |w: &Value| w["handle"] == o["handle"];
+    assert!(in_window(&w1) && in_window(&w2));
 }

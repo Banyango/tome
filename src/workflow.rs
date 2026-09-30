@@ -39,6 +39,8 @@ pub const DEFAULTS_KEYS: &[&str] = &[
     "layout",
     "harness",
     "orchestrator_harness",
+    "model",
+    "orchestrator_model",
     "timeout",
     "on_failure",
     "start_timeout",
@@ -145,6 +147,12 @@ pub struct Defaults {
     pub harness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orchestrator_harness: Option<String>,
+    /// The model workers run, passed through the harness.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The model the orchestrator runs; defaults to `model`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orchestrator_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1148,6 +1156,8 @@ fn parse_defaults(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> 
             }
             "harness" => d.harness = as_string(errors),
             "orchestrator_harness" => d.orchestrator_harness = as_string(errors),
+            "model" => d.model = as_string(errors),
+            "orchestrator_model" => d.orchestrator_model = as_string(errors),
             "on_failure" => d.on_failure = as_string(errors),
             "timeout" => {
                 let parsed = match v {
@@ -1859,6 +1869,24 @@ Retry up to {{params.retries}} times on {{params.ticket}}.
         assert!(e[0].message.contains("unknown frontmatter key `bogus`"));
         assert_eq!(e[1].line, 6);
         assert!(e[1].message.contains("defaults.flavour"));
+    }
+
+    #[test]
+    fn defaults_take_a_model() {
+        let wf =
+            p("---\nname: x\ndefaults:\n  model: opus\n  orchestrator_model: haiku\n---\nbody\n")
+                .unwrap();
+        assert_eq!(wf.frontmatter.defaults.model.as_deref(), Some("opus"));
+        assert_eq!(
+            wf.frontmatter.defaults.orchestrator_model.as_deref(),
+            Some("haiku")
+        );
+        let e = errs("---\nname: x\ndefaults:\n  model: [a]\n---\n");
+        assert!(
+            e[0].message.contains("`defaults.model` must be a string"),
+            "{}",
+            e[0].message
+        );
     }
 
     #[test]

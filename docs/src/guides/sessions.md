@@ -42,6 +42,25 @@ A list is an argv: one element per argument, with no shell involved. A string is
 | `{{run_id}}` | the run's id |
 | `{{session}}` | the session's name |
 | `{{cwd}}` | the directory the agent starts in |
+| `{{model}}` | the workflow's model for this agent, or empty |
+
+### Models
+
+A workflow picks a model with `defaults.model` (workers) and `defaults.orchestrator_model` (the orchestrator, defaulting to `model`). tome passes it to the harness in one of two ways:
+
+- `model_flag`, for a harness whose command is a list: tome inserts `<flag> <model>` right after the program. The built-in `claude` harness has `model_flag: --model`.
+- `{{model}}`, a variable you put in the command wherever the agent wants the model. It is empty when no model is set.
+
+```yaml
+harnesses:
+  codex:
+    command: ["codex", "{{prompt}}"]
+    model_flag: --model
+  aider:
+    command: aider --message-file {{prompt_file}} --model {{model}}
+```
+
+A harness that does neither refuses a model, and `tome run` and `tome worker spawn` say so. If you redefine `claude` in config, add `model_flag: --model` again, or the model can't reach it. `tome worker spawn --model <m>` overrides the workflow's model for one worker.
 
 A project harness replaces a global one of the same name. Pick a harness in a workflow with `defaults.harness` (workers) and `defaults.orchestrator_harness` (the orchestrator), or per worker with `tome worker spawn --harness`.
 
@@ -99,7 +118,7 @@ Each setting resolves on its own, from the most specific source down. A source t
 | 3 | the `workers` block | |
 | 4 | `tome run` flags | |
 
-After that, both use `defaults.layout` and its preset, then `TOME_LAYOUT`, the project's `.tome/config.yaml`, the global config, and the built-in default (a tab in the project workspace).
+After that, both use `defaults.layout` and its preset, then `TOME_LAYOUT`, the project's `.tome/config.yaml`, the global config, and the built-in default. By default the orchestrator gets a tab in the project workspace, and each worker splits below the run's last pane (`split`, `direction: down`, `from: last`), so a run reads as one tab. A worker that sets a `workspace` but no layout keeps a tab, since the orchestrator isn't there to split from.
 
 `from: caller` is for the orchestrator only. A worker's rule can't set it, and `tome worker spawn` refuses it.
 
