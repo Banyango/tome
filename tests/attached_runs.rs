@@ -9,7 +9,7 @@ use std::process::{Child, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-const WF: &str = "---\nname: build\n---\n## Build\nBuild it.\n";
+const WF: &str = "---\nname: build\nmode: orchestrated\n---\n## Build\nBuild it.\n";
 
 fn write_wf(env: &Env, name: &str, src: &str) {
     let dir = env.project().join(".tome/workflows");
@@ -149,7 +149,10 @@ fn failed_run_exits_1_with_human_lines() {
     let run = Attached::spawn(&env, &["run", "build"]);
 
     let first = run.next_line();
-    assert!(first.ends_with("run 1 running (build)"), "{first}");
+    assert!(
+        first.ends_with("run 1 running (build, orchestrator)"),
+        "{first}"
+    );
     assert!(first.starts_with('['), "{first}");
     env.json(&["step", "start", "Build", "--run", "1"]);
     assert!(run.next_line().ends_with("] Build: started"));
@@ -231,7 +234,11 @@ fn cancel_from_elsewhere_ends_the_attached_run() {
 fn invalid_workflow_exits_2_without_streaming() {
     let env = Env::new();
     env.start_daemon();
-    write_wf(&env, "bad", "---\nname: bad\n---\n{{params.nope}}\n");
+    write_wf(
+        &env,
+        "bad",
+        "---\nname: bad\nmode: orchestrated\n---\n{{params.nope}}\n",
+    );
     let run = Attached::spawn(&env, &["--json", "run", "bad"]);
     let err = run.next_event();
     assert_eq!(err["error"]["kind"], "invalid_workflow");

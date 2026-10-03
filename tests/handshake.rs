@@ -66,7 +66,7 @@ fn a_ready_orchestrator_is_left_alone() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\ndefaults:\n  harness: stub\n---\n## Build\nGo.\n",
+        "---\nname: build\nmode: orchestrated\ndefaults:\n  harness: stub\n---\n## Build\nGo.\n",
     );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
@@ -102,7 +102,11 @@ fn a_ready_orchestrator_is_left_alone() {
 #[test]
 fn a_silent_orchestrator_is_nudged_then_failed() {
     let env = env_with_timeout("500ms");
-    write_wf(&env, "build", "---\nname: build\n---\n## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "---\nname: build\nmode: orchestrated\n---\n## Build\nGo.\n",
+    );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     assert!(env.has_session("tome-1-build"));
@@ -172,7 +176,7 @@ fn a_nudged_orchestrator_that_answers_carries_on() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\ndefaults:\n  harness: late\n---\n## Build\nGo.\n",
+        "---\nname: build\nmode: orchestrated\ndefaults:\n  harness: late\n---\n## Build\nGo.\n",
     );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
@@ -206,7 +210,7 @@ fn a_queued_run_has_no_timer_until_it_starts() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\nconcurrency: 1\ndefaults:\n  harness: stub\n---\n## Build\nGo.\n",
+        "---\nname: build\nmode: orchestrated\nconcurrency: 1\ndefaults:\n  harness: stub\n---\n## Build\nGo.\n",
     );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
@@ -226,7 +230,11 @@ fn a_queued_run_has_no_timer_until_it_starts() {
 #[test]
 fn the_check_can_be_off() {
     let env = env_with_timeout("off");
-    write_wf(&env, "build", "---\nname: build\n---\n## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "---\nname: build\nmode: orchestrated\n---\n## Build\nGo.\n",
+    );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -247,7 +255,7 @@ fn a_workflow_can_turn_the_check_off() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\ndefaults:\n  start_timeout: off\n---\n## Build\nGo.\n",
+        "---\nname: build\nmode: orchestrated\ndefaults:\n  start_timeout: off\n---\n## Build\nGo.\n",
     );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
@@ -262,7 +270,7 @@ fn a_workflow_sets_its_own_timeout() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\ndefaults:\n  start_timeout: 1s\n---\n## Build\nGo.\n",
+        "---\nname: build\nmode: orchestrated\ndefaults:\n  start_timeout: 1s\n---\n## Build\nGo.\n",
     );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
@@ -279,7 +287,7 @@ fn the_env_var_wins_over_the_workflow() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\ndefaults:\n  start_timeout: 1s\n---\n## Build\nGo.\n",
+        "---\nname: build\nmode: orchestrated\ndefaults:\n  start_timeout: 1s\n---\n## Build\nGo.\n",
     );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
@@ -293,7 +301,7 @@ fn a_bad_start_timeout_is_invalid() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\ndefaults:\n  start_timeout: soon\n---\n## Build\nGo.\n",
+        "---\nname: build\nmode: orchestrated\ndefaults:\n  start_timeout: soon\n---\n## Build\nGo.\n",
     );
     let (code, v) = env.json(&["validate"]);
     assert_eq!(code, 2, "{v}");
@@ -337,7 +345,11 @@ fn worker(env: &Env, run: &str, name: &str) -> Value {
 #[test]
 fn a_silent_agent_worker_is_nudged_then_failed() {
     let env = env_with_timeout("700ms");
-    write_wf(&env, "build", "---\nname: build\n---\n## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "---\nname: build\nmode: orchestrated\n---\n## Build\nGo.\n",
+    );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     // The orchestrator's call counts as its start.
@@ -417,7 +429,11 @@ fn a_ready_agent_worker_is_left_alone_and_commands_are_not_checked() {
         "painter",
         "grep -q 'run `tome ready`' \"$1\" || exit 3\ntome ready > \"$TOME_HOME/ready.json\"\nexec sleep 600\n",
     );
-    write_wf(&env, "build", "---\nname: build\n---\n## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "---\nname: build\nmode: orchestrated\n---\n## Build\nGo.\n",
+    );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     as_orchestrator(

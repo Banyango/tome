@@ -18,15 +18,24 @@ If a project workflow and a global one share a name, the project one wins. That 
 
 ## Step
 
-A **step** is a named unit of work: a `## Heading` in the workflow body, written in plain English. Steps are not a fixed script. The orchestrator decides the order, and it can branch, loop or retry as the text says.
+A **step** is a named unit of work: a `## Heading` in the workflow body, written in plain English. Steps are not a fixed script. The run's agent decides the order, and it can branch, loop or retry as the text says.
 
-The orchestrator reports each step to tome with `tome step start "<name>"`, then `tome step done` or `tome step fail`. That is how a step's status and history end up in the run's record.
+The run's agent reports each step to tome with `tome step start "<name>"`, then `tome step done` or `tome step fail`. That is how a step's status and history end up in the run's record.
 
-## Orchestrator
+## Mode: one agent or an orchestrator
 
-The **orchestrator** is the agent that carries out a run. tome starts it in its own visible session, gives it a built-in prompt (the tome commands it may use and its duties), and gives it the workflow body. The orchestrator can spawn [workers](primitives.md#worker), report steps and end the run.
+Each run is carried out by one main agent. tome starts it in its own visible session, gives it a built-in prompt (the tome commands it may use and its duties), and gives it the workflow body. The frontmatter's `mode` says which kind of agent that is:
 
-If the orchestrator exits without finishing, the run fails with the reason `orchestrator_exited`.
+| `mode` | The run's agent | Can it delegate? |
+| --- | --- | --- |
+| `single` (the default) | one **agent** (session role `agent`) that does the whole workflow itself | no: `tome worker`, `tome group` and `tome worktree create` are refused |
+| `orchestrated` | an **orchestrator** that coordinates | yes: it spawns [workers](primitives.md#worker), groups and worktrees |
+
+Either way the agent reports steps and must end the run with `tome run finish`. Both can use queues, `tome publish` and `tome events`. A single agent runs `defaults.harness` and `defaults.model`; an orchestrator runs `defaults.orchestrator_harness` and `defaults.orchestrator_model`, which fall back to those.
+
+Use `single` unless the workflow fans out to workers. Set `mode: orchestrated` when it does. `tome validate` warns when a single workflow's body talks about workers, worktrees or fanning out, or when it sets keys only an orchestrator uses.
+
+If the agent exits without finishing, the run fails with the reason `agent_exited` (`orchestrator_exited` for an orchestrator).
 
 ## Run
 
@@ -35,9 +44,9 @@ A **run** is one execution of a workflow. Start one with `tome run <workflow>`, 
 | Status | Meaning |
 | --- | --- |
 | `queued` | waiting for a free slot |
-| `running` | the orchestrator is working |
-| `succeeded` | the orchestrator finished it successfully |
-| `failed` | the orchestrator failed it, or it stopped without finishing |
+| `running` | the run's agent is working |
+| `succeeded` | the agent finished it successfully |
+| `failed` | the agent failed it, or it stopped without finishing |
 | `cancelled` | someone cancelled it |
 
 `concurrency` in the frontmatter caps how many runs of a workflow go at once. When it is full, `on_conflict: queue` (the default) makes a new run wait, and `on_conflict: reject` refuses it.

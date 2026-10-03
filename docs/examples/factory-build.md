@@ -1,6 +1,7 @@
 ---
 name: factory-build
 description: Build a requested change, loop until CI and the reviewers pass, then ship it or ask an engineer.
+mode: orchestrated
 params:
   base: {type: string, default: main, description: "Branch the change starts from"}
   max_attempts: {type: int, default: 3, description: "Fix rounds before giving up"}

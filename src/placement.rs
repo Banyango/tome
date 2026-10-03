@@ -7,20 +7,20 @@
 //!
 //! Each setting resolves on its own, from the highest level down:
 //!
-//! | for workers                  | for the orchestrator          |
-//! |------------------------------|-------------------------------|
-//! | `tome worker spawn` flags    | `tome run` flags              |
-//! | the first matching rule      | the `orchestrator` role block |
-//! | the `workers` role block     |                               |
-//! | `tome run` flags             |                               |
+//! | for workers                  | for the orchestrator          | for a single run's agent |
+//! |------------------------------|-------------------------------|--------------------------|
+//! | `tome worker spawn` flags    | `tome run` flags              | `tome run` flags         |
+//! | the first matching rule      | the `orchestrator` role block | the `agent` role block   |
+//! | the `workers` role block     |                               |                          |
+//! | `tome run` flags             |                               |                          |
 //!
-//! then, for both: `defaults.layout`, its preset, `TOME_LAYOUT`, the
+//! then, for all: `defaults.layout`, its preset, `TOME_LAYOUT`, the
 //! project's `.tome/config.yaml`, the global `~/.tome/config.yaml` and
 //! the built-in default (`tab` in the project workspace). A level's own
 //! settings come before the preset it's built on.
 //!
 //! `from: caller` (the cmux pane that ran `tome run`) is for the
-//! orchestrator only: a worker's own levels can't set it, and workers skip
+//! orchestrator or agent only: a worker's own levels can't set it, and workers skip
 //! it at the levels both roles share.
 
 use crate::config::{self, Config};
@@ -493,6 +493,8 @@ pub struct Spec {
     #[serde(flatten)]
     pub base: Settings,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<Settings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<Settings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workers: Option<Settings>,
@@ -505,6 +507,7 @@ impl Spec {
     pub fn presets(&self) -> Vec<&str> {
         let mut out: Vec<&str> = [
             Some(&self.base),
+            self.agent.as_ref(),
             self.orchestrator.as_ref(),
             self.workers.as_ref(),
         ]
@@ -519,15 +522,15 @@ impl Spec {
 }
 
 /// Parse a workflow's `defaults.layout`: a layout name, or a block with
-/// settings, an `orchestrator` role block and `workers` (a list of rules, or
-/// a role block with the rules under `rules`).
+/// settings, `agent` and `orchestrator` role blocks and `workers` (a list of
+/// rules, or a role block with the rules under `rules`).
 pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
     const AT: &[&str] = &["defaults", "layout"];
     let (base, map) = parse_value(
         v,
         AT,
         "`defaults.layout`",
-        &["orchestrator", "workers"],
+        &["agent", "orchestrator", "workers"],
         problems,
     )?;
     let mut spec = Spec {
@@ -535,24 +538,25 @@ pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
         ..Spec::default()
     };
     let Some(map) = map else { return Some(spec) };
-    if let Some(o) = map.get("orchestrator") {
-        let at = ["defaults", "layout", "orchestrator"];
-        match o {
-            Yaml::Mapping(m) => {
-                spec.orchestrator = Some(parse_settings(
-                    m,
+    for role in ["agent", "orchestrator"] {
+        let Some(o) = map.get(role) else { continue };
+        let at = ["defaults", "layout", role];
+        let what = format!("`defaults.layout.{role}`");
+        let block = match o {
+            Yaml::Mapping(m) => Some(parse_settings(m, &at, &what, &[], true, problems)),
+            Yaml::Null => None,
+            _ => {
+                problems.push(Problem::new(
                     &at,
-                    "`defaults.layout.orchestrator`",
-                    &[],
-                    true,
-                    problems,
-                ))
+                    format!("{what} must be a mapping of placement settings"),
+                ));
+                None
             }
-            Yaml::Null => {}
-            _ => problems.push(Problem::new(
-                &at,
-                "`defaults.layout.orchestrator` must be a mapping of placement settings",
-            )),
+        };
+        if role == "agent" {
+            spec.agent = block;
+        } else {
+            spec.orchestrator = block;
         }
     }
     if let Some(w) = map.get("workers") {
@@ -626,8 +630,8 @@ pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
     Some(spec)
 }
 
-/// `from: caller` in a worker's block: an error, since only the
-/// orchestrator opens next to the caller.
+/// `from: caller` in a worker's block: an error, since only a run's agent
+/// or orchestrator opens next to the caller.
 fn no_caller(s: &Settings, at: &[&str], what: &str, problems: &mut Vec<Problem>) {
     if s.from == Some(From::Caller) {
         let mut path = at.to_vec();
@@ -640,7 +644,7 @@ fn no_caller(s: &Settings, at: &[&str], what: &str, problems: &mut Vec<Problem>)
 }
 
 pub const CALLER_IS_FOR_THE_ORCHESTRATOR: &str =
-    "`from: caller` is for the orchestrator only; a worker can't open next to the caller";
+    "`from: caller` is for the run's agent or orchestrator only; a worker can't open next to the caller";
 
 // --- presets -------------------------------------------------------------
 
@@ -868,6 +872,8 @@ fn unknown_preset(name: &str, known: &BTreeMap<String, Preset>, source: &str) ->
 /// Whose placement is being resolved.
 #[derive(Debug, Clone, Copy)]
 pub enum Role<'a> {
+    /// A single-agent run's agent.
+    Agent,
     Orchestrator,
     Worker(&'a str),
 }
@@ -1002,6 +1008,14 @@ pub fn resolve_in(
     };
     let spec = inputs.spec;
     match inputs.role {
+        Role::Agent => {
+            own(&mut levels, "`tome run` flags".into(), inputs.flags);
+            own(
+                &mut levels,
+                "the `agent` block".into(),
+                spec.and_then(|s| s.agent.as_ref()),
+            );
+        }
         Role::Orchestrator => {
             own(&mut levels, "`tome run` flags".into(), inputs.flags);
             own(
@@ -1595,7 +1609,7 @@ mod tests {
             assert!(
                 problems.iter().any(|p| p
                     .message
-                    .contains("`from: caller` is for the orchestrator only")),
+                    .contains("`from: caller` is for the run's agent or orchestrator only")),
                 "{yaml}: {problems:?}"
             );
             assert_eq!(

@@ -9,7 +9,11 @@ fn crash_fails_in_progress_runs_and_keeps_worktrees() {
     let env = Env::new();
     env.start_daemon();
     let path = env.project().join("build.md");
-    std::fs::write(&path, "---\nname: build\n---\n## Build\ngo\n").unwrap();
+    std::fs::write(
+        &path,
+        "---\nname: build\nmode: orchestrated\n---\n## Build\ngo\n",
+    )
+    .unwrap();
     let live = env.rpc_ok("run.create", json!({ "workflow_path": path }))["id"]
         .as_i64()
         .unwrap();
@@ -75,7 +79,7 @@ fn queued_runs_survive_a_restart_and_start_once_idle() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("build.md"),
-        "---\nname: build\nconcurrency: 1\n---\n## Build\nrun {{run.id}}\n",
+        "---\nname: build\nmode: orchestrated\nconcurrency: 1\n---\n## Build\nrun {{run.id}}\n",
     )
     .unwrap();
     env.start_daemon();

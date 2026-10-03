@@ -1,6 +1,7 @@
 ---
 name: fan-out
 description: Review every file changed on a branch in parallel, then combine the reviews.
+mode: orchestrated
 params:
   base: {type: string, default: main, description: "Compare the current branch to this one"}
 concurrency: 1

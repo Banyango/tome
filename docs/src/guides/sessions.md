@@ -46,7 +46,7 @@ A list is an argv: one element per argument, with no shell involved. A string is
 
 ### Models
 
-A workflow picks a model with `defaults.model` (workers) and `defaults.orchestrator_model` (the orchestrator, defaulting to `model`). tome passes it to the harness in one of two ways:
+A workflow picks a model with `defaults.model` (a single run's agent, and workers) and `defaults.orchestrator_model` (the orchestrator, defaulting to `model`). tome passes it to the harness in one of two ways:
 
 - `model_flag`, for a harness whose command is a list: tome inserts `<flag> <model>` right after the program. The built-in `claude` harness has `model_flag: --model`.
 - `{{model}}`, a variable you put in the command wherever the agent wants the model. It is empty when no model is set.
@@ -62,7 +62,7 @@ harnesses:
 
 A harness that does neither refuses a model, and `tome run` and `tome worker spawn` say so. If you redefine `claude` in config, add `model_flag: --model` again, or the model can't reach it. `tome worker spawn --model <m>` overrides the workflow's model for one worker.
 
-A project harness replaces a global one of the same name. Pick a harness in a workflow with `defaults.harness` (workers) and `defaults.orchestrator_harness` (the orchestrator), or per worker with `tome worker spawn --harness`.
+A project harness replaces a global one of the same name. Pick a harness in a workflow with `defaults.harness` (a single run's agent, and workers) and `defaults.orchestrator_harness` (the orchestrator), or per worker with `tome worker spawn --harness`.
 
 Any agent works as long as it can run `tome` commands. An agent must call `tome ready` first and `tome worker done` or `fail` last, and tome tells it so in its prompt.
 
@@ -76,7 +76,7 @@ Any agent works as long as it can run `tome` commands. An agent must call `tome 
 | `workspace` | `project` (the default: one shared workspace for the project), `focused` (whatever is focused when the run starts), `own` (a new workspace for each session), or a name, which becomes the workspace `<project>-<name>` |
 | `split.direction` | `right`, `left`, `down` or `up` |
 | `split.size` | a percentage like `30%`, or a number of cells |
-| `from` | the pane a new tab or split opens from: `orchestrator`, `last`, `first`, or `caller` (cmux only, orchestrator only: the pane where you ran `tome run`) |
+| `from` | the pane a new tab or split opens from: `orchestrator`, `last`, `first`, or `caller` (cmux only, for the run's agent or orchestrator: the pane where you ran `tome run`) |
 | `preset` | the name of a preset to build on |
 
 `layout: workspace` still works and means `workspace: own`. In tmux, a workspace is a tmux session, and a tab is a window.
@@ -103,7 +103,7 @@ tome run my-workflow --preset wide
 tome worker spawn --name review-1 --layout split --direction down --size 30% --prompt "..."
 ```
 
-Or in the workflow. Under `defaults.layout`, `orchestrator` sets the orchestrator's placement, `workers` sets the workers', and a workers list matches each worker's name against a glob, first match wins:
+Or in the workflow. Under `defaults.layout`, `agent` sets a single run's agent's placement, `orchestrator` sets the orchestrator's, `workers` sets the workers', and a workers list matches each worker's name against a glob, first match wins:
 
 ```markdown title=.tome/workflows/review-layout.md
 {{#include ../../examples/layout.md}}
@@ -111,16 +111,16 @@ Or in the workflow. Under `defaults.layout`, `orchestrator` sets the orchestrato
 
 Each setting resolves on its own, from the most specific source down. A source that sets only `direction` leaves every other setting to the next one.
 
-| Order | For workers | For the orchestrator |
-| --- | --- | --- |
-| 1 | `tome worker spawn` flags | `tome run` flags |
-| 2 | the first matching rule under `workers` | the `orchestrator` block |
-| 3 | the `workers` block | |
-| 4 | `tome run` flags | |
+| Order | For workers | For the orchestrator | For a single run's agent |
+| --- | --- | --- | --- |
+| 1 | `tome worker spawn` flags | `tome run` flags | `tome run` flags |
+| 2 | the first matching rule under `workers` | the `orchestrator` block | the `agent` block |
+| 3 | the `workers` block | | |
+| 4 | `tome run` flags | | |
 
-After that, both use `defaults.layout` and its preset, then `TOME_LAYOUT`, the project's `.tome/config.yaml`, the global config, and the built-in default. By default the orchestrator gets a tab in the project workspace, and each worker splits below the run's last pane (`split`, `direction: down`, `from: last`), so a run reads as one tab. A worker that sets a `workspace` but no layout keeps a tab, since the orchestrator isn't there to split from.
+After that, all of them use `defaults.layout` and its preset, then `TOME_LAYOUT`, the project's `.tome/config.yaml`, the global config, and the built-in default. By default the orchestrator gets a tab in the project workspace, and each worker splits below the run's last pane (`split`, `direction: down`, `from: last`), so a run reads as one tab. A worker that sets a `workspace` but no layout keeps a tab, since the orchestrator isn't there to split from.
 
-`from: caller` is for the orchestrator only. A worker's rule can't set it, and `tome worker spawn` refuses it.
+`from: caller` is for the run's agent or orchestrator only. A worker's rule can't set it, and `tome worker spawn` refuses it.
 
 `tome runs show <id>` shows where each session ended up, and which source each setting came from, plus any warnings. Split sizes are best effort.
 
@@ -132,3 +132,5 @@ A live session can be moved without restarting it. Settings you don't give stay 
 tome session move 12/orchestrator --layout split --direction right
 tome session move 12/review-1 --workspace own
 ```
+
+A single-agent run's main session is `<run>/agent`, such as `12/agent`.

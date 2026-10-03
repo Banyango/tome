@@ -1,6 +1,7 @@
 ---
 name: factory-sevbot
 description: Investigate an outage, propose mitigations, and answer questions until it is resolved.
+mode: orchestrated
 triggers:
   - manual
   - on: alert.outage

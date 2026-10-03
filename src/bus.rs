@@ -641,6 +641,7 @@ mod tests {
             trigger: cause,
             workflow_snapshot: None,
             placement: None,
+            mode: crate::workflow::Mode::Orchestrated,
         };
         assert_eq!(depth_from(&run(None)), 0);
         assert_eq!(depth_from(&run(Some(json!({ "kind": "cron" })))), 0);

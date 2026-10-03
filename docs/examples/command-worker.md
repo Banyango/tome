@@ -1,6 +1,7 @@
 ---
 name: test-then-fix
 description: Run the tests as a command worker, and start an agent to fix any failures.
+mode: orchestrated
 ---
 Run the test suite and fix what breaks.
 

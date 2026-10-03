@@ -145,7 +145,8 @@ impl Engine {
         // An unknown harness, backend, placement value or preset is a bad
         // request: refuse before recording a run.
         let project = opt_str(p, "project_path").map(std::path::Path::new);
-        orchestrator::harness_for(fm, project)?.check_model(orchestrator::model_for(fm))?;
+        orchestrator::harness_for(fm, fm.mode, project)?
+            .check_model(orchestrator::model_for(fm, fm.mode))?;
         // Workers use `defaults.harness`; `--harness` at spawn time is
         // checked when it happens.
         if let Some(model) = fm.defaults.model.as_deref() {
@@ -165,7 +166,7 @@ impl Engine {
         if let Some(flags) = &flags {
             placement::check_flag_preset(flags, "`tome run` flags", project)?;
         }
-        orchestrator::placement(fm, flags.as_ref(), project)?;
+        orchestrator::placement(fm, fm.mode, flags.as_ref(), project)?;
         placement::check_presets(fm.defaults.layout.as_ref(), project)?;
         // What's focused now, for `workspace: focused`.
         let by_trigger = p.get("cause").is_some_and(Value::is_object);
@@ -303,7 +304,7 @@ impl Engine {
             self.expect_start(
                 agent.clone(),
                 plan.start_timeout,
-                orchestrator::prompt_file(run.id),
+                orchestrator::prompt_file(run.id, plan.role),
             );
             let (session, note) =
                 orchestrator::launch(&run, &plan, &self.recorded_sessions(run.id))?;
@@ -440,7 +441,7 @@ impl Engine {
         let orch = session::run_session_name(run.id, &run.workflow_name, orchestrator::ROLE);
         let name_of = |s: &store::Session| -> String {
             match s.role.as_str() {
-                orchestrator::ROLE => orchestrator::ROLE.to_string(),
+                role if orchestrator::is_main(role) => role.to_string(),
                 _ => s
                     .name
                     .strip_prefix(&format!("{orch}-"))
@@ -454,7 +455,15 @@ impl Engine {
             .cloned()
             .ok_or_else(|| {
                 let names: Vec<String> = recorded.iter().map(name_of).collect();
+                let main = orchestrator::role(run.mode);
                 let hint = match names.is_empty() {
+                    _ if orchestrator::is_main(name) => format!(
+                        "run {run_id} is a{} run; its main session is `{main}`",
+                        match run.mode {
+                            crate::workflow::Mode::Single => " single-agent",
+                            crate::workflow::Mode::Orchestrated => "n orchestrated",
+                        }
+                    ),
                     true => "it has no sessions".to_string(),
                     false => format!("its sessions: {}", names.join(", ")),
                 };
@@ -505,10 +514,10 @@ impl Engine {
                 s.role.as_str(),
                 p.get("cmux_caller").filter(|c| c["surface"].is_string()),
             ) {
-                (orchestrator::ROLE, None) => {
+                (role, None) if orchestrator::is_main(role) => {
                     Err("`tome session move` wasn't run from a cmux pane".to_string())
                 }
-                (orchestrator::ROLE, Some(c)) => {
+                (role, Some(c)) if orchestrator::is_main(role) => {
                     let kind = session::Kind::parse(&s.backend).unwrap_or(session::Kind::Tmux);
                     orchestrator::caller_anchor(kind, Some(c)).and_then(|found| {
                         match s.pane.as_deref() == Some(found.0.pane.as_str()) {
@@ -533,7 +542,9 @@ impl Engine {
             );
         }
         let title = match s.role.as_str() {
-            orchestrator::ROLE => format!("tome: {} #{}", run.workflow_name, run.id),
+            role if orchestrator::is_main(role) => {
+                format!("tome: {} #{}", run.workflow_name, run.id)
+            }
             _ => format!("tome: {} #{} / {name}", run.workflow_name, run.id),
         };
         let (moved, more) = session::move_to(
@@ -562,8 +573,8 @@ impl Engine {
         orchestrator::kill_sessions(run_id, &self.recorded_sessions(run_id));
     }
 
-    /// Fail running runs whose orchestrator has exited without finishing the
-    /// run (`orchestrator_exited`), end workers whose session is over, and
+    /// Fail running runs whose orchestrator or agent has exited without
+    /// finishing the run (`orchestrator_exited`, `agent_exited`), end workers whose session is over, and
     /// nudge or fail agents that haven't started. Runs until the daemon
     /// closes the store.
     pub fn monitor(self: Arc<Self>) {
@@ -588,27 +599,25 @@ impl Engine {
                 if session::is_alive(&s) != Some(false) {
                     continue;
                 }
+                let exited = match s.role.as_str() {
+                    orchestrator::AGENT_ROLE => orchestrator::AGENT_EXITED,
+                    _ => orchestrator::EXITED,
+                };
                 let ended = self.with_store(|store| {
                     // It may have finished while we looked.
                     if store.require_run(s.run_id)?.status != RunStatus::Running {
                         return Ok(None);
                     }
-                    let cut = store.end_active_workers(
-                        s.run_id,
-                        WorkerStatus::Cancelled,
-                        orchestrator::EXITED,
-                    )?;
-                    let run =
-                        store.abort_run(s.run_id, RunStatus::Failed, orchestrator::EXITED, None)?;
+                    let cut =
+                        store.end_active_workers(s.run_id, WorkerStatus::Cancelled, exited)?;
+                    let run = store.abort_run(s.run_id, RunStatus::Failed, exited, None)?;
                     self.sync(store, s.run_id);
                     Ok(Some((run, cut)))
                 });
                 if let Ok(Some((run, cut))) = ended {
                     eprintln!(
                         "tome daemon: run {} ({}) failed: {}",
-                        run.id,
-                        run.workflow_name,
-                        orchestrator::EXITED
+                        run.id, run.workflow_name, exited
                     );
                     // Its workers have no one to report to.
                     let recorded = self.recorded_sessions(run.id);
@@ -801,6 +810,10 @@ impl Engine {
 
 /// A run's step and worker events after `after`, in order, with their ids.
 fn history(store: &Store, run_id: i64, after: i64) -> CliResult<Vec<(i64, Value)>> {
+    let main = store
+        .get_run(run_id, false)
+        .map_err(internal)?
+        .map_or(orchestrator::ROLE, |r| orchestrator::role(r.mode));
     let mut out: Vec<(i64, Value)> = store
         .step_history(run_id)
         .map_err(internal)?
@@ -813,7 +826,7 @@ fn history(store: &Store, run_id: i64, after: i64) -> CliResult<Vec<(i64, Value)
             .worker_history(run_id)?
             .iter()
             .filter(|h| h.id > after)
-            .map(|h| (h.id, worker_event(run_id, h))),
+            .map(|h| (h.id, worker_event(run_id, main, h))),
     );
     out.sort_by_key(|(id, _)| *id);
     Ok(out)
@@ -876,6 +889,8 @@ pub fn run_event(run: &Run) -> Value {
         "type": "run",
         "run_id": run.id,
         "workflow": run.workflow_name,
+        "mode": run.mode,
+        "role": orchestrator::role(run.mode),
         "status": run.status,
         "reason": run.reason,
         "summary": run.summary,
@@ -903,12 +918,14 @@ pub fn step_event(run_id: i64, h: &StepHistory) -> Value {
 /// `{"type": "group", "run_id", "group", "event": "finished", "message", "time"}`,
 /// for a trigger signal `{"type": "trigger", "run_id", "event": "trigger", "message", "time"}`,
 /// or for a publish `{"type": "publish", "run_id", "event": "published", "message", "time"}`.
-pub fn worker_event(run_id: i64, h: &WorkerHistory) -> Value {
+///
+/// `main` is the role of the run's main session (`orchestrator` or `agent`).
+pub fn worker_event(run_id: i64, main: &str, h: &WorkerHistory) -> Value {
     if h.group.is_none() && handshake::state::ALL.contains(&h.event.as_str()) {
         return json!({
             "type": "handshake",
             "run_id": run_id,
-            "role": if h.worker.is_some() { workers::ROLE } else { orchestrator::ROLE },
+            "role": if h.worker.is_some() { workers::ROLE } else { main },
             "worker": h.worker,
             "event": h.event,
             "message": h.message,

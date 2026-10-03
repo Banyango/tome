@@ -1,5 +1,6 @@
 ---
 name: plan-feature
+mode: orchestrated
 triggers:
   - file: "features/*/feature.md"
     on: [created]

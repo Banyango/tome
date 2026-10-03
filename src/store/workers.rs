@@ -199,10 +199,10 @@ impl Store {
         let name = match new.name {
             Some(name) => {
                 check_name("worker", name)?;
-                if name == "orchestrator" {
-                    return Err(CliError::invalid(
-                        "`orchestrator` is reserved; pick another worker name",
-                    ));
+                if crate::orchestrator::is_main(name) {
+                    return Err(CliError::invalid(format!(
+                        "`{name}` is reserved; pick another worker name"
+                    )));
                 }
                 if self.worker(run_id, name)?.is_some() {
                     return Err(CliError::invalid(format!(

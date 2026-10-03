@@ -637,7 +637,7 @@ impl Engine {
                 for s in self
                     .recorded_sessions(run.id)
                     .iter()
-                    .filter(|s| s.role == orchestrator::ROLE)
+                    .filter(|s| orchestrator::is_main(&s.role))
                 {
                     session::send_line(s, &nudge);
                 }

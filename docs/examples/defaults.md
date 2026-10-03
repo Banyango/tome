@@ -1,6 +1,7 @@
 ---
 name: defaults-tour
 description: Every key under `defaults`.
+mode: orchestrated              # orchestrator_* keys apply to orchestrated runs
 defaults:
   backend: tmux                 # tmux or cmux
   harness: claude               # agent CLI for workers

@@ -128,6 +128,7 @@ pub fn create_run(
                 status,
                 trigger: p.get("cause").filter(|c| c.is_object()),
                 placement: placement.as_ref(),
+                mode: wf.frontmatter.mode,
             },
             |id| {
                 if deferred {

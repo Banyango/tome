@@ -66,7 +66,7 @@ fn stub_orchestrator_drives_the_run_to_success() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\nparams:\n  target: {default: web}\ndefaults:\n  harness: claude\n  orchestrator_harness: stub\norchestrator: Keep step messages under five words.\n---\n## Build\nBuild {{params.target}} for run {{run.id}}.\n\n## Ship\nShip it.\n",
+        "---\nname: build\nmode: orchestrated\nparams:\n  target: {default: web}\ndefaults:\n  harness: claude\n  orchestrator_harness: stub\norchestrator: Keep step messages under five words.\n---\n## Build\nBuild {{params.target}} for run {{run.id}}.\n\n## Ship\nShip it.\n",
     );
     env.start_daemon();
 
@@ -134,7 +134,7 @@ fn orchestrator_exiting_early_fails_the_run() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\ndefaults:\n  harness: quitter\n---\n## Build\nGo.\n",
+        "---\nname: build\nmode: orchestrated\ndefaults:\n  harness: quitter\n---\n## Build\nGo.\n",
     );
     env.start_daemon();
 
@@ -157,7 +157,11 @@ fn orchestrator_exiting_early_fails_the_run() {
 #[test]
 fn cancel_kills_the_session_and_keeps_the_run_quiet() {
     let env = Env::new();
-    write_wf(&env, "build", "---\nname: build\n---\n## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "---\nname: build\nmode: orchestrated\n---\n## Build\nGo.\n",
+    );
     env.start_daemon();
     let (code, run) = env.json(&["run", "build", "--detach"]);
     assert_eq!(code, 0, "{run}");
@@ -189,7 +193,11 @@ fn cancel_kills_the_session_and_keeps_the_run_quiet() {
 #[test]
 fn closing_the_orchestrator_pane_fails_the_run() {
     let env = Env::new();
-    write_wf(&env, "build", "---\nname: build\n---\n## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "---\nname: build\nmode: orchestrated\n---\n## Build\nGo.\n",
+    );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     env.tmux(&["kill-session", "-t", "=tome-1-build"]);
@@ -206,7 +214,7 @@ fn unknown_harness_is_refused_without_a_run() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\ndefaults:\n  harness: nope\n---\n## Build\nGo.\n",
+        "---\nname: build\nmode: orchestrated\ndefaults:\n  harness: nope\n---\n## Build\nGo.\n",
     );
     env.start_daemon();
     let (code, err) = env.json(&["run", "build", "--detach"]);
@@ -228,7 +236,7 @@ fn unknown_backend_is_refused_without_a_run() {
     write_wf(
         &env,
         "build",
-        "---\nname: build\ndefaults:\n  backend: screen\n---\n## Build\nGo.\n",
+        "---\nname: build\nmode: orchestrated\ndefaults:\n  backend: screen\n---\n## Build\nGo.\n",
     );
     env.start_daemon();
     let (code, err) = env.json(&["run", "build", "--detach"]);
@@ -247,7 +255,11 @@ fn unknown_backend_is_refused_without_a_run() {
 #[test]
 fn daemon_restart_kills_orphaned_sessions() {
     let env = Env::new();
-    write_wf(&env, "build", "---\nname: build\n---\n## Build\nGo.\n");
+    write_wf(
+        &env,
+        "build",
+        "---\nname: build\nmode: orchestrated\n---\n## Build\nGo.\n",
+    );
     env.start_daemon();
     env.json(&["run", "build", "--detach"]);
     assert!(env.has_session("tome-1-build"));
@@ -278,7 +290,7 @@ fn smoke_real_claude_preset() {
     write_wf(
         &env,
         "hello",
-        "---\nname: hello\n---\n## Greet\nReport this step, write the word hello to a file named hello.txt in the current directory, then finish the run as succeeded.\n",
+        "---\nname: hello\nmode: orchestrated\n---\n## Greet\nReport this step, write the word hello to a file named hello.txt in the current directory, then finish the run as succeeded.\n",
     );
     env.start_daemon();
     if env.backend == "tmux" {

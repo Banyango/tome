@@ -14,11 +14,11 @@ Only `name` is required.
 {{#include ../../examples/minimal.md}}
 ```
 
-Everything after the closing `---` is the body. You write it in plain English. The orchestrator agent reads it and decides what to do, in what order. tome never parses it, except to fill in placeholders and to check them.
+Everything after the closing `---` is the body. You write it in plain English. The run's agent reads it and decides what to do, in what order. tome never parses it, except to fill in placeholders and to check them.
 
 ## Steps
 
-Use `## Headings` to name the steps. The orchestrator reports each one to tome as it starts and finishes, and you see them in `tome runs show`. Steps are not a rigid script: the text can tell the orchestrator to retry, loop or skip, and it will.
+Use `## Headings` to name the steps. The run's agent reports each one to tome as it starts and finishes, and you see them in `tome runs show`. Steps are not a rigid script: the text can tell the agent to retry, loop or skip, and it will.
 
 Say what each step does, what counts as done, and what should happen if it fails. If nothing says otherwise, a failed step fails the run.
 
@@ -33,6 +33,15 @@ Required. Letters, digits, `_` and `-`. It's what you pass to `tome run`.
 ### `description`
 
 One line, shown in listings.
+
+### `mode`
+
+`single` (the default) or `orchestrated`.
+
+- `single`: tome starts one agent that does the whole workflow itself. It can report steps, use queues and publish events, but it can't spawn workers, groups or worktrees; those commands are refused.
+- `orchestrated`: tome starts an orchestrator that hands the work to [workers](workers.md). Use it for any workflow that fans out.
+
+`tome validate` warns when a `single` workflow's body talks about workers, worktrees or fanning out, and when it sets keys only an orchestrator uses (`orchestrator_harness`, `orchestrator_model`, and the `orchestrator` and `workers` placement blocks). See [Workflows, runs and steps](../concepts/workflows.md#mode-one-agent-or-an-orchestrator).
 
 ### `params`
 
@@ -63,12 +72,12 @@ Workflow-wide settings.
 | Key | Meaning |
 | --- | --- |
 | `backend` | `tmux` or `cmux`. Falls back to `TOME_BACKEND`, then config, then cmux when inside cmux and tmux otherwise. |
-| `harness` | The agent CLI for workers. Defaults to `claude`. Defined in config; see [Sessions and backends](sessions.md). |
-| `orchestrator_harness` | The agent CLI for the orchestrator. Defaults to `harness`. |
-| `model` | The model workers run, such as `opus`. Passed to the harness; unset uses the harness's own default. Override for one worker with `tome worker spawn --model`. |
-| `orchestrator_model` | The model the orchestrator runs. Defaults to `model`. |
+| `harness` | The agent CLI for a single run's agent and for workers. Defaults to `claude`. Defined in config; see [Sessions and backends](sessions.md). |
+| `orchestrator_harness` | The agent CLI for the orchestrator (`mode: orchestrated` only). Defaults to `harness`. |
+| `model` | The model a single run's agent and workers run, such as `opus`. Passed to the harness; unset uses the harness's own default. Override for one worker with `tome worker spawn --model`. |
+| `orchestrator_model` | The model the orchestrator runs (`mode: orchestrated` only). Defaults to `model`. |
 | `layout` | Where sessions open. A name (`tab`, `split`, `workspace`) or a block of settings; see [Sessions and backends](sessions.md). |
-| `start_timeout` | How long the orchestrator and each agent worker have to make their first `tome` call. A duration like `90s` or `2m`, or `off`. The default is 60s. If it passes, tome nudges the agent once and fails it after a second wait. |
+| `start_timeout` | How long the run's agent and each agent worker have to make their first `tome` call. A duration like `90s` or `2m`, or `off`. The default is 60s. If it passes, tome nudges the agent once and fails it after a second wait. |
 | `timeout` | A duration, like `30m`, or a number of seconds. tome accepts and records it, but doesn't enforce a run timeout today. |
 | `on_failure` | A string, accepted and recorded. tome doesn't act on it today; say in the body what should happen on failure. |
 

@@ -1,6 +1,7 @@
 ---
 name: factory-perf
 description: Look for latency regressions, drop duplicates, and request fixes for the real ones.
+mode: orchestrated
 triggers:
   - manual
   - cron: "0 * * * *"

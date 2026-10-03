@@ -97,6 +97,7 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
     };
     field(&mut out, "reason", &run["reason"]);
     field(&mut out, "summary", &run["summary"]);
+    field(&mut out, "mode", &run["mode"]);
     field(&mut out, "project", &run["project_path"]);
     field(&mut out, "workflow", &run["workflow_path"]);
     if let Some(t) = run["trigger"].as_object() {
@@ -186,9 +187,13 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
         let rows = handshake
             .iter()
             .map(|h| {
+                let main = match run["mode"].as_str() {
+                    Some("single") => "agent",
+                    _ => "orchestrator",
+                };
                 let agent = h["worker"]
                     .as_str()
-                    .map_or("orchestrator".to_string(), |w| format!("worker {w}"));
+                    .map_or(main.to_string(), |w| format!("worker {w}"));
                 vec![
                     ts(&h["occurred_at"]),
                     agent,

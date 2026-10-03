@@ -1,6 +1,7 @@
 ---
 name: factory-deploy
 description: Roll out a shipped branch behind a feature flag and watch it until it is fully live.
+mode: orchestrated
 triggers:
   - on: factory.ship
 concurrency: 1

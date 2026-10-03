@@ -1,6 +1,7 @@
 ---
 name: implement-feature
 description: Implement a planned feature, one agent and one branch per task.
+mode: orchestrated
 params:
   base: {type: string, default: main, description: "Branch the worktrees start from"}
 triggers:

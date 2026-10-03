@@ -11,7 +11,7 @@ fn write_wf(env: &Env, name: &str, frontmatter: &str, body: &str) {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join(format!("{name}.md")),
-        format!("---\nname: {name}\n{frontmatter}---\n{body}"),
+        format!("---\nname: {name}\nmode: orchestrated\n{frontmatter}---\n{body}"),
     )
     .unwrap();
 }
@@ -383,7 +383,7 @@ fn backlogs_wait_for_triggers_to_be_enabled_and_workflows_to_be_valid() {
     let dir = env.project().join(".tome/workflows");
     fs::write(
         dir.join("deploy.md"),
-        "---\nname: deploy\nconcurrency: nope\ntriggers:\n  - on: deploy\n---\n## Deploy\nGo.\n",
+        "---\nname: deploy\nmode: orchestrated\nconcurrency: nope\ntriggers:\n  - on: deploy\n---\n## Deploy\nGo.\n",
     )
     .unwrap();
     assert_eq!(env.json(&["triggers", "enable"]).0, 0);

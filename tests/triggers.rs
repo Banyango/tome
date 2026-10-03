@@ -214,7 +214,7 @@ fn running_targets_are_signalled_through_the_events_queue() {
         &env,
         "watch",
         concat!(
-            "defaults:\n  orchestrator_harness: listener\ntriggers:\n",
+            "mode: orchestrated\ndefaults:\n  orchestrator_harness: listener\ntriggers:\n",
             "  - cron: \"*/5 * * * *\"\n    to: running\n",
             "  - cron: \"0 * * * *\"\n    to: running-or-new\n",
             "  - file: \"docs/*.md\"\n    to: running-or-new\n",

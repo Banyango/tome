@@ -1,6 +1,7 @@
 ---
 name: fan-in-worktrees
 description: Do independent tasks on separate branches, then merge the branches.
+mode: orchestrated
 params:
   tasks: {type: string, description: "One task per line"}
   base: {type: string, default: main}

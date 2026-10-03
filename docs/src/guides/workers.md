@@ -2,6 +2,8 @@
 
 The orchestrator does the work of a run by starting **workers**. This guide covers the commands it uses, and how to write a workflow that uses them. You don't usually run these yourself. You describe what you want in the workflow body, and the orchestrator knows the commands. The examples on this page are files under `docs/examples/` that CI validates.
 
+Workers need an orchestrator, so a workflow that uses them sets `mode: orchestrated` in its frontmatter. In the default `mode: single`, the run's one agent does the work itself, and `tome worker`, `tome group` and `tome worktree create` are refused. See [Workflows, runs and steps](../concepts/workflows.md#mode-one-agent-or-an-orchestrator).
+
 ## Workers
 
 ```sh

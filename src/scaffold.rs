@@ -374,17 +374,18 @@ description: {description}
 params:
   base: {{type: string, default: main, description: "Branch to start from"}}
 # Optional keys:
+# mode: single                  # (default) one agent does the work; `orchestrated` to delegate to workers
 # defaults:
 #   backend: cmux               # where agents run: tmux or cmux (default: cmux inside cmux, else tmux)
-#   harness: claude             # agent CLI for the steps (see ~/.tome/config.yaml)
-#   orchestrator_harness: claude
-#   model: opus                 # model for the workers (default: the harness's own)
-#   orchestrator_model: opus    # model for the orchestrator (default: model)
+#   harness: claude             # agent CLI for the agent or workers (see ~/.tome/config.yaml)
+#   orchestrator_harness: claude  # (orchestrated only)
+#   model: opus                 # model for the agent or workers (default: the harness's own)
+#   orchestrator_model: opus    # model for the orchestrator (default: model; orchestrated only)
 #   timeout: 30m
 # concurrency: 1                # max simultaneous runs of this workflow
 # on_conflict: queue            # (default) wait for a slot, or reject
 ---
-Write the workflow as plain English. The orchestrator reads it and reports
+Write the workflow as plain English. The run's agent reads it and reports
 each step with `tome step start|done|fail`. Placeholders like
 {{{{params.base}}}} and {{{{run.id}}}} are filled in when the run starts.
 

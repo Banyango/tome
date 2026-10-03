@@ -94,6 +94,7 @@ mod tests {
                         status,
                         trigger: None,
                         placement: None,
+                        mode: crate::workflow::Mode::Orchestrated,
                     },
                     |id| format!("snapshot {id}"),
                 )

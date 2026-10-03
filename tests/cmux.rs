@@ -14,7 +14,7 @@ fn write_wf(env: &Env, name: &str, defaults: &str) {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join(format!("{name}.md")),
-        format!("---\nname: {name}\n{defaults}---\n## Build\nGo.\n"),
+        format!("---\nname: {name}\nmode: orchestrated\n{defaults}---\n## Build\nGo.\n"),
     )
     .unwrap();
 }

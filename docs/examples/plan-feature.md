@@ -1,6 +1,7 @@
 ---
 name: plan-feature
 description: When a feature file is added, investigate the codebase and break the feature into tasks.
+mode: orchestrated
 triggers:
   - manual
   - file: "features/*/feature.md"

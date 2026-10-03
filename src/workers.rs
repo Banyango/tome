@@ -19,6 +19,7 @@ use crate::session::{self, Backend, Kind, Launch, Split};
 use crate::store::{
     self, NewWorker, NewWorktree, Pulled, Run, RunStatus, Store, Worker, WorkerEnd, WorkerStatus,
 };
+use crate::workflow::Mode;
 use crate::worktree;
 use serde_json::{json, Value};
 use std::fs;
@@ -142,6 +143,17 @@ impl Engine {
             return self.with_store(|store| queue(store, method, p));
         }
         let run_id = req_id_at(p, "run_id")?;
+        // A single run's agent does the work itself: no workers, groups or
+        // worktrees.
+        let mode = self.with_store(|store| Ok(store.require_run(run_id)?.mode))?;
+        if mode == Mode::Single {
+            let what = match method.split_once('.') {
+                Some(("worktree", _)) => "`tome worktree create`".to_string(),
+                Some((noun, _)) => format!("`tome {noun}`"),
+                None => format!("`{method}`"),
+            };
+            return Err(orchestrator::single_refusal(&what));
+        }
         match method {
             "worker.spawn" => self.spawn_worker(run_id, p),
             "worker.report" => self.report_worker(run_id, p),
@@ -408,7 +420,7 @@ impl Engine {
         flags: Option<&Settings>,
     ) -> CliResult<(store::Session, Option<String>)> {
         let recorded = self.recorded_sessions(run.id);
-        let orch = recorded.iter().find(|s| s.role == orchestrator::ROLE);
+        let orch = recorded.iter().find(|s| orchestrator::is_main(&s.role));
         let wf = orchestrator::snapshot(run)?;
         let project = orchestrator::run_project(run);
         let kind = match orch.and_then(|s| Kind::parse(&s.backend)) {
@@ -650,7 +662,7 @@ impl Engine {
             .is_ok_and(|r| r.status == RunStatus::Running);
         let Some(orch) = sessions
             .iter()
-            .find(|s| s.role == orchestrator::ROLE)
+            .find(|s| orchestrator::is_main(&s.role))
             .filter(|_| running)
         else {
             return;

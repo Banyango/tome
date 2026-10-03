@@ -8,6 +8,7 @@
 //! worktrees a run created (so gc can remove them).
 
 use crate::output::{CliError, CliResult};
+use crate::workflow::Mode;
 use anyhow::Context;
 use chrono::{NaiveDateTime, Utc};
 use duckdb::{params, Config, Connection, OptionalExt, Row};
@@ -246,6 +247,12 @@ const MIGRATIONS: &[&str] = &[
         claimed_at   TIMESTAMP
     );
     ",
+    // 12: how a run is run (`single` or `orchestrated`); runs from before
+    // modes were all orchestrated
+    "
+    ALTER TABLE runs ADD COLUMN mode VARCHAR;
+    UPDATE runs SET mode = 'orchestrated';
+    ",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -346,6 +353,8 @@ pub struct Run {
     /// Placement state: `{flags?, focused?, caller?, notes?}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placement: Option<Value>,
+    /// How it's run, resolved when it was created.
+    pub mode: Mode,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -435,6 +444,7 @@ pub struct NewRun<'a> {
     pub trigger: Option<&'a Value>,
     /// Its placement state (see [`Run::placement`]).
     pub placement: Option<&'a Value>,
+    pub mode: Mode,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -571,8 +581,8 @@ impl Store {
         let id: i64 = tx.query_row("SELECT nextval('run_id_seq')", [], |r| r.get(0))?;
         let snapshot = render(id);
         tx.execute(
-            "INSERT INTO runs (id, workflow_name, workflow_path, project_path, params, workflow_snapshot, status, created_at, trigger_cause, placement)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO runs (id, workflow_name, workflow_path, project_path, params, workflow_snapshot, status, created_at, trigger_cause, placement, mode)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
                 new.workflow_name,
@@ -584,6 +594,7 @@ impl Store {
                 now(),
                 new.trigger.map(Value::to_string),
                 new.placement.map(Value::to_string),
+                new.mode.as_str(),
             ],
         )?;
         tx.commit()?;
@@ -1063,10 +1074,11 @@ impl Store {
         )
     }
 
-    /// The orchestrator sessions of running runs.
+    /// The main sessions (orchestrators and single runs' agents) of running
+    /// runs.
     pub fn running_orchestrators(&self) -> anyhow::Result<Vec<Session>> {
         self.query_sessions(
-            "JOIN runs r ON r.id = s.run_id WHERE r.status = 'running' AND s.role = 'orchestrator' ORDER BY s.run_id",
+            "JOIN runs r ON r.id = s.run_id WHERE r.status = 'running' AND s.role IN ('orchestrator', 'agent') ORDER BY s.run_id",
             params![],
         )
     }
@@ -1110,7 +1122,7 @@ fn internal_any(e: anyhow::Error) -> CliError {
 
 fn run_select(with_snapshot: bool) -> String {
     format!(
-        "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at, trigger_cause, placement{} FROM runs",
+        "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at, trigger_cause, placement, mode{} FROM runs",
         if with_snapshot { ", workflow_snapshot" } else { "" }
     )
 }
@@ -1135,7 +1147,12 @@ fn run_from_row(r: &Row<'_>, with_snapshot: bool) -> duckdb::Result<Run> {
         placement: r
             .get::<_, Option<String>>(11)?
             .and_then(|t| serde_json::from_str(&t).ok()),
-        workflow_snapshot: if with_snapshot { r.get(12)? } else { None },
+        // Runs from before modes were orchestrated.
+        mode: r
+            .get::<_, Option<String>>(12)?
+            .and_then(|m| Mode::parse(&m))
+            .unwrap_or(Mode::Orchestrated),
+        workflow_snapshot: if with_snapshot { r.get(13)? } else { None },
     })
 }
 
@@ -1189,6 +1206,7 @@ mod tests {
                     status: RunStatus::Running,
                     trigger: None,
                     placement: None,
+                    mode: Mode::Orchestrated,
                 },
                 |id| format!("snapshot for run {id}"),
             )

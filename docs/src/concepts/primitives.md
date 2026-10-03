@@ -9,7 +9,7 @@ A **worker** is an agent or a command that the orchestrator starts to do part of
 - An **agent worker** gets a prompt and starts through a harness. It reports back with `tome worker done` or `tome worker fail`, each with a summary. If it exits without reporting, it counts as failed.
 - A **command worker** runs a shell command. Exit code 0 is done and anything else is failed.
 
-Only the orchestrator starts workers. Workers can't start workers. A worker has a name that is unique in the run, and a status: pending, running, done, failed or cancelled.
+Only the orchestrator starts workers, so the workflow needs `mode: orchestrated`. Workers can't start workers. A worker has a name that is unique in the run, and a status: pending, running, done, failed or cancelled.
 
 ## Worktree
 

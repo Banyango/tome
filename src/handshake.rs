@@ -18,7 +18,7 @@ use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::session;
 use crate::store::{RunStatus, Store, WorkerStatus};
-use crate::workflow::{Frontmatter, StartTimeout};
+use crate::workflow::{Frontmatter, Mode, StartTimeout};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -36,6 +36,8 @@ pub mod state {
 
 /// Why a run failed when its orchestrator never made a tome call.
 pub const ORCHESTRATOR_NO_START: &str = "orchestrator_no_start";
+/// Why a single run failed when its agent never made a tome call.
+pub const AGENT_NO_START: &str = "agent_no_start";
 /// Why a worker failed when it never made a tome call.
 pub const WORKER_NO_START: &str = "worker_no_start";
 
@@ -88,12 +90,13 @@ pub struct Pending {
     pub prompt_file: PathBuf,
 }
 
-/// An agent: a run's orchestrator (`None`) or one of its workers.
+/// An agent: a run's main session, its orchestrator or single agent
+/// (`None`), or one of its workers.
 pub type Agent = (i64, Option<String>);
 
 fn describe(agent: &Agent) -> String {
     match &agent.1 {
-        None => format!("run {} orchestrator", agent.0),
+        None => format!("run {} main session", agent.0),
         Some(w) => format!("run {} worker {w}", agent.0),
     }
 }
@@ -204,7 +207,7 @@ impl Engine {
             let role = if worker.is_some() {
                 "worker"
             } else {
-                orchestrator::ROLE
+                orchestrator::role(run.mode)
             };
             Ok(json!({ "run_id": run_id, "role": role, "worker": worker, "ready": true }))
         })
@@ -291,7 +294,9 @@ impl Engine {
     fn agent_session(&self, agent: &Agent) -> Option<crate::store::Session> {
         let sessions = self.recorded_sessions(agent.0);
         match &agent.1 {
-            None => sessions.into_iter().find(|s| s.role == orchestrator::ROLE),
+            None => sessions
+                .into_iter()
+                .find(|s| orchestrator::is_main(&s.role)),
             Some(name) => {
                 let w = self
                     .with_store(|store| store.require_worker(agent.0, name))
@@ -310,30 +315,31 @@ impl Engine {
         }
     }
 
-    /// The run fails (`orchestrator_no_start`), as when its orchestrator
-    /// exits: its sessions are killed (the logs stay in the run directory),
+    /// The run fails (`orchestrator_no_start`, or `agent_no_start` for a
+    /// single run), as when its orchestrator exits: its sessions are killed (the logs stay in the run directory),
     /// the user is notified, and its workflow's next queued run may start.
     fn fail_orchestrator_start(&self, agent: &Agent, message: &str) {
         let run_id = agent.0;
         let ended = self.with_store(|store| {
-            if store.require_run(run_id)?.status != RunStatus::Running {
+            let run = store.require_run(run_id)?;
+            if run.status != RunStatus::Running {
                 return Ok(None);
             }
+            let reason = match run.mode {
+                Mode::Single => AGENT_NO_START,
+                Mode::Orchestrated => ORCHESTRATOR_NO_START,
+            };
             record(store, agent, state::NO_START, message)?;
-            let cut =
-                store.end_active_workers(run_id, WorkerStatus::Cancelled, ORCHESTRATOR_NO_START)?;
-            let run = store.abort_run(
-                run_id,
-                RunStatus::Failed,
-                ORCHESTRATOR_NO_START,
-                Some(message),
-            )?;
+            let cut = store.end_active_workers(run_id, WorkerStatus::Cancelled, reason)?;
+            let run = store.abort_run(run_id, RunStatus::Failed, reason, Some(message))?;
             self.sync(store, run_id);
-            Ok(Some((run, cut)))
+            Ok(Some((run, cut, reason)))
         });
-        let Ok(Some((run, cut))) = ended else { return };
+        let Ok(Some((run, cut, reason))) = ended else {
+            return;
+        };
         eprintln!(
-            "tome daemon: run {} ({}) failed: {ORCHESTRATOR_NO_START}",
+            "tome daemon: run {} ({}) failed: {reason}",
             run.id, run.workflow_name
         );
         let recorded = self.recorded_sessions(run_id);

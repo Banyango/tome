@@ -23,7 +23,7 @@ fn setup(scripts: &[(&str, &str)], orchestrator: &str) -> Env {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("build.md"),
-        format!("---\nname: build\ndefaults:\n  orchestrator_harness: {orchestrator}\n---\n## Build\nBuild it.\n"),
+        format!("---\nname: build\nmode: orchestrated\ndefaults:\n  orchestrator_harness: {orchestrator}\n---\n## Build\nBuild it.\n"),
     )
     .unwrap();
     env.start_daemon();

@@ -32,6 +32,7 @@ pub const TOP_LEVEL_KEYS: &[&str] = &[
     "defaults",
     "concurrency",
     "on_conflict",
+    "mode",
     "orchestrator",
 ];
 pub const DEFAULTS_KEYS: &[&str] = &[
@@ -46,6 +47,21 @@ pub const DEFAULTS_KEYS: &[&str] = &[
     "start_timeout",
 ];
 pub const PARAM_KEYS: &[&str] = &["type", "default", "description"];
+
+/// Words in a `single` workflow's body that suggest it delegates.
+const DELEGATION_WORDS: &[&str] = &[
+    "tome worker",
+    "tome group",
+    "tome worktree",
+    "spawn a worker",
+    "spawn workers",
+    "fan out",
+    "fan-out",
+    "fan in",
+    "fan-in",
+    "worktree",
+    "worker",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Diagnostic {
@@ -197,6 +213,33 @@ pub enum OnConflict {
     Reject,
 }
 
+/// How a workflow is run: by one agent that does the work itself, or by an
+/// orchestrator that can delegate to workers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    #[default]
+    Single,
+    Orchestrated,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Single => "single",
+            Mode::Orchestrated => "orchestrated",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Mode> {
+        match s {
+            "single" => Some(Mode::Single),
+            "orchestrated" => Some(Mode::Orchestrated),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Frontmatter {
     pub name: String,
@@ -209,7 +252,10 @@ pub struct Frontmatter {
     pub concurrency: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_conflict: Option<OnConflict>,
-    /// Extra instructions for the orchestrator, added to its bootstrap.
+    /// `single` (the default) or `orchestrated`.
+    pub mode: Mode,
+    /// Extra instructions for the run's agent or orchestrator, added to its
+    /// bootstrap.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<String>,
 }
@@ -376,6 +422,7 @@ fn parse_source(path: &Path, source: &str, placeholders: bool) -> Result<Workflo
         defaults: Defaults::default(),
         concurrency: None,
         on_conflict: None,
+        mode: Mode::default(),
         orchestrator: None,
     };
 
@@ -411,6 +458,13 @@ fn parse_source(path: &Path, source: &str, placeholders: bool) -> Result<Workflo
                 _ => errors.push(Diagnostic::new(
                     line,
                     "`on_conflict` must be `queue` or `reject`",
+                )),
+            },
+            "mode" => match value.as_str().and_then(Mode::parse) {
+                Some(m) => fm.mode = m,
+                None => errors.push(Diagnostic::new(
+                    line,
+                    "`mode` must be `single` or `orchestrated`",
                 )),
             },
             "orchestrator" => match value {
@@ -1400,6 +1454,57 @@ impl Workflow {
                 ));
             }
         }
+        if self.frontmatter.mode == Mode::Single {
+            out.extend(self.single_mode_warnings());
+        }
+        out
+    }
+
+    /// A `single` workflow that describes delegating, or sets what only
+    /// orchestrated runs use.
+    fn single_mode_warnings(&self) -> Vec<Diagnostic> {
+        const HINT: &str = "set `mode: orchestrated` in the frontmatter if it delegates";
+        let mut out = Vec::new();
+        let delegates = self.body.lines().enumerate().find_map(|(i, line)| {
+            let lower = line.to_lowercase();
+            DELEGATION_WORDS
+                .iter()
+                .find(|w| lower.contains(*w))
+                .map(|w| (i, *w))
+        });
+        if let Some((i, word)) = delegates {
+            out.push(Diagnostic::new(
+                self.body_line + i,
+                format!("this workflow runs as one agent (`mode: single`, the default), but its body mentions `{word}`; a single agent can't spawn workers, groups or worktrees; {HINT}"),
+            ));
+        }
+        let lines: Vec<&str> = self.frontmatter_text.lines().collect();
+        let locator = Locator { lines: &lines };
+        let d = &self.frontmatter.defaults;
+        for (key, set) in [
+            ("orchestrator_harness", d.orchestrator_harness.is_some()),
+            ("orchestrator_model", d.orchestrator_model.is_some()),
+        ] {
+            if set {
+                out.push(Diagnostic::new(
+                    locator.line(&["defaults", key]),
+                    format!("`defaults.{key}` is ignored: this workflow runs as one agent (`mode: single`), which uses `defaults.{}`", key.trim_start_matches("orchestrator_")),
+                ));
+            }
+        }
+        if let Some(spec) = &d.layout {
+            for (key, set) in [
+                ("orchestrator", spec.orchestrator.is_some()),
+                ("workers", spec.workers.is_some() || !spec.rules.is_empty()),
+            ] {
+                if set {
+                    out.push(Diagnostic::new(
+                        locator.line(&["defaults", "layout", key]),
+                        format!("`defaults.layout.{key}` is ignored: this workflow runs as one agent (`mode: single`), placed by `defaults.layout.agent`"),
+                    ));
+                }
+            }
+        }
         out
     }
 
@@ -2141,6 +2246,46 @@ triggers:
             .contains("`on: a.b` and `on: a.*` can match the same topic"));
         assert_eq!(w[1].line, 6);
         assert!(w[1].message.contains("own `tome.run.impl.*` events"));
+    }
+
+    #[test]
+    fn mode_is_single_or_orchestrated() {
+        assert_eq!(
+            p("---\nname: a\n---\n").unwrap().frontmatter.mode,
+            Mode::Single
+        );
+        assert_eq!(
+            p("---\nname: a\nmode: orchestrated\n---\n")
+                .unwrap()
+                .frontmatter
+                .mode,
+            Mode::Orchestrated
+        );
+        let e = errs("---\nname: a\nmode: solo\n---\n");
+        assert_eq!(e[0].line, 3);
+        assert!(e[0]
+            .message
+            .contains("`mode` must be `single` or `orchestrated`"));
+    }
+
+    #[test]
+    fn single_mode_warnings() {
+        let src = "---\nname: a\ndefaults:\n  orchestrator_harness: codex\n  layout:\n    orchestrator: {layout: tab}\n---\n## Go\nThen fan out to one worker per file.\n";
+        let w = p(src).unwrap().warnings();
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert_eq!(w[0].line, 9);
+        assert!(
+            w[0].message.contains("mentions `fan out`"),
+            "{}",
+            w[0].message
+        );
+        assert_eq!(w[1].line, 4);
+        assert!(w[1].message.contains("uses `defaults.harness`"));
+        assert_eq!(w[2].line, 6);
+        assert!(w[2].message.contains("`defaults.layout.agent`"));
+
+        let orchestrated = src.replacen("name: a\n", "name: a\nmode: orchestrated\n", 1);
+        assert!(p(&orchestrated).unwrap().warnings().is_empty());
     }
 
     #[test]

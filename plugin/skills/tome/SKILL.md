@@ -7,8 +7,10 @@ description: Write, run and debug tome workflows. Use when the user mentions tom
 
 tome runs repeatable agentic workflows. A workflow is a Markdown file with YAML
 frontmatter: the frontmatter says what starts it, and the body describes the
-steps in plain English. The tome daemon starts an orchestrator agent for each
-run, and the orchestrator spawns worker agents in tmux or cmux sessions.
+steps in plain English. The tome daemon starts one agent for each run in a
+tmux or cmux session. By default (`mode: single`) that agent does the whole
+workflow itself; with `mode: orchestrated` it is an orchestrator that spawns
+worker agents.
 
 Full docs as one plain-text file: https://banyango.github.io/tome/llms-full.txt
 
@@ -40,6 +42,9 @@ suggested answer for each, and use your question tool if you have one.
 3. **How is the work split?** One agent doing every item in turn, one agent
    per item, or a fixed number of agents taking items from a queue. With a
    limit of 1 or 2, one agent per item, started in turn, is usually simplest.
+   One agent doing everything is `mode: single` (the default), and the
+   questions about worker names don't apply. Anything that spawns workers is
+   `mode: orchestrated`.
 4. **Where do changes go?** Straight into the current branch, one branch per
    item, and whether the orchestrator merges after the tests pass or leaves
    branches for review.
@@ -74,8 +79,9 @@ suggested answer for each, and use your question tool if you have one.
    `{{run.id}}` when the same item can come round again.
 
 9. **Which model should the agents use?** Ask, and don't pick for them: the
-   choice trades cost and speed against quality. Ask about the workers and
-   the orchestrator separately, since the orchestrator mostly coordinates and
+   choice trades cost and speed against quality. A single-agent workflow
+   takes one answer, set with `defaults.model`. For an orchestrated one, ask
+   about the workers and the orchestrator separately, since the orchestrator mostly coordinates and
    often does fine on a cheaper model while workers doing the hard work may
    want a stronger one. Suggest the model this session is running, or say
    that leaving it out uses the harness's own default. Set the answers with
@@ -118,6 +124,8 @@ tome validate my-workflow       # always run after editing; exit code 2 on error
 ---
 name: my-workflow                 # required: letters, digits, _ and -
 description: One line for listings.
+mode: single                      # single (default): one agent does it all;
+                                  # orchestrated: an orchestrator spawns workers
 params:
   target:
     type: string                  # string (default), int, float, bool
@@ -139,17 +147,21 @@ What to do, what counts as done, and what happens if it fails.
 
 Rules that matter:
 
-- The body is read by the orchestrator agent, not parsed. `##` headings become
+- The body is read by the run's agent, not parsed. `##` headings become
   the steps reported in `tome runs show`.
 - For each step, say what done looks like and what to do on failure. Without
   that, a failed step fails the run.
-- To fan out, tell the orchestrator to create a group, spawn named workers in
+- A workflow that delegates needs `mode: orchestrated`. In the default
+  `mode: single`, `tome worker`, `tome group` and `tome worktree create` are
+  refused, and `tome validate` warns when the body mentions them.
+- To fan out, set `mode: orchestrated` and tell the orchestrator to create a group, spawn named workers in
   it (optionally each on its own git worktree), and wait for the group.
 - `tome validate` rejects unknown frontmatter keys and `{{placeholders}}` that
   name no param.
 - Other frontmatter: `defaults` (`backend`, `harness`, `orchestrator_harness`,
   `model`, `orchestrator_model`, `layout`, `start_timeout`), `concurrency` with `on_conflict: queue|reject`,
-  and `orchestrator` (extra instructions for the orchestrator only).
+  and `orchestrator` (extra instructions for the orchestrator only). The
+  `orchestrator_*` keys only apply to `mode: orchestrated`.
 
 ## Queues
 
@@ -223,8 +235,10 @@ output. Prefer it when you parse results.
 
 ## When something goes wrong
 
-- `orchestrator_exited` / `worker_exited`: the agent's session ended without
+- `agent_exited` / `orchestrator_exited` / `worker_exited`: the agent's session ended without
   reporting. Read `tome runs logs <id>`.
+- `tome worker ... isn't available: this run is a single-agent run`: add
+  `mode: orchestrated` to the workflow's frontmatter.
 - "never made a first tome call": the harness started too slowly. Raise
   `defaults.start_timeout`, or set it to `off`.
 - Workflow not found: run `tome validate` with no name from inside the project.

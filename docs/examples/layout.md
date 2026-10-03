@@ -1,6 +1,7 @@
 ---
 name: review-layout
 description: Reviewers open as splits next to the orchestrator; everything else below.
+mode: orchestrated
 defaults:
   backend: tmux
   harness: claude

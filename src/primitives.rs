@@ -103,7 +103,7 @@ pub fn session_move(session: &str, placement: &crate::placement::Settings) -> Cl
     };
     if name.is_empty() {
         return Err(CliError::invalid(
-            "which session? give it as <run>/<name>, e.g. 42/orchestrator or 42/w1",
+            "which session? give it as <run>/<name>, e.g. 42/agent, 42/orchestrator or 42/w1",
         ));
     }
     let mut params = json!({ "run_id": run, "name": name, "placement": placement });

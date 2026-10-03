@@ -1,6 +1,7 @@
 ---
 name: fix-tests
 description: Whenever Rust source changes, run the tests and fix any failures on a branch.
+mode: orchestrated
 triggers:
   - manual
   - file: "src/**/*.rs"

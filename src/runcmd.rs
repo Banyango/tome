@@ -184,7 +184,7 @@ fn event_line(ev: &Value) -> String {
         Some("handshake") => {
             let who = match ev["worker"].as_str() {
                 Some(w) => format!("worker {w}"),
-                None => "orchestrator".to_string(),
+                None => ev["role"].as_str().unwrap_or("orchestrator").to_string(),
             };
             let mut line = format!("[{time}] {who} start: {}", s(&ev["event"]));
             if let Some(m) = ev["message"].as_str() {
@@ -208,6 +208,10 @@ fn event_line(ev: &Value) -> String {
             match ev["summary"].as_str().or(ev["reason"].as_str()) {
                 Some(detail) if status != "running" && status != "queued" => {
                     line.push_str(&format!(": {detail}"))
+                }
+                // The role it started: `run 42 running (build, agent)`.
+                _ if status == "running" && ev["role"].is_string() => {
+                    line.push_str(&format!(" ({}, {})", s(&ev["workflow"]), s(&ev["role"])))
                 }
                 _ => line.push_str(&format!(" ({})", s(&ev["workflow"]))),
             }
@@ -267,7 +271,10 @@ pub fn ready() -> CliResult<Report> {
     )?;
     let human = match ready["worker"].as_str() {
         Some(w) => format!("ready: worker {w} of run {id}"),
-        None => format!("ready: orchestrator of run {id}"),
+        None => format!(
+            "ready: {} of run {id}",
+            ready["role"].as_str().unwrap_or("orchestrator")
+        ),
     };
     Ok(Report::new(ready, human))
 }

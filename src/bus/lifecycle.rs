@@ -40,7 +40,8 @@ fn ended(run: &Run) -> Option<(&'static str, Value)> {
 }
 
 impl Engine {
-    /// A run's orchestrator has started: publish `.started`, once.
+    /// A run's orchestrator (or single agent) has started: publish
+    /// `.started`, once.
     pub(crate) fn announce_started(&self, run_id: i64) {
         let first = self.with_store(|store| {
             if store.announced(run_id)?.is_some() {
@@ -131,6 +132,7 @@ mod tests {
             trigger: None,
             workflow_snapshot: None,
             placement: None,
+            mode: crate::workflow::Mode::Orchestrated,
         }
     }
 

@@ -11,7 +11,7 @@ fn write_wf(env: &Env, name: &str, concurrency: &str) {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join(format!("{name}.md")),
-        format!("---\nname: {name}\n{concurrency}---\n## Build\nGo.\n"),
+        format!("---\nname: {name}\nmode: orchestrated\n{concurrency}---\n## Build\nGo.\n"),
     )
     .unwrap();
 }

@@ -12,7 +12,7 @@ fn write_wf(env: &Env, name: &str, defaults: &str) {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join(format!("{name}.md")),
-        format!("---\nname: {name}\n{defaults}---\n## Build\nGo.\n"),
+        format!("---\nname: {name}\nmode: orchestrated\n{defaults}---\n## Build\nGo.\n"),
     )
     .unwrap();
 }
@@ -1082,7 +1082,7 @@ fn from_caller_is_for_the_orchestrator_and_falls_back_off_cmux() {
     assert_eq!(code, 2, "{v}");
     assert!(
         v.to_string()
-            .contains("`from: caller` is for the orchestrator only"),
+            .contains("`from: caller` is for the run's agent or orchestrator only"),
         "{v}"
     );
 
@@ -1130,13 +1130,13 @@ fn from_caller_is_for_the_orchestrator_and_falls_back_off_cmux() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stdout)
-        .contains("`from: caller` is for the orchestrator only"));
+        .contains("`from: caller` is for the run's agent or orchestrator only"));
 
     // Moves next to the caller fail, leaving the session where it was.
     let before = session_named(&env, "tome-1-build");
     for (session, message) in [
         ("1/orchestrator", "`from: caller` is cmux only"),
-        ("1/w1", "is for the orchestrator only"),
+        ("1/w1", "is for the run's agent or orchestrator only"),
     ] {
         let (code, err) = move_session(&env, session, &["--from", "caller"]);
         assert_eq!(code, 2, "{err}");

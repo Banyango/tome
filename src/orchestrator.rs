@@ -2,6 +2,10 @@
 //! adapter in its own tmux session, that reads the workflow and drives the
 //! run by calling tome commands.
 //!
+//! A `single` run (the default mode) starts an agent in the `agent` role
+//! instead, which carries out the workflow itself and can't delegate. Both
+//! are a run's main session and launch the same way.
+//!
 //! Everything is taken from the run's workflow snapshot, so a queued run
 //! launches later exactly as it was when it was requested.
 
@@ -12,48 +16,86 @@ use crate::placement::{self, From, Inputs, Placement, Role, Settings, Workspace}
 use crate::recovery::RecoveryHooks;
 use crate::session::{self, Anchor, Backend, Cmux, Kind, Launch, Layout, Split, Target, Tmux};
 use crate::store::{Run, Session, Worker};
-use crate::workflow::{self, Frontmatter, Workflow};
+use crate::workflow::{self, Frontmatter, Mode, Workflow};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The built-in orchestrator prompt: its duties and the tome command reference.
 pub const PROMPT: &str = include_str!("orchestrator_prompt.md");
+/// The built-in prompt for a single run's agent.
+pub const AGENT_PROMPT: &str = include_str!("agent_prompt.md");
 
 pub const ROLE: &str = "orchestrator";
+/// A single run's agent.
+pub const AGENT_ROLE: &str = "agent";
 
 /// Why a run failed when its orchestrator went away before `tome run finish`.
 pub const EXITED: &str = "orchestrator_exited";
+/// Why a single run failed when its agent went away before `tome run finish`.
+pub const AGENT_EXITED: &str = "agent_exited";
+
+/// The role of a run's main session in `mode`.
+pub fn role(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Single => AGENT_ROLE,
+        Mode::Orchestrated => ROLE,
+    }
+}
+
+/// Whether `role` is a run's main session: its orchestrator or its agent.
+pub fn is_main(role: &str) -> bool {
+    role == ROLE || role == AGENT_ROLE
+}
+
+/// What refuses delegation in a single run.
+pub fn single_refusal(what: &str) -> CliError {
+    CliError::invalid(format!(
+        "{what} isn't available: this run is a single-agent run (`mode: single`), so its agent does the work itself"
+    ))
+    .with_hint("set `mode: orchestrated` in the workflow's frontmatter")
+}
 /// Why a run failed when its orchestrator couldn't be started.
 pub const LAUNCH_FAILED: &str = "launch_failed";
 
-/// The harness a workflow's orchestrator runs in:
-/// `defaults.orchestrator_harness`, else `defaults.harness`, else `claude`.
-pub fn harness_for(fm: &Frontmatter, project: Option<&Path>) -> CliResult<Harness> {
+/// The harness a run's main session runs in: for an orchestrator,
+/// `defaults.orchestrator_harness`, else `defaults.harness`; for a single
+/// run's agent, `defaults.harness`; else `claude`.
+pub fn harness_for(fm: &Frontmatter, mode: Mode, project: Option<&Path>) -> CliResult<Harness> {
     let d = &fm.defaults;
+    let own = match mode {
+        Mode::Orchestrated => d.orchestrator_harness.as_deref(),
+        Mode::Single => None,
+    };
     harness::resolve(
-        d.orchestrator_harness
-            .as_deref()
-            .or(d.harness.as_deref())
-            .unwrap_or(harness::DEFAULT),
+        own.or(d.harness.as_deref()).unwrap_or(harness::DEFAULT),
         project,
     )
 }
 
-/// The model a workflow's orchestrator runs: `defaults.orchestrator_model`,
-/// else `defaults.model`, else the harness's own default.
-pub fn model_for(fm: &Frontmatter) -> Option<&str> {
+/// The model a run's main session runs: for an orchestrator,
+/// `defaults.orchestrator_model`, else `defaults.model`; for a single run's
+/// agent, `defaults.model`; else the harness's own default.
+pub fn model_for(fm: &Frontmatter, mode: Mode) -> Option<&str> {
     let d = &fm.defaults;
-    d.orchestrator_model.as_deref().or(d.model.as_deref())
+    let own = match mode {
+        Mode::Orchestrated => d.orchestrator_model.as_deref(),
+        Mode::Single => None,
+    };
+    own.or(d.model.as_deref())
 }
 
-/// Where a run's orchestrator goes.
+/// Where a run's main session goes.
 pub fn placement(
     fm: &Frontmatter,
+    mode: Mode,
     flags: Option<&Settings>,
     project: Option<&Path>,
 ) -> CliResult<Placement> {
     let inputs = Inputs {
-        role: Role::Orchestrator,
+        role: match mode {
+            Mode::Single => Role::Agent,
+            Mode::Orchestrated => Role::Orchestrator,
+        },
         flags,
         run_flags: None,
         spec: fm.defaults.layout.as_ref(),
@@ -159,8 +201,10 @@ pub fn run_flags(run: &Run) -> CliResult<Option<Settings>> {
         .transpose()
 }
 
-/// A run's orchestrator, ready to launch.
+/// A run's main session, ready to launch.
 pub struct Plan {
+    /// `orchestrator` or `agent`.
+    pub role: &'static str,
     pub harness: Harness,
     pub model: Option<String>,
     pub backend: Kind,
@@ -202,15 +246,20 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
     let cwd = run_cwd(run);
     let project = run_project(run);
     let project = project.as_deref();
-    let harness = harness_for(&wf.frontmatter, project)?;
-    let model = model_for(&wf.frontmatter).map(str::to_string);
+    // The mode stored on the run, not the snapshot's: runs from before
+    // modes were orchestrated.
+    let mode = run.mode;
+    let harness = harness_for(&wf.frontmatter, mode, project)?;
+    let model = model_for(&wf.frontmatter, mode).map(str::to_string);
     harness.check_model(model.as_deref())?;
+    let role = role(mode);
     Ok(Plan {
+        role,
         harness,
         model,
         backend: Kind::choose(wf.frontmatter.defaults.backend.as_deref(), project)?,
-        placement: placement(&wf.frontmatter, run_flags(run)?.as_ref(), project)?,
-        session: session::run_session_name(run.id, &run.workflow_name, ROLE),
+        placement: placement(&wf.frontmatter, mode, run_flags(run)?.as_ref(), project)?,
+        session: session::run_session_name(run.id, &run.workflow_name, role),
         title: format!("tome: {} #{}", run.workflow_name, run.id),
         cwd,
         prompt: bootstrap(run, &wf.frontmatter, &wf.body),
@@ -218,10 +267,15 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
     })
 }
 
-/// The orchestrator's first message: the built-in prompt, the resolved
-/// workflow and any extra instructions the workflow gives its orchestrator.
+/// The main session's first message: the built-in prompt for the run's
+/// mode, the resolved workflow and any extra instructions the workflow gives
+/// it.
 pub fn bootstrap(run: &Run, fm: &Frontmatter, body: &str) -> String {
-    let mut out = String::from(PROMPT.trim_end());
+    let prompt = match run.mode {
+        Mode::Single => AGENT_PROMPT,
+        Mode::Orchestrated => PROMPT,
+    };
+    let mut out = String::from(prompt.trim_end());
     out.push_str(&format!(
         "\n\n## This run\n\nRun #{} of workflow `{}`",
         run.id, run.workflow_name
@@ -252,14 +306,14 @@ pub fn bootstrap(run: &Run, fm: &Frontmatter, body: &str) -> String {
     out
 }
 
-/// Where a run's orchestrator prompt is written.
-pub fn prompt_file(run_id: i64) -> PathBuf {
+/// Where the prompt of a run's main session (`role`) is written.
+pub fn prompt_file(run_id: i64, role: &str) -> PathBuf {
     paths::runs_dir()
         .join(run_id.to_string())
-        .join("orchestrator-prompt.md")
+        .join(format!("{role}-prompt.md"))
 }
 
-/// Start the orchestrator's session and return its record. The launcher
+/// Start the main session and return its record. The launcher
 /// script, the bootstrap prompt and the session's output all go in the
 /// run's directory. Also returns a note to record on the run, if any.
 pub fn launch(
@@ -270,7 +324,7 @@ pub fn launch(
     let backend = Backend::new(plan.backend);
     let dir = paths::runs_dir().join(run.id.to_string());
     fs::create_dir_all(&dir)?;
-    let prompt_file = prompt_file(run.id);
+    let prompt_file = prompt_file(run.id, plan.role);
     fs::write(&prompt_file, &plan.prompt)?;
     let argv = plan.harness.command(&Vars {
         prompt: &plan.prompt,
@@ -305,8 +359,8 @@ pub fn launch(
         cwd: &plan.cwd,
         argv: &argv,
         env: &session_env(run.id),
-        script: &dir.join("orchestrator.sh"),
-        log: &dir.join(format!("{ROLE}.log")),
+        script: &dir.join(format!("{}.sh", plan.role)),
+        log: &dir.join(format!("{}.log", plan.role)),
         layout,
         split: &split,
         target: &target,
@@ -316,7 +370,7 @@ pub fn launch(
     placement.warnings = warnings;
     let session = Session {
         run_id: run.id,
-        role: ROLE.to_string(),
+        role: plan.role.to_string(),
         layout: Some(layout.as_str().to_string()),
         harness: Some(plan.harness.name.clone()),
         placement: Some(placement.to_json()),
