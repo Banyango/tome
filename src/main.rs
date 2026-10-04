@@ -13,6 +13,8 @@ mod handshake;
 mod harness;
 mod inspect;
 mod lifecycle;
+mod node;
+mod nodecmd;
 mod orchestrator;
 mod output;
 mod paths;
@@ -45,6 +47,11 @@ struct Cli {
     /// Emit stable machine-readable JSON (also enabled by TOME_OUTPUT=json).
     #[arg(long, global = true)]
     json: bool,
+
+    /// Send the command to a node's daemon (also TOME_NODE; `local` is this
+    /// machine).
+    #[arg(long, global = true, value_name = "NODE")]
+    on: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -84,6 +91,10 @@ enum Command {
         /// Return the run id right away instead of streaming the run.
         #[arg(long)]
         detach: bool,
+        /// Start detached, wait for the run's agent to start, then view its
+        /// session (`tome session view`).
+        #[arg(long, conflicts_with = "detach")]
+        view: bool,
         #[command(flatten)]
         placement: PlacementArgs,
     },
@@ -99,7 +110,7 @@ enum Command {
         #[command(subcommand)]
         command: WorkerCommand,
     },
-    /// Move a run's live sessions.
+    /// View or move a run's live sessions.
     Session {
         #[command(subcommand)]
         command: SessionCommand,
@@ -163,6 +174,38 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Other machines to send commands to with `--on <node>`.
+    Node {
+        #[command(subcommand)]
+        command: NodeCommand,
+    },
+    /// Relay JSON-RPC between stdin/stdout and the daemon (what a node runs
+    /// at the other end of `ssh`).
+    #[command(hide = true)]
+    Rpc {
+        #[arg(long)]
+        stdio: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum NodeCommand {
+    /// Add (or replace) a node in ~/.tome/config.yaml, then check it.
+    Add {
+        /// Node name: lowercase letters, digits, `_` and `-`.
+        name: String,
+        /// Anything `ssh` accepts: user@host, or a Host alias.
+        ssh: String,
+        /// The tome binary on the node (default: `tome` on its PATH).
+        #[arg(long, value_name = "PATH")]
+        tome: Option<String>,
+    },
+    /// Remove a node from ~/.tome/config.yaml.
+    Rm { name: String },
+    /// List the nodes: reachable, tome version, daemon, round trip.
+    Ls,
+    /// Check a node step by step, with the fix for the first failure.
+    Check { name: String },
 }
 
 #[derive(Subcommand)]
@@ -451,9 +494,12 @@ enum RunsCommand {
         /// Only runs of this workflow.
         #[arg(long)]
         workflow: Option<String>,
-        /// Maximum number of runs to show.
+        /// Maximum number of runs to show (per node with --nodes).
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Include every configured node, with a NODE column.
+        #[arg(long)]
+        nodes: bool,
     },
     /// Show a run: status, steps, history, worktrees and logs.
     Show {
@@ -515,6 +561,15 @@ impl PlacementArgs {
 
 #[derive(Subcommand)]
 enum SessionCommand {
+    /// Show a run's agent, orchestrator or worker session from here: focus
+    /// it, open a tab attached to it, or attach in this terminal.
+    View {
+        /// `<run>` or `<run>/<worker>` (`<node>:<run>` for a node's run).
+        #[arg(value_name = "RUN[/WORKER]")]
+        session: String,
+        #[command(flatten)]
+        placement: PlacementArgs,
+    },
     /// Move an orchestrator or worker session without restarting it; settings
     /// the flags don't give stay as they were.
     Move {
@@ -637,6 +692,18 @@ fn main() {
     };
     let mode = Mode::resolve(cli.json);
 
+    if let Command::Rpc { stdio } = cli.command {
+        if !stdio {
+            let e = output::CliError::invalid("`tome rpc` needs --stdio");
+            std::process::exit(emit(mode, Err(e)));
+        }
+        if let Err(e) = node::relay() {
+            eprintln!("tome rpc: {e:#}");
+            std::process::exit(output::exit::FAILURE);
+        }
+        return;
+    }
+
     if let Command::Daemon {
         command: DaemonCommand::Run,
     } = cli.command
@@ -648,13 +715,136 @@ fn main() {
         return;
     }
 
-    if !matches!(cli.command, Command::Daemon { .. }) {
+    let mut command = cli.command;
+    match route(&mut command, cli.on) {
+        Ok(Some(node)) => node::set_target(node),
+        Ok(None) => {}
+        Err(e) => std::process::exit(emit(mode, Err(e))),
+    }
+
+    if node::target().is_none() && !matches!(command, Command::Daemon { .. } | Command::Node { .. })
+    {
         if let Ok(cwd) = std::env::current_dir() {
             triggerscmd::register(&cwd);
         }
     }
-    let code = emit(mode, dispatch(cli.command, mode));
+    let code = emit(mode, dispatch(command, mode));
     std::process::exit(code);
+}
+
+/// Where a command can go.
+enum Reach {
+    /// A node's daemon, with `--on`.
+    Node,
+    /// Only this machine: it reads local files, or manages this daemon.
+    Local,
+    /// Only the run it's in: what agents call.
+    Agent,
+}
+
+fn reach(command: &Command) -> Reach {
+    match command {
+        Command::Run {
+            command: Some(RunCommand::Finish { .. }),
+            ..
+        }
+        | Command::Ready
+        | Command::Step { .. }
+        | Command::Worker { .. }
+        | Command::Group { .. }
+        | Command::Worktree { .. }
+        | Command::Queue { .. }
+        | Command::Session {
+            command: SessionCommand::Move { .. },
+        } => Reach::Agent,
+        Command::Validate { .. }
+        | Command::Workflow { .. }
+        | Command::Layout { .. }
+        | Command::Node { .. }
+        | Command::Rpc { .. }
+        | Command::Runs {
+            command: RunsCommand::List { nodes: true, .. },
+        }
+        | Command::Daemon {
+            command:
+                DaemonCommand::Start
+                | DaemonCommand::Run
+                | DaemonCommand::Install { .. }
+                | DaemonCommand::Uninstall,
+        } => Reach::Local,
+        _ => Reach::Node,
+    }
+}
+
+/// Take the node off a `<node>:<id>` run reference, leaving the id.
+fn take_ref(command: &mut Command) -> Option<String> {
+    let id = match command {
+        Command::Runs {
+            command: RunsCommand::Show { id, .. } | RunsCommand::Logs { id, .. },
+        } => id,
+        Command::Run {
+            command: Some(RunCommand::Cancel { id: Some(id) }),
+            ..
+        } => id,
+        Command::Session {
+            command: SessionCommand::View { session, .. },
+        } => session,
+        _ => return None,
+    };
+    let (node, rest) = node::split_ref(id);
+    let node = node?.to_string();
+    *id = rest.to_string();
+    Some(node)
+}
+
+/// The node this command goes to: `--on`, `TOME_NODE` or a `<node>:<id>`
+/// reference. A command that can't go to a node refuses an explicit `--on`;
+/// `TOME_NODE` alone leaves it here, and inside a run `TOME_NODE` is
+/// ignored, so an agent on a machine with `TOME_NODE` set still reaches its
+/// own run.
+fn route(command: &mut Command, on: Option<String>) -> CliResult<Option<node::Node>> {
+    let from_ref = take_ref(command);
+    let on = on.filter(|o| !o.trim().is_empty());
+    let explicit = on.as_deref().filter(|o| *o != node::LOCAL);
+    match reach(command) {
+        Reach::Node => {}
+        Reach::Local => {
+            let Some(name) = explicit else {
+                return Ok(None);
+            };
+            let dest = node::get(name)
+                .map(|n| n.ssh)
+                .unwrap_or_else(|_| name.to_string());
+            let what = match command {
+                Command::Runs { .. } => {
+                    "--nodes lists every node already; leave out --on".to_string()
+                }
+                Command::Node { .. } => {
+                    "`tome node` manages this machine's node list; leave out --on".to_string()
+                }
+                _ => format!("run it on the node instead: `ssh {dest} tome …`"),
+            };
+            return Err(output::CliError::invalid(
+                "this command works on this machine only, so it doesn't take --on",
+            )
+            .with_hint(what));
+        }
+        Reach::Agent => {
+            if explicit.is_some() {
+                return Err(output::CliError::invalid(
+                    "agent commands act on the run they're in, on this machine, so they don't take --on",
+                )
+                .with_hint("to reach another machine's run, use `tome runs …` or `tome run cancel` with --on"));
+            }
+            return Ok(None);
+        }
+    }
+    // An agent's commands stay on its own machine unless it says --on.
+    let in_run = std::env::var("TOME_RUN_ID").is_ok_and(|v| !v.trim().is_empty());
+    let env = std::env::var("TOME_NODE")
+        .ok()
+        .filter(|o| !o.trim().is_empty() && !in_run);
+    node::resolve(on.or(env).as_deref(), from_ref.as_deref())
 }
 
 fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
@@ -706,11 +896,14 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             workflow,
             params,
             detach,
+            view,
             placement,
         } => {
             let workflow = workflow.expect("clap requires a workflow");
             let placement = placement.settings()?;
-            if detach {
+            if view {
+                nodecmd::run_and_view(&current_dir()?, &workflow, &params, &placement)
+            } else if detach {
                 runcmd::start_detached(&current_dir()?, &workflow, &params, &placement)
             } else {
                 runcmd::start_attached(&current_dir()?, &workflow, &params, &placement, mode)
@@ -773,6 +966,9 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
         Command::Session {
             command: SessionCommand::Move { session, placement },
         } => primitives::session_move(&session, &placement.settings()?),
+        Command::Session {
+            command: SessionCommand::View { session, placement },
+        } => nodecmd::view(&session, &placement.settings()?),
         Command::Group { command } => match command {
             GroupCommand::Create {
                 name,
@@ -819,7 +1015,14 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 status,
                 workflow,
                 limit,
-            } => inspect::list(status, workflow, limit),
+                nodes,
+            } => {
+                if nodes {
+                    nodecmd::runs_everywhere(status, workflow, limit)
+                } else {
+                    inspect::list(status, workflow, limit)
+                }
+            }
             RunsCommand::Show { id, snapshot } => inspect::show(&id, snapshot),
             RunsCommand::Logs { id, step, tail } => inspect::logs(&id, step, tail),
         },
@@ -869,6 +1072,13 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             older_than,
             dry_run,
         } => gc::run(&older_than, dry_run),
+        Command::Node { command } => match command {
+            NodeCommand::Add { name, ssh, tome } => nodecmd::add(&name, &ssh, tome.as_deref()),
+            NodeCommand::Rm { name } => nodecmd::rm(&name),
+            NodeCommand::Ls => nodecmd::ls(),
+            NodeCommand::Check { name } => nodecmd::check(&name),
+        },
+        Command::Rpc { .. } => unreachable!("handled in main"),
     }
 }
 

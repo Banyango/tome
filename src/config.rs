@@ -13,7 +13,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Every top-level key either file accepts.
-pub const KEYS: &[&str] = &["backend", "harnesses", "layout", "layout_presets"];
+pub const KEYS: &[&str] = &[
+    "backend",
+    "harnesses",
+    "layout",
+    "layout_presets",
+    "nodes",
+    "bus",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -176,6 +183,17 @@ fn parse(scope: Scope, path: PathBuf, text: &str) -> CliResult<File> {
         if !KEYS.contains(&key) {
             return Err(bad(format!("unknown key `{key}`"))
                 .with_hint(format!("known keys: {}", KEYS.join(", "))));
+        }
+        // Hosts and SSH access are the user's; forwarding rules are the repo's.
+        match (key, scope) {
+            ("nodes", Scope::Project) => {
+                return Err(bad("`nodes` goes in the global config".into())
+                    .with_hint(format!("move it to {}", global_path().display())))
+            }
+            ("bus", Scope::Global) => {
+                return Err(bad("`bus` goes in a project's .tome/config.yaml".into()))
+            }
+            _ => {}
         }
     }
     Ok(File { scope, path, doc })

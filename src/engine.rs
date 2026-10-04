@@ -59,6 +59,7 @@ const METHODS: &[&str] = &[
     "run.cancel",
     "step.report",
     "session.move",
+    "session.attach_command",
 ];
 
 pub struct Engine {
@@ -77,6 +78,8 @@ pub struct Engine {
     /// Topic triggers whose runs can't be started, by armed key, with why:
     /// left alone until they're re-armed.
     pub(crate) stalled: Mutex<HashMap<String, String>>,
+    /// The forwarder's attempts and the nodes it's sending to.
+    pub(crate) forwarding: Mutex<crate::bus::forward::State>,
 }
 
 impl Engine {
@@ -89,6 +92,7 @@ impl Engine {
             starts: Mutex::new(HashMap::new()),
             draining: Mutex::new(()),
             stalled: Mutex::new(HashMap::new()),
+            forwarding: Mutex::new(Default::default()),
         }
     }
 
@@ -125,6 +129,7 @@ impl Engine {
                 .map(|run| json!(run)),
             "step.report" => self.step(p),
             "session.move" => self.move_session(p),
+            "session.attach_command" => self.attach_session(p),
             m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
             m if triggers::METHODS.contains(&m) => self.dispatch_triggers(m, p),
             m if crate::bus::METHODS.contains(&m) => self.dispatch_bus(m, p),
@@ -358,7 +363,8 @@ impl Engine {
             Ok(run) => run,
             Err(e) => return Some(Err(e)),
         };
-        self.watch(run.id, true, sink)
+        // A run started from another machine outlives its connection.
+        self.watch(run.id, p["cancel_on_disconnect"] != false, sink)
     }
 
     /// `run.finish {id, status, reason?, summary?}`
@@ -413,24 +419,13 @@ impl Engine {
             .unwrap_or_default()
     }
 
-    /// `session.move {run_id, name, placement, cmux_caller?}`: move a live
-    /// session of the run (`orchestrator` or a worker's name) as the
-    /// placement flags say, without restarting it. Settings the flags don't
-    /// give stay as they were; `from: caller` is the cmux pane that ran the
-    /// move (`cmux_caller`). Returns the session, with `attach_command`.
-    fn move_session(&self, p: &Value) -> CliResult<Value> {
-        let run_id = req_id_at(p, "run_id")?;
-        let name = req_str(p, "name")?;
-        let flags = p
-            .get("placement")
-            .filter(|v| !v.is_null())
-            .map(placement::Settings::from_json)
-            .transpose()?
-            .filter(|f| !f.is_empty())
-            .ok_or_else(|| {
-                CliError::invalid("say where to move it")
-                    .with_hint("give placement flags, e.g. --layout split or --preset <name>")
-            })?;
+    /// A run's session by name (its main role, or a worker's name), with
+    /// the run and all its recorded sessions.
+    fn find_session(
+        &self,
+        run_id: i64,
+        name: &str,
+    ) -> CliResult<(store::Run, Vec<store::Session>, store::Session)> {
         let run = self.with_store(|store| {
             store
                 .get_run(run_id, false)
@@ -469,6 +464,56 @@ impl Engine {
                 };
                 CliError::not_found(format!("run {run_id} has no session `{name}`")).with_hint(hint)
             })?;
+        Ok((run, recorded, s))
+    }
+
+    /// `session.attach_command {run_id, worker?}`: how to attach to the run's
+    /// main session (or a worker's) from a terminal on this machine.
+    fn attach_session(&self, p: &Value) -> CliResult<Value> {
+        let run_id = req_id_at(p, "run_id")?;
+        let mode = self.with_store(|store| {
+            store
+                .get_run(run_id, false)
+                .map_err(internal)?
+                .map(|r| r.mode)
+                .ok_or_else(|| CliError::not_found(format!("run {run_id} not found")))
+        })?;
+        let name = opt_str(p, "worker").unwrap_or(orchestrator::role(mode));
+        let (_, _, s) = self.find_session(run_id, name)?;
+        if session::is_alive(&s) == Some(false) {
+            return Err(CliError::invalid(format!(
+                "session `{name}` of run {run_id} isn't running"
+            ))
+            .with_hint(format!("its logs: `tome runs logs {run_id}`")));
+        }
+        Ok(json!({
+            "run_id": run_id,
+            "session": name,
+            "name": s.name,
+            "backend": s.backend,
+            "command": session::attach_command(&s),
+        }))
+    }
+
+    /// `session.move {run_id, name, placement, cmux_caller?}`: move a live
+    /// session of the run (`orchestrator` or a worker's name) as the
+    /// placement flags say, without restarting it. Settings the flags don't
+    /// give stay as they were; `from: caller` is the cmux pane that ran the
+    /// move (`cmux_caller`). Returns the session, with `attach_command`.
+    fn move_session(&self, p: &Value) -> CliResult<Value> {
+        let run_id = req_id_at(p, "run_id")?;
+        let name = req_str(p, "name")?;
+        let flags = p
+            .get("placement")
+            .filter(|v| !v.is_null())
+            .map(placement::Settings::from_json)
+            .transpose()?
+            .filter(|f| !f.is_empty())
+            .ok_or_else(|| {
+                CliError::invalid("say where to move it")
+                    .with_hint("give placement flags, e.g. --layout split or --preset <name>")
+            })?;
+        let (run, recorded, s) = self.find_session(run_id, name)?;
         if session::is_alive(&s) != Some(true) {
             return Err(CliError::invalid(format!(
                 "session `{name}` of run {run_id} isn't running"

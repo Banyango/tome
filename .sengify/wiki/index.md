@@ -45,3 +45,4 @@
 - [014 - Remote nodes](features/014-remote-nodes/feature.md)
 - [015 - herdr backend](features/015-herdr-backend/feature.md)
 - [016 - Single-agent runs](features/016-single-agent-runs/feature.md)
+- [017 - Resume failed runs](features/017-resume-failed-runs/feature.md)

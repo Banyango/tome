@@ -131,7 +131,7 @@ impl Engine {
                 return Ok((event, None));
             }
             if let Some(wf) = workflow {
-                deliveries.retain(|d| d.workflow == wf);
+                deliveries.retain(|d| super::forward::names(d, wf));
                 if deliveries.is_empty() {
                     return Err(CliError::not_found(format!(
                         "event {id} wasn't delivered to `{wf}`"

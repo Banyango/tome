@@ -47,17 +47,22 @@ pub fn fire(
     payload: Option<&str>,
     dry_run: bool,
 ) -> CliResult<Report> {
-    let library = Library::discover(cwd);
-    // An invalid workflow still fires, so the daemon records the error.
-    let path = match library.locate(target)? {
-        Ok(wf) => wf.path,
-        Err(inv) => inv.path,
+    let (path, project, root) = match crate::node::target() {
+        Some(node) => on_node(node, cwd, target)?,
+        None => {
+            let library = Library::discover(cwd);
+            // An invalid workflow still fires, so the daemon records the error.
+            let path = match library.locate(target)? {
+                Ok(wf) => wf.path,
+                Err(inv) => inv.path,
+            };
+            let project = match library.scope_of(&path) {
+                Scope::Project => library.project_root().map(|r| canonical(&r)),
+                Scope::Global => None,
+            };
+            (canonical(&path), project.clone(), project)
+        }
     };
-    let project = match library.scope_of(&path) {
-        Scope::Project => library.project_root().map(|r| canonical(&r)),
-        Scope::Global => None,
-    };
-    let path = canonical(&path);
     let cwd = canonical(cwd);
     // Paths as a file watcher would report them: relative to the project
     // root, absolute for global workflows.
@@ -65,7 +70,7 @@ pub fn fire(
         .iter()
         .map(|p| {
             let abs = cwd.join(p);
-            match &project {
+            match &root {
                 Some(root) => abs
                     .strip_prefix(root)
                     .map(|r| r.display().to_string())
@@ -114,6 +119,38 @@ pub fn fire(
     Ok(Report::new(out, human).with_exit(code))
 }
 
+/// `triggers fire --on <node>`: the workflow called `target` as the node
+/// resolves it, with the node's copy of this project. Returns the
+/// workflow's path and project there, and this project's root here (what
+/// `--paths` are relative to).
+fn on_node(
+    node: &crate::node::Node,
+    cwd: &Path,
+    target: &str,
+) -> CliResult<(PathBuf, Option<PathBuf>, Option<PathBuf>)> {
+    if target.contains('/') || target.ends_with(".md") {
+        return Err(CliError::invalid(format!(
+            "`{target}` is a path; with --on, give the workflow's name"
+        ))
+        .with_hint(format!(
+            "the node resolves it: `tome triggers fire <name> --on {}`",
+            node.name
+        )));
+    }
+    let local = project_of(cwd);
+    let mapped = match &local {
+        Some(l) => Some(crate::node::map_project(l)?),
+        None => None,
+    };
+    let out = call(
+        "workflow.resolve",
+        json!({ "name": target, "project_path": mapped }),
+    )?;
+    let path = PathBuf::from(out["path"].as_str().unwrap_or_default());
+    let project = mapped.filter(|_| out["scope"] == "project");
+    Ok((path, project, local))
+}
+
 fn project_arg(cwd: &Path, project: Option<PathBuf>) -> CliResult<PathBuf> {
     match project {
         Some(p) => {
@@ -135,15 +172,16 @@ fn project_arg(cwd: &Path, project: Option<PathBuf>) -> CliResult<PathBuf> {
 
 /// `tome triggers enable|disable [--project <path>]`
 pub fn enable(cwd: &Path, project: Option<PathBuf>, enabled: bool) -> CliResult<Report> {
-    let path = project_arg(cwd, project)?;
+    let path = crate::node::map_project(&project_arg(cwd, project)?)?;
     let p = call(
         "triggers.enable",
         json!({ "project": path, "enabled": enabled }),
     )?;
     let human = format!(
-        "triggers {} for {}",
+        "triggers {} for {}{}",
         if enabled { "enabled" } else { "disabled" },
-        path.display()
+        path.display(),
+        crate::node::on_suffix()
     );
     Ok(Report::new(p, human))
 }

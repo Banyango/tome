@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod admin;
+pub mod forward;
 mod lifecycle;
 
 pub const METHODS: &[&str] = &[
@@ -88,6 +89,8 @@ pub struct Published {
     pub event: Option<BusEvent>,
     pub deliveries: Vec<Delivery>,
     pub matches: Vec<Armed>,
+    /// The forward deliveries it gets (or would, on a dry run).
+    pub forwards: Vec<Subscriber>,
 }
 
 /// `run 12`, or `run 12 worker w1`.
@@ -123,13 +126,17 @@ impl Engine {
     }
 
     /// `events.publish {topic, payload, project_path?, run_id?, worker?,
-    /// dry_run?}`: from inside a run (`run_id`) it goes to the run's
-    /// project.
+    /// dry_run?, forwarded?}`: from inside a run (`run_id`) it goes to the
+    /// run's project. `forwarded {origin, sender, depth}` is an event from
+    /// another machine.
     fn publish_rpc(&self, p: &Value) -> CliResult<Value> {
         let topic = req_str(p, "topic")?;
         let payload = opt_str(p, "payload").unwrap_or_default();
         topic::check_name(topic).map_err(CliError::invalid)?;
-        if topic::is_reserved(topic) {
+        // From another machine (`publish --on`, or `bus.forward`): its
+        // sender, and the depth its chain had reached.
+        let forwarded = p.get("forwarded").filter(|f| f.is_object());
+        if forwarded.is_none() && topic::is_reserved(topic) {
             return Err(CliError::invalid(format!(
                 "topic `{topic}` is reserved: `{}.*` events are tome's own",
                 topic::RESERVED
@@ -153,15 +160,28 @@ impl Engine {
             }
         };
         let worker = opt_str(p, "worker").filter(|w| !w.is_empty());
+        let (sender, depth) = match forwarded {
+            Some(f) => (
+                format!(
+                    "node {} ({})",
+                    f["origin"].as_str().unwrap_or("?"),
+                    f["sender"].as_str().unwrap_or("user")
+                ),
+                f["depth"].as_i64().unwrap_or(0),
+            ),
+            None => (
+                run.as_ref()
+                    .map_or_else(|| "user".to_string(), |r| run_sender(r.id, worker)),
+                run.as_ref().map_or(0, depth_from),
+            ),
+        };
         let publish = Publish {
             project: Path::new(&project),
             topic,
             payload,
-            sender: run
-                .as_ref()
-                .map_or_else(|| "user".to_string(), |r| run_sender(r.id, worker)),
+            sender,
             sender_run: run.as_ref().map(|r| r.id),
-            depth: run.as_ref().map_or(0, depth_from),
+            depth,
             only: None,
         };
         let dry_run = p["dry_run"] == true;
@@ -169,12 +189,16 @@ impl Engine {
             self.with_store(|store| store.register_project(&project).map(|_| ()))?;
         }
         let published = self.publish(&publish, dry_run)?;
-        let names: Vec<&str> = published.matches.iter().map(|a| a.name.as_str()).collect();
+        let names: Vec<&str> = published
+            .deliveries
+            .iter()
+            .map(|d| d.workflow.as_str())
+            .collect();
         let enabled = self
             .with_store(|store| store.projects())?
             .iter()
             .any(|p| p.path == project && p.enabled);
-        let matches: Vec<Value> = published
+        let mut matches: Vec<Value> = published
             .matches
             .iter()
             .map(|a| {
@@ -185,6 +209,14 @@ impl Engine {
                 m
             })
             .collect();
+        matches.extend(published.forwards.iter().map(|f| {
+            let node = f.workflow_path.trim_start_matches("node:");
+            let mut m = json!({ "workflow": f.workflow_name, "node": node, "on": format!("forward {}", f.pattern) });
+            if dry_run {
+                m["would"] = json!(format!("would forward to {node}"));
+            }
+            m
+        }));
         Ok(json!({
             "event": published.event,
             "project": project,
@@ -207,14 +239,21 @@ impl Engine {
         if e.depth > MAX_DEPTH {
             return Err(self.refuse(e, &project, dry_run));
         }
+        // A test event is for one workflow: it isn't forwarded.
+        let forwards = if e.only.is_some() {
+            Vec::new()
+        } else {
+            forward::subscribers(e)
+        };
         if dry_run {
             return Ok(Published {
                 event: None,
                 deliveries: Vec::new(),
                 matches,
+                forwards,
             });
         }
-        let subscribers: Vec<Subscriber> = matches
+        let mut subscribers: Vec<Subscriber> = matches
             .iter()
             .map(|a| Subscriber {
                 workflow_name: a.name.clone(),
@@ -222,6 +261,7 @@ impl Engine {
                 pattern: pattern_of(a).map(ToString::to_string).unwrap_or_default(),
             })
             .collect();
+        subscribers.extend(forwards.iter().cloned());
         let (event, deliveries) = self.with_store(|store| {
             let published = store.publish_event(
                 &NewEvent {
@@ -258,10 +298,12 @@ impl Engine {
             e.sender,
             deliveries.len()
         );
+        self.forward_unknown(&deliveries);
         Ok(Published {
             event: Some(event),
             deliveries,
             matches,
+            forwards,
         })
     }
 

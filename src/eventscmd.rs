@@ -3,10 +3,10 @@
 
 use crate::output::{table, CliError, CliResult, Report};
 use crate::triggerscmd::project_of;
-use crate::{paths, rpc};
+use crate::{node, paths, rpc};
 use serde_json::{json, Value};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn call(method: &str, params: Value) -> CliResult<Value> {
     rpc::call(&paths::socket_path(), method, params)
@@ -27,6 +27,10 @@ pub fn publish(cwd: &Path, topic: &str, text: String, dry_run: bool) -> CliResul
         text
     };
     let run = env("TOME_RUN_ID");
+    if let Some(node) = node::target() {
+        let out = publish_to(node, cwd, topic, &payload, run.as_deref(), dry_run)?;
+        return Ok(Report::new(out.clone(), publish_human(&out)));
+    }
     let project = project_of(cwd);
     if run.is_none() && project.is_none() {
         return Err(CliError::invalid("not inside a project")
@@ -44,6 +48,57 @@ pub fn publish(cwd: &Path, topic: &str, text: String, dry_run: bool) -> CliResul
         }),
     )?;
     Ok(Report::new(out.clone(), publish_human(&out)))
+}
+
+/// `tome publish --on <node>`: to the node's copy of this project (inside
+/// a run, the run's project), sent as forwarded from this machine so the
+/// node's subscribers see who published it and the chain keeps its depth.
+fn publish_to(
+    node: &node::Node,
+    cwd: &Path,
+    topic: &str,
+    payload: &str,
+    run: Option<&str>,
+    dry_run: bool,
+) -> CliResult<Value> {
+    let (local, sender, depth) = match run {
+        Some(id) => {
+            let shown = rpc::Client::local(&paths::socket_path())?
+                .call("runs.show", json!({ "id": id }))?;
+            let run = &shown["run"];
+            let id = run["id"].as_i64().unwrap_or_default();
+            let project = run["project_path"].as_str().map(PathBuf::from);
+            let depth = Some(&run["trigger"])
+                .filter(|t| t["event_id"].is_i64())
+                .and_then(|t| t["depth"].as_i64())
+                .map_or(0, |d| d + 1);
+            let worker = env("TOME_WORKER_ID");
+            (
+                project,
+                crate::bus::run_sender(id, worker.as_deref()),
+                depth,
+            )
+        }
+        None => (project_of(cwd), "user".to_string(), 0),
+    };
+    let local = local.ok_or_else(|| {
+        CliError::invalid("not inside a project")
+            .with_hint("run `tome publish` in a project (a directory with .tome/)")
+    })?;
+    let project = node::map_project(&local)?;
+    let mut client = rpc::Client::to_node(node)?;
+    let mut out = client.call(
+        "events.publish",
+        json!({
+            "topic": topic,
+            "payload": payload,
+            "project_path": project,
+            "dry_run": dry_run,
+            "forwarded": { "origin": node::host_name(), "sender": sender, "depth": depth },
+        }),
+    )?;
+    out["node"] = json!(node.name);
+    Ok(out)
 }
 
 fn publish_human(out: &Value) -> String {
@@ -78,14 +133,15 @@ fn publish_human(out: &Value) -> String {
         names.join(", ")
     };
     format!(
-        "event {} on {}: delivered to {to}",
+        "event {} on {}{}: delivered to {to}",
         out["event"]["id"],
-        text(&out["topic"])
+        text(&out["topic"]),
+        node::on_suffix()
     )
 }
 
 fn project(cwd: &Path) -> CliResult<String> {
-    project_of(cwd)
+    node::project(cwd)?
         .map(|p| p.display().to_string())
         .ok_or_else(|| {
             CliError::invalid("not inside a project")

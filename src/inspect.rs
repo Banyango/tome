@@ -21,7 +21,7 @@ fn s(v: &Value) -> String {
 
 /// Stored timestamps are UTC (`2026-01-02T03:04:05.000Z`); human output
 /// shows them in local time as `YYYY-MM-DD HH:MM:SS`.
-fn ts(v: &Value) -> String {
+pub fn ts(v: &Value) -> String {
     match v.as_str() {
         Some(t) => local_time(t).unwrap_or_else(|| t.to_string()),
         None => s(v),
@@ -85,8 +85,9 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
     let data = call("runs.show", json!({ "id": id, "snapshot": snapshot }))?;
     let run = &data["run"];
     let mut out = format!(
-        "run {}  {}  [{}]\n",
+        "run {}{}  {}  [{}]\n",
         s(&run["id"]),
+        crate::node::on_suffix(),
         s(&run["workflow_name"]),
         s(&run["status"])
     );

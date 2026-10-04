@@ -5,9 +5,10 @@
 //! through `--run <id>` or `TOME_RUN_ID`.
 
 use crate::engine::reason;
-use crate::output::{exit, CliError, CliResult, Mode, Report};
+use crate::node::{self, Node};
+use crate::output::{exit, CliError, CliResult, ErrorKind, Mode, Report};
 use crate::paths;
-use crate::placement::Settings;
+use crate::placement::{self, Settings};
 use crate::rpc;
 use crate::workflow::Library;
 use chrono::{Local, NaiveDateTime, TimeZone};
@@ -53,6 +54,90 @@ pub fn start_params(
     Ok(p)
 }
 
+/// The connection and `run.start` params for starting `target`: here, or
+/// on the node this command goes to.
+fn prepare(
+    cwd: &Path,
+    target: &str,
+    params: &[String],
+    placement: &Settings,
+) -> CliResult<(rpc::Client, Value)> {
+    match node::target() {
+        Some(node) => remote_start_params(node, cwd, target, params, placement),
+        None => {
+            let p = start_params(cwd, target, params, placement)?;
+            Ok((rpc::Client::connect(&paths::socket_path())?, p))
+        }
+    }
+}
+
+/// `tome run <name> --on <node>`: the workflow is the node's, found by name
+/// in the node's copy of the project, else its global workflows. Prints the
+/// file the node uses, and warns when the two copies of the project differ.
+fn remote_start_params(
+    node: &Node,
+    cwd: &Path,
+    name: &str,
+    params: &[String],
+    placement: &Settings,
+) -> CliResult<(rpc::Client, Value)> {
+    if name.contains('/') || name.ends_with(".md") {
+        return Err(CliError::invalid(format!(
+            "`{name}` is a path, which means nothing on {}",
+            node.name
+        ))
+        .with_hint("give the workflow's name: it's looked up on the node"));
+    }
+    if matches!(placement.from, Some(placement::From::Caller)) {
+        return Err(CliError::invalid(format!(
+            "--from caller is the pane running this command, which isn't on {}",
+            node.name
+        ))
+        .with_hint("use --from orchestrator, last or first"));
+    }
+    let mut client = rpc::Client::to_node(node)?;
+    let mut project_path = None;
+    if let Some(local) = crate::triggerscmd::project_of(cwd) {
+        let here = node::git_state(&local);
+        let found = node::locate(&mut client, node, &local, here.is_some())?;
+        let dir = local
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        for w in node::drift(&node.name, &dir, here.as_ref(), found.git.as_ref()) {
+            eprintln!("warning: {w}");
+        }
+        project_path = Some(found.path);
+    }
+    let wf = match client.call(
+        "workflow.resolve",
+        json!({ "name": name, "project_path": project_path }),
+    ) {
+        Ok(wf) => wf,
+        Err(e) if e.kind == ErrorKind::NotFound => {
+            let mut err = CliError::not_found(format!("{} on {}", e.message, node.name));
+            if Library::discover(cwd).find(name).is_ok() {
+                err = err.with_hint(format!(
+                    "it's here but not on {n}: commit and push it, then pull it on {n}",
+                    n = node.name
+                ));
+            }
+            return Err(err);
+        }
+        Err(e) => return Err(e),
+    };
+    eprintln!("workflow: {} (on {})", s(&wf["path"]), node.name);
+    let mut p = json!({
+        "workflow_path": wf["path"],
+        "project_path": project_path,
+        "params": params,
+    });
+    if !placement.is_empty() {
+        p["placement"] = json!(placement);
+    }
+    Ok((client, p))
+}
+
 /// `tome run <wf> --detach`: start the run and return its id right away.
 pub fn start_detached(
     cwd: &Path,
@@ -60,10 +145,12 @@ pub fn start_detached(
     params: &[String],
     placement: &Settings,
 ) -> CliResult<Report> {
-    let run = call("run.start", start_params(cwd, target, params, placement)?)?;
+    let (mut client, p) = prepare(cwd, target, params, placement)?;
+    let run = client.call("run.start", p)?;
     let human = format!(
-        "run {} {} ({})",
+        "run {}{} {} ({})",
         run["id"],
+        node::on_suffix(),
         run["status"].as_str().unwrap_or("?"),
         s(&run["workflow_name"])
     );
@@ -76,7 +163,9 @@ pub fn start_detached(
 ///
 /// Ctrl-C (or SIGTERM/SIGHUP) cancels the run and waits for the daemon to
 /// confirm; a second one exits right away. If this process dies instead, the
-/// daemon notices the closed connection and cancels the run itself.
+/// daemon notices the closed connection and cancels the run itself, except
+/// on a node: there a dropped connection leaves the run going, since SSH
+/// connections drop for reasons of their own.
 pub fn start_attached(
     cwd: &Path,
     target: &str,
@@ -84,9 +173,11 @@ pub fn start_attached(
     placement: &Settings,
     mode: Mode,
 ) -> CliResult<Report> {
-    let mut start = start_params(cwd, target, params, placement)?;
+    let (mut client, mut start) = prepare(cwd, target, params, placement)?;
     start["attach"] = json!(true);
-    let mut client = rpc::Client::connect(&paths::socket_path())?;
+    if node::target().is_some() {
+        start["cancel_on_disconnect"] = json!(false);
+    }
     install_signal_handlers();
 
     let run_id: Cell<Option<i64>> = Cell::new(None);
@@ -115,7 +206,20 @@ pub fn start_attached(
             }
             Ok(())
         },
-    )?;
+    );
+    let run = match (run, node::target(), run_id.get()) {
+        (Err(e), Some(node), Some(id)) if e.kind != ErrorKind::Invalid => {
+            return Err(CliError::new(
+                e.kind,
+                format!("{}; run {id} keeps going on {}", e.message, node.name),
+            )
+            .with_hint(format!(
+                "follow it with `tome runs show {}:{id}`",
+                node.name
+            )))
+        }
+        (run, ..) => run?,
+    };
     let code = match run["status"].as_str() {
         Some("succeeded") => exit::OK,
         Some("cancelled") => exit::CANCELLED,
@@ -204,7 +308,11 @@ fn event_line(ev: &Value) -> String {
         }
         _ => {
             let status = s(&ev["status"]);
-            let mut line = format!("[{time}] run {} {status}", ev["run_id"]);
+            let mut line = format!(
+                "[{time}] run {}{} {status}",
+                ev["run_id"],
+                node::on_suffix()
+            );
             match ev["summary"].as_str().or(ev["reason"].as_str()) {
                 Some(detail) if status != "running" && status != "queued" => {
                     line.push_str(&format!(": {detail}"))
@@ -304,7 +412,12 @@ pub fn step(
 }
 
 fn finished_line(run: &Value) -> String {
-    let mut line = format!("run {} {}", run["id"], s(&run["status"]));
+    let mut line = format!(
+        "run {}{} {}",
+        run["id"],
+        node::on_suffix(),
+        s(&run["status"])
+    );
     if let Some(detail) = run["summary"].as_str().or(run["reason"].as_str()) {
         line.push_str(&format!(": {detail}"));
     }

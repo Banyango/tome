@@ -17,7 +17,8 @@ pub mod exit {
     pub const FAILURE: i32 = 1;
     /// Invalid input: bad arguments or an invalid workflow.
     pub const INVALID: i32 = 2;
-    /// The daemon isn't running (also `tome daemon status` when stopped).
+    /// The daemon isn't running (also `tome daemon status` when stopped), or
+    /// a node can't be reached.
     pub const DAEMON_UNAVAILABLE: i32 = 3;
     /// `tome queue pull` found nothing to claim.
     pub const EMPTY: i32 = 3;
@@ -52,6 +53,8 @@ pub enum ErrorKind {
     Invalid,
     InvalidWorkflow,
     DaemonNotRunning,
+    /// A node can't be reached over SSH, or tome isn't found on it.
+    Unreachable,
     NotFound,
     /// Refused because of the state things are in (e.g. a concurrency limit).
     Conflict,
@@ -64,6 +67,7 @@ impl ErrorKind {
             ErrorKind::Invalid => "invalid",
             ErrorKind::InvalidWorkflow => "invalid_workflow",
             ErrorKind::DaemonNotRunning => "daemon_not_running",
+            ErrorKind::Unreachable => "node_unreachable",
             ErrorKind::NotFound => "not_found",
             ErrorKind::Conflict => "conflict",
         }
@@ -74,6 +78,7 @@ impl ErrorKind {
             "invalid" => ErrorKind::Invalid,
             "invalid_workflow" => ErrorKind::InvalidWorkflow,
             "daemon_not_running" => ErrorKind::DaemonNotRunning,
+            "node_unreachable" => ErrorKind::Unreachable,
             "not_found" => ErrorKind::NotFound,
             "conflict" => ErrorKind::Conflict,
             _ => ErrorKind::Internal,
@@ -84,7 +89,7 @@ impl ErrorKind {
         match self {
             ErrorKind::Internal | ErrorKind::Conflict => exit::FAILURE,
             ErrorKind::Invalid | ErrorKind::InvalidWorkflow => exit::INVALID,
-            ErrorKind::DaemonNotRunning => exit::DAEMON_UNAVAILABLE,
+            ErrorKind::DaemonNotRunning | ErrorKind::Unreachable => exit::DAEMON_UNAVAILABLE,
             ErrorKind::NotFound => exit::NOT_FOUND,
         }
     }
@@ -325,6 +330,7 @@ mod tests {
             ErrorKind::Invalid,
             ErrorKind::InvalidWorkflow,
             ErrorKind::DaemonNotRunning,
+            ErrorKind::Unreachable,
             ErrorKind::NotFound,
         ] {
             assert_eq!(ErrorKind::parse(kind.as_str()), kind);

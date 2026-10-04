@@ -4,13 +4,16 @@
 //! Errors carry the tome [`ErrorKind`] in `error.data.kind` (plus an optional
 //! `hint` / `details`) so the CLI can map them straight onto its exit codes.
 
+use crate::node::Node;
 use crate::output::{CliError, CliResult, ErrorKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, ErrorKind as IoErrorKind, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+mod ssh;
 
 pub const JSONRPC: &str = "2.0";
 
@@ -121,25 +124,113 @@ impl RpcError {
     }
 }
 
-/// A connection to the daemon. One connection can carry many requests.
+/// A connection to a daemon: this machine's over its socket, or a node's
+/// through `ssh <dest> <tome> rpc --stdio`. One connection can carry many
+/// requests.
 pub struct Client {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
+    conn: Conn,
     next_id: u64,
+    /// The node's `daemon.ping` answer, on a connection to a node.
+    pub pong: Option<Value>,
+    /// How long that ping took.
+    pub rtt: Option<Duration>,
 }
 
+enum Conn {
+    Unix {
+        reader: BufReader<UnixStream>,
+        writer: UnixStream,
+        /// Kept across timeouts: a read can stop mid-line.
+        partial: Vec<u8>,
+    },
+    Ssh(ssh::Conn),
+}
+
+/// What a read got.
+enum Got {
+    Line(Vec<u8>),
+    /// Nothing within the timeout.
+    Idle,
+    Closed,
+}
+
+impl Conn {
+    fn write_line(&mut self, line: &[u8]) -> std::io::Result<()> {
+        match self {
+            Conn::Unix { writer, .. } => writer.write_all(line),
+            Conn::Ssh(c) => c.write_line(line),
+        }
+    }
+
+    fn read(&mut self, timeout: Duration) -> CliResult<Got> {
+        match self {
+            Conn::Unix {
+                reader, partial, ..
+            } => {
+                reader.get_ref().set_read_timeout(Some(timeout))?;
+                match reader.read_until(b'\n', partial) {
+                    Ok(0) => Ok(Got::Closed),
+                    Ok(_) if partial.ends_with(b"\n") => Ok(Got::Line(std::mem::take(partial))),
+                    Ok(_) => Ok(Got::Idle),
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            IoErrorKind::WouldBlock
+                                | IoErrorKind::TimedOut
+                                | IoErrorKind::Interrupted
+                        ) =>
+                    {
+                        Ok(Got::Idle)
+                    }
+                    Err(e) => Err(CliError::internal(format!(
+                        "failed to read from the daemon: {e}"
+                    ))),
+                }
+            }
+            Conn::Ssh(c) => c.read(timeout),
+        }
+    }
+
+    /// The error for a connection that closed before its answer came.
+    fn closed(&mut self, what: &str) -> CliError {
+        match self {
+            Conn::Unix { .. } => {
+                CliError::internal(format!("the daemon closed the connection {what}"))
+            }
+            Conn::Ssh(c) => c.closed_error(what),
+        }
+    }
+}
+
+/// How long a plain call waits for its answer.
+const CALL_TIMEOUT: Duration = Duration::from_secs(300);
+
 impl Client {
-    /// Connect to the daemon. Never starts it: if nothing is listening, this
-    /// fails with a `daemon_not_running` error carrying a hint.
+    /// Connect to the daemon: the target node's if this command has one
+    /// (`--on`), else this machine's. Never starts the local daemon: if
+    /// nothing is listening, this fails with a `daemon_not_running` error
+    /// carrying a hint.
     pub fn connect(socket: &Path) -> CliResult<Client> {
+        match crate::node::target() {
+            Some(node) => Client::to_node(node),
+            None => Client::local(socket),
+        }
+    }
+
+    /// Connect to this machine's daemon.
+    pub fn local(socket: &Path) -> CliResult<Client> {
         match UnixStream::connect(socket) {
             Ok(stream) => {
-                stream.set_read_timeout(Some(Duration::from_secs(300)))?;
                 let writer = stream.try_clone()?;
                 Ok(Client {
-                    reader: BufReader::new(stream),
-                    writer,
+                    conn: Conn::Unix {
+                        reader: BufReader::new(stream),
+                        writer,
+                        partial: Vec::new(),
+                    },
                     next_id: 1,
+                    pong: None,
+                    rtt: None,
                 })
             }
             Err(e) if is_not_running(&e) => Err(CliError::daemon_not_running()),
@@ -150,19 +241,33 @@ impl Client {
         }
     }
 
+    /// Connect to a node's daemon over SSH. The first request is
+    /// `daemon.ping`: a node speaking another protocol is refused before
+    /// anything else is sent.
+    pub fn to_node(node: &Node) -> CliResult<Client> {
+        let mut client = Client {
+            conn: Conn::Ssh(ssh::Conn::open(node)?),
+            next_id: 1,
+            pong: None,
+            rtt: None,
+        };
+        let started = Instant::now();
+        let pong = client.call("daemon.ping", json!({ "protocol": crate::node::PROTOCOL }))?;
+        client.rtt = Some(started.elapsed());
+        crate::node::check_protocol(node, &pong)?;
+        client.pong = Some(pong);
+        Ok(client)
+    }
+
     pub fn call(&mut self, method: &str, params: Value) -> CliResult<Value> {
         self.send(method, params)?;
-        let mut buf = String::new();
-        let n = self
-            .reader
-            .read_line(&mut buf)
-            .map_err(|e| CliError::internal(format!("failed to read daemon response: {e}")))?;
-        if n == 0 {
-            return Err(CliError::internal(
-                "daemon closed the connection without responding",
-            ));
+        match self.conn.read(CALL_TIMEOUT)? {
+            Got::Line(line) => parse_response(&line),
+            Got::Idle => Err(CliError::internal(
+                "timed out waiting for the daemon's response",
+            )),
+            Got::Closed => Err(self.conn.closed("without responding")),
         }
-        parse_response(buf.as_bytes())
     }
 
     /// Make a streaming request: `on_event` gets each `run.event`
@@ -177,18 +282,10 @@ impl Client {
         mut on_idle: impl FnMut() -> CliResult<()>,
     ) -> CliResult<Value> {
         self.send(method, params)?;
-        self.reader.get_ref().set_read_timeout(Some(STREAM_POLL))?;
-        // Kept across timeouts: a read can stop mid-line.
-        let mut buf = Vec::new();
         loop {
-            match self.reader.read_until(b'\n', &mut buf) {
-                Ok(0) => {
-                    return Err(CliError::internal(
-                        "the daemon closed the connection mid-run",
-                    ))
-                }
-                Ok(_) if buf.ends_with(b"\n") => {
-                    let line = std::mem::take(&mut buf);
+            match self.conn.read(STREAM_POLL)? {
+                Got::Closed => return Err(self.conn.closed("mid-run")),
+                Got::Line(line) => {
                     let msg: Value = serde_json::from_slice(&line).map_err(|e| {
                         CliError::internal(format!("malformed daemon message: {e}"))
                     })?;
@@ -198,20 +295,7 @@ impl Client {
                         return parse_response(&line);
                     }
                 }
-                Ok(_) => {}
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        IoErrorKind::WouldBlock | IoErrorKind::TimedOut | IoErrorKind::Interrupted
-                    ) =>
-                {
-                    on_idle()?
-                }
-                Err(e) => {
-                    return Err(CliError::internal(format!(
-                        "failed to read from the daemon: {e}"
-                    )))
-                }
+                Got::Idle => on_idle()?,
             }
         }
     }
@@ -224,14 +308,21 @@ impl Client {
             id: json!(id),
             method: method.into(),
             params,
-            caller: caller(),
+            // An agent here is no caller of a node's daemon.
+            caller: caller().filter(|_| matches!(self.conn, Conn::Unix { .. })),
         };
         let mut line =
             serde_json::to_string(&req).map_err(|e| CliError::internal(e.to_string()))?;
         line.push('\n');
-        self.writer
-            .write_all(line.as_bytes())
-            .map_err(|e| CliError::internal(format!("failed to send request to daemon: {e}")))
+        if let Err(e) = self.conn.write_line(line.as_bytes()) {
+            return Err(match &mut self.conn {
+                Conn::Ssh(c) => c.closed_error("before the request was sent"),
+                Conn::Unix { .. } => {
+                    CliError::internal(format!("failed to send request to daemon: {e}"))
+                }
+            });
+        }
+        Ok(())
     }
 }
 
@@ -266,4 +357,15 @@ fn is_not_running(e: &std::io::Error) -> bool {
 /// One-shot call helper.
 pub fn call(socket: &Path, method: &str, params: Value) -> CliResult<Value> {
     Client::connect(socket)?.call(method, params)
+}
+
+/// Whether a connection failed because ssh couldn't sign in.
+pub fn is_auth_failure(e: &CliError) -> bool {
+    ssh::is_auth_failure(e)
+}
+
+/// The error for an ssh to `node` that ended (exit `code`, saying `stderr`)
+/// before tome answered.
+pub fn classify_ssh(node: &Node, code: Option<i32>, stderr: &str) -> CliError {
+    ssh::classify(node, code, stderr, "before tome answered")
 }

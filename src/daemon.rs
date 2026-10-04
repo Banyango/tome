@@ -43,6 +43,8 @@ impl Daemon {
             "home": paths::tome_home(),
             "socket": self.socket,
             "database": paths::db_path(),
+            "service": crate::service::installed().is_some(),
+            "host": crate::node::host_name(),
         })
     }
 
@@ -51,7 +53,9 @@ impl Daemon {
     /// has been written.
     fn handle(&self, req: &Request) -> Option<(CliResult<Value>, bool)> {
         let handled = match req.method.as_str() {
-            "daemon.ping" => (Ok(json!({ "pong": true })), false),
+            "daemon.ping" => (Ok(crate::node::ping()), false),
+            "project.locate" => (crate::node::locate_rpc(&req.params), false),
+            "workflow.resolve" => (crate::node::resolve_workflow_rpc(&req.params), false),
             "daemon.status" => (Ok(self.status()), false),
             "daemon.shutdown" => (Ok(json!({ "stopping": true })), true),
             method if Engine::handles(method) => (self.engine.dispatch(method, &req.params), false),

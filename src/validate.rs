@@ -78,9 +78,25 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
         }
     }
 
-    let valid = results.iter().all(|r| r["valid"] == true);
-    let human = render_human(&results, target.is_none());
-    let data = json!({ "valid": valid, "workflows": results });
+    // The project's forwarding rules, when checking everything.
+    let bus = target
+        .is_none()
+        .then(|| crate::triggerscmd::project_of(cwd))
+        .flatten()
+        .map(|root| crate::bus::forward::check(&root));
+    let bus_ok = bus.as_ref().is_none_or(|(errors, _)| errors.is_empty());
+    let valid = results.iter().all(|r| r["valid"] == true) && bus_ok;
+    let mut human = render_human(&results, target.is_none());
+    let mut data = json!({ "valid": valid, "workflows": results });
+    if let Some((errors, warnings)) = bus {
+        for e in &errors {
+            human.push_str(&format!("invalid bus.forward: {e}\n"));
+        }
+        for w in &warnings {
+            human.push_str(&format!("warning: {w}\n"));
+        }
+        data["bus"] = json!({ "errors": errors, "warnings": warnings });
+    }
     Ok(Report::new(data, human).with_exit(if valid { exit::OK } else { exit::INVALID }))
 }
 

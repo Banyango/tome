@@ -233,6 +233,37 @@ tome query "select id, workflow_name, status, reason from runs order by id desc 
 Add `--json` to any command, or set `TOME_OUTPUT=json`, for machine-readable
 output. Prefer it when you parse results.
 
+## Other machines (nodes)
+
+Nodes are machines reached over SSH, listed under `nodes:` in
+`~/.tome/config.yaml` (`tome node add <name> <ssh-destination>`). Add
+`--on <node>` to run a daemon command there. A workflow is resolved by name on
+the node, so commit and pull it there first.
+
+```sh
+tome node ls                               # reachable? version? daemon?
+tome node check mini                       # what's wrong, and the fix
+tome run build --on mini --detach          # `build` as the node resolves it
+tome runs show mini:12                     # <node>:<id> names a node's run
+tome runs list --nodes                     # every machine, with a NODE column
+tome session view mini:12                  # attach to its tmux session
+tome publish --on mini deploy.requested "1.4.2"   # hand work to another machine
+```
+
+To forward a project's events to a node, add rules to its
+`.tome/config.yaml`:
+
+```yaml
+bus:
+  forward:
+    - topic: tome.run.build.succeeded
+      to: mini            # or [mini, ci]
+```
+
+Agent commands (`ready`, `step`, `worker`, `run finish`) refuse `--on`. So do
+local ones (`validate`, `workflow`, `layout`, `node`). Inside a run,
+`TOME_NODE` is ignored.
+
 ## When something goes wrong
 
 - `agent_exited` / `orchestrator_exited` / `worker_exited`: the agent's session ended without
@@ -245,5 +276,6 @@ output. Prefer it when you parse results.
 - Trigger not firing: check `tome daemon status`, `tome triggers ls`, then
   `tome triggers fire <workflow> --dry-run`.
 - Stuck bus delivery: `tome events ls`, then `tome events retry` or `remove`.
+- A node can't be reached (exit 3): `tome node check <node>`.
 
 Don't guess at flags: `tome --help` and `tome <command> --help` list them all.

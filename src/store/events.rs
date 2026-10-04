@@ -284,6 +284,8 @@ impl Store {
                 &[&project, &state::PENDING],
             )?
             .into_iter()
+            // Forward deliveries aren't subscriptions; they stay.
+            .filter(|d| !d.workflow_path.starts_with("node:"))
             .filter(|d| {
                 !keep.contains(&d.workflow)
                     && !live

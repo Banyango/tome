@@ -39,7 +39,7 @@ The mode is set in the frontmatter only. There's no `tome run` flag and no defau
   - reject an unknown `mode` value (exit `2`);
   - warn when the body of a `single` workflow describes spawning workers, groups, worktrees or fan-out/fan-in;
   - warn when a `single` workflow sets something only orchestrated runs use: `defaults.orchestrator_harness`, or an `orchestrator` or `workers` placement block or rule.
-- The bundled examples and docs that delegate get `mode: orchestrated`: fan-out, fan-in-worktrees, the factory examples, command-worker / test-then-fix, the chain examples, and any others whose body spawns workers.
+- The bundled examples and docs that delegate get `mode: orchestrated`: fan-out, fan-in-worktrees, the factory examples, command-worker / test-then-fix, and any others whose body spawns workers. The chain examples don't delegate, so they stay `single`.
 
 ### Visibility
 

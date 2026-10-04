@@ -328,6 +328,7 @@ impl Engine {
             *self.file_polling.lock().unwrap_or_else(|p| p.into_inner()) = files.polling();
             self.settle_ended();
             self.drain_all(&current.armed);
+            self.forward_pending();
             std::thread::sleep(tick());
         }
     }

@@ -21,6 +21,7 @@
 - [Workers, worktrees and fan-out](guides/workers.md)
 - [Sessions and backends](guides/sessions.md)
 - [Operating tome](guides/operating.md)
+- [Remote nodes](guides/nodes.md)
 
 # How it works
 

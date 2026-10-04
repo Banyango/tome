@@ -26,7 +26,8 @@ pub fn status() -> CliResult<Report> {
     match probe()? {
         Some(status) => {
             let human = format!(
-                "tome daemon is running (pid {}, version {}, up {}s)\nsocket: {}",
+                "tome daemon{} is running (pid {}, version {}, up {}s)\nsocket: {}",
+                crate::node::on_suffix(),
                 status["pid"],
                 status["version"].as_str().unwrap_or("?"),
                 status["uptime_secs"],
@@ -115,6 +116,9 @@ pub fn wait_until_up() -> CliResult<Value> {
 /// on `daemon.shutdown`, and both service units only restart it after a
 /// failure.
 pub fn stop() -> CliResult<Report> {
+    if let Some(node) = crate::node::target() {
+        return stop_on(node);
+    }
     let Some(status) = probe()? else {
         return Ok(Report::new(
             json!({ "stopped": false, "was_running": false }),
@@ -140,6 +144,27 @@ pub fn stop() -> CliResult<Report> {
     let human = format!("tome daemon stopped (was pid {})", status["pid"]);
     Ok(Report::new(
         json!({ "stopped": true, "was_running": true, "pid": status["pid"] }),
+        human,
+    ))
+}
+
+/// `tome daemon stop --on <node>`. A node's relay starts its daemon to
+/// answer, so stopping can't be confirmed by probing again: the shutdown's
+/// reply (or the connection closing on it) is the answer.
+fn stop_on(node: &crate::node::Node) -> CliResult<Report> {
+    let mut client = rpc::Client::to_node(node)?;
+    let status = client.call("daemon.status", json!({}))?;
+    match client.call("daemon.shutdown", json!({})) {
+        Ok(_) => {}
+        Err(e) if e.kind == ErrorKind::Internal => {}
+        Err(e) => return Err(e),
+    }
+    let human = format!(
+        "tome daemon on {} stopped (was pid {})",
+        node.name, status["pid"]
+    );
+    Ok(Report::new(
+        json!({ "stopped": true, "was_running": true, "pid": status["pid"], "node": node.name }),
         human,
     ))
 }
