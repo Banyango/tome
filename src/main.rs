@@ -88,6 +88,12 @@ enum Command {
         /// Set a parameter (key=value); repeatable.
         #[arg(long = "param", value_name = "KEY=VALUE")]
         params: Vec<String>,
+        /// Use this harness for the main agent and all workers.
+        #[arg(long)]
+        harness: Option<String>,
+        /// Use this model for the main agent and all workers.
+        #[arg(long)]
+        model: Option<String>,
         /// Return the run id right away instead of streaming the run.
         #[arg(long)]
         detach: bool,
@@ -895,6 +901,8 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             command: None,
             workflow,
             params,
+            harness,
+            model,
             detach,
             view,
             placement,
@@ -902,11 +910,11 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             let workflow = workflow.expect("clap requires a workflow");
             let placement = placement.settings()?;
             if view {
-                nodecmd::run_and_view(&current_dir()?, &workflow, &params, &placement)
+                nodecmd::run_and_view(&current_dir()?, &workflow, &params, &placement, harness.as_deref(), model.as_deref())
             } else if detach {
-                runcmd::start_detached(&current_dir()?, &workflow, &params, &placement)
+                runcmd::start_detached(&current_dir()?, &workflow, &params, &placement, harness.as_deref(), model.as_deref())
             } else {
-                runcmd::start_attached(&current_dir()?, &workflow, &params, &placement, mode)
+                runcmd::start_attached(&current_dir()?, &workflow, &params, &placement, mode, harness.as_deref(), model.as_deref())
             }
         }
         Command::Ready => runcmd::ready(),

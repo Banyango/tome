@@ -573,8 +573,10 @@ pub fn run_and_view(
     workflow: &str,
     params: &[String],
     placement: &Settings,
+    harness: Option<&str>,
+    model: Option<&str>,
 ) -> CliResult<Report> {
-    let started = crate::runcmd::start_detached(cwd, workflow, params, placement)?;
+    let started = crate::runcmd::start_detached(cwd, workflow, params, placement, harness, model)?;
     let id = started.data["id"]
         .as_i64()
         .ok_or_else(|| CliError::internal("the daemon didn't say which run it started"))?;

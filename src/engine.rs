@@ -145,7 +145,27 @@ impl Engine {
     /// for a `while_running: queue` trigger is always queued; it waits for
     /// the workflow to be idle.
     pub(crate) fn start(&self, p: &Value) -> CliResult<Run> {
-        let wf = api::load_workflow(p)?;
+        let mut wf = api::load_workflow(p)?;
+        if p.get("harness").and_then(Value::as_str).is_some()
+            || p.get("model").and_then(Value::as_str).is_some()
+        {
+            let mut fm: serde_yaml::Value = serde_yaml::from_str(&wf.frontmatter_text)
+                .map_err(|e| CliError::invalid(format!("invalid workflow frontmatter: {e}")))?;
+            let root = fm.as_mapping_mut().ok_or_else(|| CliError::invalid("workflow frontmatter must be a mapping"))?;
+            let defaults_key = serde_yaml::Value::String("defaults".into());
+            if !root.contains_key(&defaults_key) { root.insert(defaults_key.clone(), serde_yaml::Value::Mapping(Default::default())); }
+            let defaults = root.get_mut(&defaults_key).and_then(serde_yaml::Value::as_mapping_mut)
+                .ok_or_else(|| CliError::invalid("workflow defaults must be a mapping"))?;
+            for (arg, worker_key, orch_key) in [("harness", "harness", "orchestrator_harness"), ("model", "model", "orchestrator_model")] {
+                if let Some(value) = p.get(arg).and_then(Value::as_str) {
+                    defaults.insert(serde_yaml::Value::String(worker_key.into()), serde_yaml::Value::String(value.into()));
+                    defaults.insert(serde_yaml::Value::String(orch_key.into()), serde_yaml::Value::String(value.into()));
+                }
+            }
+            let body = wf.source.split_once("---").and_then(|(_, s)| s.split_once("---").map(|(_, b)| b)).unwrap_or("");
+            let source = format!("---\n{}\n---{}", serde_yaml::to_string(&fm).map_err(|e| CliError::internal(e.to_string()))?, body);
+            wf = crate::workflow::parse(&wf.path, &source).map_err(crate::workflow::Invalid::into_cli_error)?;
+        }
         let fm = &wf.frontmatter;
         // An unknown harness, backend, placement value or preset is a bad
         // request: refuse before recording a run.

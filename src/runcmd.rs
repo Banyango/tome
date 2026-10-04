@@ -37,6 +37,8 @@ pub fn start_params(
     target: &str,
     params: &[String],
     placement: &Settings,
+    harness: Option<&str>,
+    model: Option<&str>,
 ) -> CliResult<Value> {
     let wf = Library::discover(cwd).find(target)?;
     let mut p = json!({
@@ -48,6 +50,8 @@ pub fn start_params(
     if !placement.is_empty() {
         p["placement"] = json!(placement);
     }
+    if let Some(harness) = harness { p["harness"] = json!(harness); }
+    if let Some(model) = model { p["model"] = json!(model); }
     if let Some(caller) = crate::session::caller_env() {
         p["cmux_caller"] = caller;
     }
@@ -61,11 +65,13 @@ fn prepare(
     target: &str,
     params: &[String],
     placement: &Settings,
+    harness: Option<&str>,
+    model: Option<&str>,
 ) -> CliResult<(rpc::Client, Value)> {
     match node::target() {
-        Some(node) => remote_start_params(node, cwd, target, params, placement),
+        Some(node) => remote_start_params(node, cwd, target, params, placement, harness, model),
         None => {
-            let p = start_params(cwd, target, params, placement)?;
+            let p = start_params(cwd, target, params, placement, harness, model)?;
             Ok((rpc::Client::connect(&paths::socket_path())?, p))
         }
     }
@@ -80,6 +86,8 @@ fn remote_start_params(
     name: &str,
     params: &[String],
     placement: &Settings,
+    harness: Option<&str>,
+    model: Option<&str>,
 ) -> CliResult<(rpc::Client, Value)> {
     if name.contains('/') || name.ends_with(".md") {
         return Err(CliError::invalid(format!(
@@ -135,6 +143,8 @@ fn remote_start_params(
     if !placement.is_empty() {
         p["placement"] = json!(placement);
     }
+    if let Some(harness) = harness { p["harness"] = json!(harness); }
+    if let Some(model) = model { p["model"] = json!(model); }
     Ok((client, p))
 }
 
@@ -144,8 +154,10 @@ pub fn start_detached(
     target: &str,
     params: &[String],
     placement: &Settings,
+    harness: Option<&str>,
+    model: Option<&str>,
 ) -> CliResult<Report> {
-    let (mut client, p) = prepare(cwd, target, params, placement)?;
+    let (mut client, p) = prepare(cwd, target, params, placement, harness, model)?;
     let run = client.call("run.start", p)?;
     let human = format!(
         "run {}{} {} ({})",
@@ -172,8 +184,10 @@ pub fn start_attached(
     params: &[String],
     placement: &Settings,
     mode: Mode,
+    harness: Option<&str>,
+    model: Option<&str>,
 ) -> CliResult<Report> {
-    let (mut client, mut start) = prepare(cwd, target, params, placement)?;
+    let (mut client, mut start) = prepare(cwd, target, params, placement, harness, model)?;
     start["attach"] = json!(true);
     if node::target().is_some() {
         start["cancel_on_disconnect"] = json!(false);
