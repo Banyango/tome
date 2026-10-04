@@ -1,0 +1,17 @@
+{
+  "name": "tome",
+  "version": "0.3.0",
+  "description": "Write, run and debug tome workflows: repeatable agentic workflows triggered by file changes, schedules and messages.",
+  "author": {
+    "name": "Kyle Reczek",
+    "email": "kyle@banyango.com"
+  },
+  "homepage": "https://banyango.github.io/tome/",
+  "license": "MIT",
+  "keywords": ["tome", "workflows", "agents", "tmux", "cmux"],
+  "skills": "./skills/",
+  "sessionStart": {
+    "skill": "tome"
+  },
+  "skillInstructions": "Tome skill tool mapping for Kimi Code:\n\n- When a skill says to ask the user, use Kimi Code's AskUserQuestion tool if available; otherwise ask directly in chat.\n- When a skill refers to task tracking, use Kimi Code's TodoList tool if available.\n- When a skill refers to a subagent, use Kimi Code's Agent tool if available.\n- Use Kimi Code's file, shell, search, and web tools by their actual exposed names."
+}

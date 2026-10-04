@@ -1,0 +1,18 @@
+{
+  "name": "tome",
+  "version": "0.3.0",
+  "description": "Write, run and debug tome workflows: repeatable agentic workflows triggered by file changes, schedules and messages.",
+  "author": {
+    "name": "Kyle Reczek"
+  },
+  "homepage": "https://banyango.github.io/tome/",
+  "repository": "https://github.com/banyango/tome",
+  "license": "MIT",
+  "keywords": ["tome", "workflows", "agents", "tmux", "cmux"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "tome",
+    "shortDescription": "Write, run and debug tome workflows",
+    "longDescription": "Create and manage repeatable agentic workflows triggered by file changes, schedules, messages, or other workflows."
+  }
+}

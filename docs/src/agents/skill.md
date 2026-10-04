@@ -52,6 +52,27 @@ curl -fsSL https://raw.githubusercontent.com/banyango/tome/main/plugin/skills/to
 
 Run the same `curl` again to upgrade.
 
+## Codex
+
+Codex can use the plugin from the repository's marketplace. Add it from the repository root:
+
+```sh
+codex plugin marketplace add .
+```
+
+Enable the plugin for this project in `.codex/config.toml`:
+
+```toml
+[plugins."tome@tome"]
+enabled = true
+```
+
+Restart Codex to load it. The repository marketplace is available to the project, and the project config enables tome.
+
+## OpenCode
+
+OpenCode reads the existing tome skill through the repository's `opencode.json`; start OpenCode from this repository and load `tome` with its `skill` tool. To install it globally instead, copy `plugin/skills/tome` to `~/.config/opencode/skills/tome`.
+
 An agent that doesn't support skills can read the same material as plain text. Point it at [`llms-full.txt`](https://banyango.github.io/tome/llms-full.txt), or paste the file below into its instructions.
 
 ## Asking an agent to install it
