@@ -72,10 +72,13 @@ impl Herdr {
         let _ = Self::from_env().call("notification.show", json!({"title":title,"body":body}));
     }
 
+    /// The `session.snapshot` payload, which herdr nests under `snapshot`.
+    fn snapshot(&self) -> CliResult<Value> {
+        Ok(self.call("session.snapshot", json!({}))?["snapshot"].clone())
+    }
+
     pub fn focused() -> Result<String, String> {
-        Self::from_env()
-            .call("session.snapshot", json!({}))
-            .map_err(|e| e.message)?["focused"]["workspace_id"]
+        Self::from_env().snapshot().map_err(|e| e.message)?["focused_workspace_id"]
             .as_str()
             .map(str::to_owned)
             .ok_or_else(|| "herdr has no focused workspace".into())
@@ -107,7 +110,10 @@ impl Herdr {
             l.env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
         let focus = false;
         let (workspace, pane) = if l.layout == Layout::Workspace {
-            let created = self.call("workspace.create", json!({"label":l.name,"cwd":l.cwd,"env":env.clone(),"focus":focus}))?;
+            let created = self.call(
+                "workspace.create",
+                json!({"label":l.name,"cwd":l.cwd,"env":env.clone(),"focus":focus}),
+            )?;
             let ws = created["workspace"]["workspace_id"]
                 .as_str()
                 .or(created["workspace"]["id"].as_str())
@@ -145,7 +151,7 @@ impl Herdr {
                     warnings,
                 )?,
             };
-            let snapshot = self.call("session.snapshot", json!({}))?;
+            let snapshot = self.snapshot()?;
             let panes = snapshot["panes"].as_array().cloned().unwrap_or_default();
             let anchor = match l.target {
                 Target::Caller(p) => p.clone(),
@@ -217,7 +223,10 @@ impl Herdr {
         // in. `exec` makes the pane close when the agent exits.
         if !self.send_line(
             &pane,
-            &format!(" exec sh {}", crate::session::shell_quote(&l.script.to_string_lossy())),
+            &format!(
+                " exec sh {}",
+                crate::session::shell_quote(&l.script.to_string_lossy())
+            ),
         ) {
             let _ = self.close(&pane);
             return Err(CliError::internal(format!(
@@ -287,7 +296,7 @@ impl Herdr {
             if m.layout == Layout::Tab {
                 json!({"type":"new_tab","workspace_id":ws,"label":m.title})
             } else {
-                let snapshot = self.call("session.snapshot", json!({}))?;
+                let snapshot = self.snapshot()?;
                 let tab = snapshot["tabs"]
                     .as_array()
                     .and_then(|tabs| tabs.iter().find(|t| t["workspace_id"] == ws))
@@ -471,7 +480,9 @@ mod tests {
                         "root_pane": {"pane_id": "w1:p9"},
                     }),
                     "session.snapshot" => json!({
-                        "panes": [{"pane_id": "w1:p1", "workspace_id": "w1"}],
+                        "snapshot": {
+                            "panes": [{"pane_id": "w1:p1", "workspace_id": "w1"}],
+                        },
                     }),
                     "pane.split" => json!({"pane": {"pane_id": "w1:p2"}}),
                     _ => json!({}),
@@ -532,8 +543,12 @@ mod tests {
         assert_eq!(pane, ["w1:p9"]);
         assert!(script.contains("exec script -q -a -F"), "{script}");
         assert!(typed(&requests).contains("exec sh "), "{requests:?}");
-        let sent = requests.iter().position(|r| r["method"] == "pane.send_text");
-        let keys = requests.iter().position(|r| r["method"] == "pane.send_keys");
+        let sent = requests
+            .iter()
+            .position(|r| r["method"] == "pane.send_text");
+        let keys = requests
+            .iter()
+            .position(|r| r["method"] == "pane.send_keys");
         assert!(sent < keys, "{requests:?}");
         // Herdr takes no command: it would be ignored.
         assert!(requests.iter().all(|r| r["params"]["command"].is_null()));
