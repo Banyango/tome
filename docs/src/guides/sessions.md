@@ -54,7 +54,9 @@ harnesses:
     model_flag: --model
 ```
 
-A harness chooses the agent CLI; `backend` chooses the terminal multiplexer that hosts it. The `codex` harness can run inside either tmux or cmux. Install the agent CLI and complete its sign-in before using it with tome. Installing the [tome plugin](../agents/skill.md) teaches the agent how to use tome; configure its launch command here as well.
+A harness chooses the agent CLI; `backend` chooses the terminal multiplexer that hosts it. The `codex` harness can run inside tmux, cmux or herdr. Install the agent CLI and complete its sign-in before using it with tome. Installing the [tome plugin](../agents/skill.md) teaches the agent how to use tome; configure its launch command here as well.
+
+For workflows that need answers from you, keep the interactive `codex` command shown above and state the required questions in the workflow body: "Ask the user these questions and wait for their answers before continuing. Do not infer answers or treat silence as approval." Attach to the agent's session to answer. Codex's [`--ask-for-approval`](https://developers.openai.com/codex/cli/reference/) setting controls command execution approvals; `on-request` leaves those decisions to the model. It doesn't require the agent to ask workflow questions. The example leaves the approval policy to your Codex configuration.
 
 A list is an argv: one element per argument, with no shell involved. A string is run with `sh -c`, with each value shell-quoted. The variables are:
 
