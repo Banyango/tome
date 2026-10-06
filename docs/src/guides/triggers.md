@@ -79,7 +79,7 @@ Set `to: running-or-new` and the run gets later events on its `events-<run id>` 
 
 ### Chaining workflows
 
-tome publishes an event when a run changes state: `tome.run.<workflow>.started`, `.succeeded`, `.failed` and `.cancelled`, with a JSON payload. Subscribe to one to make a workflow follow another:
+tome publishes an event when a run changes state: `tome.run.<workflow>.started`, `.succeeded`, `.failed` and `.cancelled`, with a JSON payload. On herdr, `.blocked` is published when an agent is waiting for input, with the run, workflow, session and pane in the payload. Subscribe to one to make a workflow follow another:
 
 ```markdown title=.tome/workflows/review.md
 {{#include ../../examples/chain-review.md}}

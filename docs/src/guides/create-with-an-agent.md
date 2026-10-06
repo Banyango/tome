@@ -88,7 +88,7 @@ tome triggers fire my-workflow --dry-run
 tome triggers fire my-workflow --path src/lib.rs
 ```
 
-Every agent runs in a tmux or cmux session you can attach to, so you can see what it's doing and step in.
+Every agent runs in a tmux, cmux or herdr session you can watch and steer.
 
 ## Change it
 

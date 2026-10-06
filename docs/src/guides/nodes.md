@@ -81,7 +81,7 @@ tome session view mini:12/w1         # a worker's
 tome run build --on mini --view      # start it, then open its session
 ```
 
-When the node uses tmux, tome attaches to its session with `ssh -t`. Inside cmux, that happens in a new tab, and you can place the tab with `--preset`, `--layout`, `--workspace`, `--direction` and `--size`. Anywhere else, it runs in the current terminal. You can't view a remote cmux session this way, because cmux is a desktop app.
+When the node uses tmux, tome attaches to its session with `ssh -t`. Inside cmux, that happens in a new tab, and you can place the tab with `--preset`, `--layout`, `--workspace`, `--direction` and `--size`. Anywhere else, it runs in the current terminal. You can't view a remote cmux session this way, because cmux is a desktop app. A remote herdr session can't be viewed over SSH either; add the node with `herdr machine add` instead.
 
 ## Listing runs everywhere
 

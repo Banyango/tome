@@ -101,7 +101,7 @@ impl Split {
         }
     }
 
-    fn horizontal(&self) -> bool {
+    pub(super) fn horizontal(&self) -> bool {
         matches!(self.direction, Direction::Right | Direction::Left)
     }
 
@@ -405,6 +405,8 @@ mod tests {
             layout: None,
             harness: None,
             placement: None,
+            agent_status: None,
+            blocked_at: None,
             created_at: String::new(),
         }
     }

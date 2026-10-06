@@ -71,7 +71,7 @@ Workflow-wide settings.
 
 | Key | Meaning |
 | --- | --- |
-| `backend` | `tmux` or `cmux`. Falls back to `TOME_BACKEND`, then config, then cmux when inside cmux and tmux otherwise. |
+| `backend` | `tmux`, `cmux` or `herdr`. Falls back to `TOME_BACKEND`, then config, then cmux inside cmux, herdr inside herdr, and tmux otherwise. |
 | `harness` | The agent CLI for a single run's agent and for workers. Defaults to `claude`. Defined in config; see [Sessions and backends](sessions.md). |
 | `orchestrator_harness` | The agent CLI for the orchestrator (`mode: orchestrated` only). Defaults to `harness`. |
 | `model` | The model a single run's agent and workers run, such as `opus`. Passed to the harness; unset uses the harness's own default. Override for one worker with `tome worker spawn --model`. |

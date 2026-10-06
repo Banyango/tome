@@ -51,7 +51,7 @@ tome --help
 
 To run a workflow you need two more things:
 
-- **A terminal multiplexer**: [tmux](https://github.com/tmux/tmux), or cmux if you use it. tome starts each agent in its own multiplexer session so you can watch it.
+- **A terminal multiplexer**: [tmux](https://github.com/tmux/tmux), cmux or herdr. tome starts each agent in its own session so you can watch it.
 - **An agent harness**: a command-line coding agent. [Claude Code](https://claude.com/claude-code) works out of the box. Other agents can be added in config; see [Sessions and backends](guides/sessions.md).
 
 `git` is also needed for workflows that give workers their own worktrees.

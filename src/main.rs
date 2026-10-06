@@ -910,11 +910,33 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             let workflow = workflow.expect("clap requires a workflow");
             let placement = placement.settings()?;
             if view {
-                nodecmd::run_and_view(&current_dir()?, &workflow, &params, &placement, harness.as_deref(), model.as_deref())
+                nodecmd::run_and_view(
+                    &current_dir()?,
+                    &workflow,
+                    &params,
+                    &placement,
+                    harness.as_deref(),
+                    model.as_deref(),
+                )
             } else if detach {
-                runcmd::start_detached(&current_dir()?, &workflow, &params, &placement, harness.as_deref(), model.as_deref())
+                runcmd::start_detached(
+                    &current_dir()?,
+                    &workflow,
+                    &params,
+                    &placement,
+                    harness.as_deref(),
+                    model.as_deref(),
+                )
             } else {
-                runcmd::start_attached(&current_dir()?, &workflow, &params, &placement, mode, harness.as_deref(), model.as_deref())
+                runcmd::start_attached(
+                    &current_dir()?,
+                    &workflow,
+                    &params,
+                    &placement,
+                    mode,
+                    harness.as_deref(),
+                    model.as_deref(),
+                )
             }
         }
         Command::Ready => runcmd::ready(),

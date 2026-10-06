@@ -125,6 +125,8 @@ pub fn run_foreground() -> anyhow::Result<()> {
     let engine = Arc::clone(&daemon.engine);
     std::thread::spawn(move || engine.resume_queued());
     let engine = Arc::clone(&daemon.engine);
+    let status_engine = engine.clone();
+    std::thread::spawn(move || status_engine.status_monitor());
     std::thread::spawn(move || engine.monitor());
     let engine = Arc::clone(&daemon.engine);
     std::thread::spawn(move || engine.trigger_loop());

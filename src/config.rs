@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 /// Every top-level key either file accepts.
 pub const KEYS: &[&str] = &[
     "backend",
+    "herdr",
     "harnesses",
     "layout",
     "layout_presets",
@@ -186,6 +187,26 @@ fn parse(scope: Scope, path: PathBuf, text: &str) -> CliResult<File> {
         }
         // Hosts and SSH access are the user's; forwarding rules are the repo's.
         match (key, scope) {
+            ("herdr", Scope::Project) => {
+                return Err(bad("`herdr` settings go in the global config".into())
+                    .with_hint(format!("move it to {}", global_path().display())))
+            }
+            ("herdr", Scope::Global) => {
+                let map = doc
+                    .get("herdr")
+                    .and_then(Yaml::as_mapping)
+                    .ok_or_else(|| bad("`herdr` must be a mapping".into()))?;
+                for (key, value) in map {
+                    if key.as_str() != Some("session") {
+                        return Err(
+                            bad("unknown herdr setting".into()).with_hint("known setting: session")
+                        );
+                    }
+                    if !value.is_string() {
+                        return Err(bad("`herdr.session` must be a string".into()));
+                    }
+                }
+            }
             ("nodes", Scope::Project) => {
                 return Err(bad("`nodes` goes in the global config".into())
                     .with_hint(format!("move it to {}", global_path().display())))

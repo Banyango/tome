@@ -8,7 +8,7 @@ description: Write, run and debug tome workflows. Use when the user mentions tom
 tome runs repeatable agentic workflows. A workflow is a Markdown file with YAML
 frontmatter: the frontmatter says what starts it, and the body describes the
 steps in plain English. The tome daemon starts one agent for each run in a
-tmux or cmux session. By default (`mode: single`) that agent does the whole
+tmux, cmux or herdr session. By default (`mode: single`) that agent does the whole
 workflow itself; with `mode: orchestrated` it is an orchestrator that spawns
 worker agents.
 

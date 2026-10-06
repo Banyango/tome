@@ -50,8 +50,12 @@ pub fn start_params(
     if !placement.is_empty() {
         p["placement"] = json!(placement);
     }
-    if let Some(harness) = harness { p["harness"] = json!(harness); }
-    if let Some(model) = model { p["model"] = json!(model); }
+    if let Some(harness) = harness {
+        p["harness"] = json!(harness);
+    }
+    if let Some(model) = model {
+        p["model"] = json!(model);
+    }
     if let Some(caller) = crate::session::caller_env() {
         p["cmux_caller"] = caller;
     }
@@ -143,8 +147,12 @@ fn remote_start_params(
     if !placement.is_empty() {
         p["placement"] = json!(placement);
     }
-    if let Some(harness) = harness { p["harness"] = json!(harness); }
-    if let Some(model) = model { p["model"] = json!(model); }
+    if let Some(harness) = harness {
+        p["harness"] = json!(harness);
+    }
+    if let Some(model) = model {
+        p["model"] = json!(model);
+    }
     Ok((client, p))
 }
 

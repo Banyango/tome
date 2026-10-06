@@ -376,7 +376,7 @@ params:
 # Optional keys:
 # mode: single                  # (default) one agent does the work; `orchestrated` to delegate to workers
 # defaults:
-#   backend: cmux               # where agents run: tmux or cmux (default: cmux inside cmux, else tmux)
+#   backend: cmux               # where agents run: tmux, cmux or herdr (picked from the daemon or caller environment)
 #   harness: claude             # agent CLI for the agent or workers (see ~/.tome/config.yaml)
 #   orchestrator_harness: claude  # (orchestrated only)
 #   model: opus                 # model for the agent or workers (default: the harness's own)

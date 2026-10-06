@@ -101,7 +101,7 @@ fn an_unknown_key_is_refused_in_either_config() {
             err["error"]["hint"]
                 .as_str()
                 .unwrap()
-                .contains("backend, harnesses, layout, layout_presets"),
+                .contains("backend, herdr, harnesses, layout, layout_presets"),
             "{err}"
         );
         let (_, runs) = env.json(&["runs", "list"]);

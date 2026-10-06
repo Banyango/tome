@@ -41,8 +41,27 @@ pub mod reason {
 const WATCH_POLL: Duration = Duration::from_millis(200);
 /// How often a watch re-syncs from the store, as a safety net.
 const WATCH_RESYNC: Duration = Duration::from_secs(1);
+/// How often herdr agents' statuses are read.
+const STATUS_POLL: Duration = Duration::from_secs(2);
+
 /// How often the monitor checks that running runs' orchestrators are alive.
 const MONITOR_POLL: Duration = Duration::from_millis(500);
+
+fn status_subject(engine: &Engine, session: &store::Session) -> String {
+    if session.role == "orchestrator" || session.role == "agent" {
+        return "agent".into();
+    }
+    engine
+        .with_store(|store| {
+            Ok(store
+                .workers(session.run_id)?
+                .into_iter()
+                .find(|w| w.session.as_deref() == Some(session.name.as_str()))
+                .map(|w| w.name)
+                .unwrap_or_else(|| session.name.clone()))
+        })
+        .unwrap_or_else(|_| session.name.clone())
+}
 
 /// The watchers of one run, and how far they've been sent.
 struct Watchers {
@@ -80,6 +99,8 @@ pub struct Engine {
     pub(crate) stalled: Mutex<HashMap<String, String>>,
     /// The forwarder's attempts and the nodes it's sending to.
     pub(crate) forwarding: Mutex<crate::bus::forward::State>,
+    blocked_since: Mutex<HashMap<(i64, String), Instant>>,
+    blocked_notified: Mutex<HashMap<(i64, String), Instant>>,
 }
 
 impl Engine {
@@ -93,6 +114,8 @@ impl Engine {
             draining: Mutex::new(()),
             stalled: Mutex::new(HashMap::new()),
             forwarding: Mutex::new(Default::default()),
+            blocked_since: Mutex::new(HashMap::new()),
+            blocked_notified: Mutex::new(HashMap::new()),
         }
     }
 
@@ -151,20 +174,47 @@ impl Engine {
         {
             let mut fm: serde_yaml::Value = serde_yaml::from_str(&wf.frontmatter_text)
                 .map_err(|e| CliError::invalid(format!("invalid workflow frontmatter: {e}")))?;
-            let root = fm.as_mapping_mut().ok_or_else(|| CliError::invalid("workflow frontmatter must be a mapping"))?;
+            let root = fm
+                .as_mapping_mut()
+                .ok_or_else(|| CliError::invalid("workflow frontmatter must be a mapping"))?;
             let defaults_key = serde_yaml::Value::String("defaults".into());
-            if !root.contains_key(&defaults_key) { root.insert(defaults_key.clone(), serde_yaml::Value::Mapping(Default::default())); }
-            let defaults = root.get_mut(&defaults_key).and_then(serde_yaml::Value::as_mapping_mut)
+            if !root.contains_key(&defaults_key) {
+                root.insert(
+                    defaults_key.clone(),
+                    serde_yaml::Value::Mapping(Default::default()),
+                );
+            }
+            let defaults = root
+                .get_mut(&defaults_key)
+                .and_then(serde_yaml::Value::as_mapping_mut)
                 .ok_or_else(|| CliError::invalid("workflow defaults must be a mapping"))?;
-            for (arg, worker_key, orch_key) in [("harness", "harness", "orchestrator_harness"), ("model", "model", "orchestrator_model")] {
+            for (arg, worker_key, orch_key) in [
+                ("harness", "harness", "orchestrator_harness"),
+                ("model", "model", "orchestrator_model"),
+            ] {
                 if let Some(value) = p.get(arg).and_then(Value::as_str) {
-                    defaults.insert(serde_yaml::Value::String(worker_key.into()), serde_yaml::Value::String(value.into()));
-                    defaults.insert(serde_yaml::Value::String(orch_key.into()), serde_yaml::Value::String(value.into()));
+                    defaults.insert(
+                        serde_yaml::Value::String(worker_key.into()),
+                        serde_yaml::Value::String(value.into()),
+                    );
+                    defaults.insert(
+                        serde_yaml::Value::String(orch_key.into()),
+                        serde_yaml::Value::String(value.into()),
+                    );
                 }
             }
-            let body = wf.source.split_once("---").and_then(|(_, s)| s.split_once("---").map(|(_, b)| b)).unwrap_or("");
-            let source = format!("---\n{}\n---{}", serde_yaml::to_string(&fm).map_err(|e| CliError::internal(e.to_string()))?, body);
-            wf = crate::workflow::parse(&wf.path, &source).map_err(crate::workflow::Invalid::into_cli_error)?;
+            let body = wf
+                .source
+                .split_once("---")
+                .and_then(|(_, s)| s.split_once("---").map(|(_, b)| b))
+                .unwrap_or("");
+            let source = format!(
+                "---\n{}\n---{}",
+                serde_yaml::to_string(&fm).map_err(|e| CliError::internal(e.to_string()))?,
+                body
+            );
+            wf = crate::workflow::parse(&wf.path, &source)
+                .map_err(crate::workflow::Invalid::into_cli_error)?;
         }
         let fm = &wf.frontmatter;
         // An unknown harness, backend, placement value or preset is a bad
@@ -182,7 +232,12 @@ impl Engine {
                 .unwrap_or(crate::harness::DEFAULT);
             crate::harness::resolve(name, project)?.check_model(Some(model))?;
         }
-        let kind = session::Kind::choose(fm.defaults.backend.as_deref(), project)?;
+        let caller_value = p.get("cmux_caller");
+        let kind = session::Kind::choose_with_caller(
+            fm.defaults.backend.as_deref(),
+            project,
+            caller_value.is_some_and(|c| c["herdr_pane"].is_string()),
+        )?;
         let flags = p
             .get("placement")
             .filter(|v| !v.is_null())
@@ -202,16 +257,25 @@ impl Engine {
         // The cmux pane that ran `tome run`, for `from: caller`.
         let caller = match (
             by_trigger,
-            p.get("cmux_caller").filter(|c| c["surface"].is_string()),
+            p.get("cmux_caller")
+                .filter(|c| c["surface"].is_string() || c["herdr_pane"].is_string()),
         ) {
             (true, _) => json!({ "unknown": "the run was started by a trigger" }),
-            (false, None) => json!({ "unknown": "`tome run` wasn't run from a cmux pane" }),
+            (false, None) => {
+                json!({ "unknown": "`tome run` wasn't run from a cmux or herdr pane" })
+            }
             (false, Some(c)) => {
                 let mut c = c.clone();
-                if let Some(Ok((anchor, pane))) = c["surface"].as_str().map(session::caller_anchor)
-                {
+                let found = c["surface"]
+                    .as_str()
+                    .map(session::caller_anchor)
+                    .or_else(|| c["herdr_pane"].as_str().map(session::herdr_caller_anchor));
+                if let Some(Ok((anchor, pane))) = found {
                     c["workspace"] = json!(anchor.handle);
                     c["pane"] = json!(pane);
+                    if c["herdr_pane"].is_string() {
+                        c["herdr_workspace"] = json!(anchor.handle);
+                    }
                 }
                 c
             }
@@ -324,7 +388,9 @@ impl Engine {
             .insert(run.id);
         let agent: Agent = (run.id, None);
         let mut waited = false;
+        let mut backend = None;
         let result = orchestrator::plan(&run).and_then(|plan| {
+            backend = Some(plan.backend);
             waited = plan.start_timeout.is_some();
             self.expect_start(
                 agent.clone(),
@@ -363,12 +429,25 @@ impl Engine {
                     let failed = store.abort_run(
                         run.id,
                         RunStatus::Failed,
-                        orchestrator::LAUNCH_FAILED,
+                        if e.message.contains("backend_unavailable") {
+                            orchestrator::BACKEND_UNAVAILABLE
+                        } else {
+                            orchestrator::LAUNCH_FAILED
+                        },
                         Some(&e.message),
                     );
                     self.sync(store, run.id);
                     failed
                 });
+                if let Some(kind) = backend.filter(|k| *k == session::Kind::Herdr) {
+                    if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
+                        session::notify(
+                            kind,
+                            &format!("tome: {} #{} failed", run.workflow_name, run.id),
+                            &e.message,
+                        );
+                    }
+                }
                 self.kill_sessions(run.id);
                 Err(e)
             }
@@ -577,10 +656,11 @@ impl Engine {
         if placement.from == Some(placement::From::Caller) {
             let found = match (
                 s.role.as_str(),
-                p.get("cmux_caller").filter(|c| c["surface"].is_string()),
+                p.get("cmux_caller")
+                    .filter(|c| c["surface"].is_string() || c["herdr_pane"].is_string()),
             ) {
                 (role, None) if orchestrator::is_main(role) => {
-                    Err("`tome session move` wasn't run from a cmux pane".to_string())
+                    Err("`tome session move` wasn't run from a cmux or herdr pane".to_string())
                 }
                 (role, Some(c)) if orchestrator::is_main(role) => {
                     let kind = session::Kind::parse(&s.backend).unwrap_or(session::Kind::Tmux);
@@ -646,8 +726,7 @@ impl Engine {
         loop {
             std::thread::sleep(MONITOR_POLL);
             self.check_workers();
-            let Ok(sessions) =
-                self.with_store(|store| store.running_orchestrators().map_err(internal))
+            let Ok(sessions) = self.with_store(|store| store.running_sessions().map_err(internal))
             else {
                 return;
             };
@@ -658,6 +737,9 @@ impl Engine {
                     .unwrap_or_else(|p| p.into_inner())
                     .contains(&s.run_id)
                 {
+                    continue;
+                }
+                if s.role != "orchestrator" && s.role != "agent" {
                     continue;
                 }
                 // Alive, or can't tell right now: look again next time.
@@ -692,6 +774,114 @@ impl Engine {
                 }
             }
             self.check_starts();
+        }
+    }
+
+    /// Herdr's agent statuses, polled apart from `monitor` so a slow herdr
+    /// can't hold up liveness checks.
+    pub fn status_monitor(self: Arc<Self>) {
+        loop {
+            std::thread::sleep(STATUS_POLL);
+            let Ok(sessions) = self.with_store(|store| store.running_sessions().map_err(internal))
+            else {
+                return;
+            };
+            // Forget blocked-tracking for runs that are no longer running.
+            let running: HashSet<i64> = sessions.iter().map(|s| s.run_id).collect();
+            self.blocked_since
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|(run, _), _| running.contains(run));
+            self.blocked_notified
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|(run, _), _| running.contains(run));
+            for s in sessions {
+                if self
+                    .launching
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .contains(&s.run_id)
+                {
+                    continue;
+                }
+                self.track_agent_status(&s);
+            }
+        }
+    }
+
+    fn track_agent_status(&self, s: &store::Session) {
+        if session::Kind::parse(&s.backend) != Some(session::Kind::Herdr) {
+            return;
+        }
+        let Some(pane) = s.pane.as_deref() else {
+            return;
+        };
+        // Herdr isn't answering: keep what we know.
+        let Some(status) = session::agent_status(s) else {
+            return;
+        };
+        let now = Instant::now();
+        let key = (s.run_id, s.name.clone());
+        let blocked = status == "blocked";
+        let was_blocked = s.agent_status.as_deref() == Some("blocked");
+        if blocked && !was_blocked {
+            let at = chrono::Utc::now().to_rfc3339();
+            let _ = self.with_store(|store| {
+                store
+                    .set_session_agent_status(s.run_id, &s.name, Some("blocked"), Some(&at))
+                    .map_err(internal)
+            });
+            self.announce_blocked(s.run_id, &status_subject(self, s), pane, &at);
+        } else if !blocked && s.agent_status.as_deref() != Some(status.as_str()) {
+            let _ = self.with_store(|store| {
+                store
+                    .set_session_agent_status(s.run_id, &s.name, Some(&status), None)
+                    .map_err(internal)
+            });
+        }
+        if !blocked {
+            self.blocked_since
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&key);
+            self.blocked_notified
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&key);
+            return;
+        }
+        // Also covers a daemon that restarted while the agent was blocked.
+        let since = *self
+            .blocked_since
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(key.clone())
+            .or_insert(now);
+        if now.duration_since(since) < Duration::from_secs(5) {
+            return;
+        }
+        let mut notified = self
+            .blocked_notified
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if notified
+            .get(&key)
+            .is_some_and(|t| now.duration_since(*t) < Duration::from_secs(60))
+        {
+            return;
+        }
+        notified.insert(key, now);
+        drop(notified);
+        if let Ok(Some(run)) =
+            self.with_store(|store| store.get_run(s.run_id, false).map_err(internal))
+        {
+            let who = if s.role == "orchestrator" || s.role == "agent" {
+                "agent".to_string()
+            } else {
+                format!("worker {}", status_subject(self, s))
+            };
+            orchestrator::notify_blocked(&run, &who);
         }
     }
 

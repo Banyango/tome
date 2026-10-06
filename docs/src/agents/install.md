@@ -55,7 +55,7 @@ command -v claude || echo "no claude"
 command -v git || echo "no git"
 ```
 
-- tome needs a terminal multiplexer: tmux, or cmux. If the user works in cmux, tmux is optional. Ask if you can't tell.
+- tome needs a terminal multiplexer: tmux, cmux or herdr. If the user works in cmux or herdr, tmux is optional. Ask if you can't tell.
 - The default agent harness is Claude Code (`claude`). Other agents can be configured; see [Sessions and backends](../guides/sessions.md).
 - `git` is needed for workflows that give workers their own worktrees.
 

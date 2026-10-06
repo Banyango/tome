@@ -86,7 +86,7 @@ impl Engine {
 
     /// Publish `tome.run.<workflow>.<what>` to the run's project, a step
     /// deeper than the event that started the run.
-    fn publish_lifecycle(&self, run: &Run, what: &str, payload: &Value) {
+    pub(crate) fn publish_lifecycle(&self, run: &Run, what: &str, payload: &Value) {
         let Some(project) = &run.project_path else {
             return;
         };
@@ -109,6 +109,14 @@ impl Engine {
                 "tome daemon: publishing {topic} for run {} failed: {}",
                 run.id, e.message
             );
+        }
+    }
+
+    pub(crate) fn announce_blocked(&self, run_id: i64, session: &str, pane: &str, at: &str) {
+        if let Ok(Some(run)) =
+            self.with_store(|store| store.get_run(run_id, false).map_err(crate::api::internal))
+        {
+            self.publish_lifecycle(&run, "blocked", &json!({"run_id":run.id,"workflow":run.workflow_name,"session":session,"pane":pane,"at":at}));
         }
     }
 }

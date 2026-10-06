@@ -449,14 +449,14 @@ pub fn view(session_ref: &str, placement: &Settings) -> CliResult<Report> {
     };
     let Some(node) = node::target() else {
         return Ok(match backend {
-            Some(Kind::Cmux) => {
+            Some(Kind::Cmux) | Some(Kind::Herdr) => {
                 let ok = std::process::Command::new("sh")
                     .args(["-c", &command])
                     .stdin(Stdio::null())
                     .status()
                     .is_ok_and(|st| st.success());
                 if !ok {
-                    return Err(CliError::internal(format!("cmux couldn't focus {label}"))
+                    return Err(CliError::internal(format!("couldn't focus {label}"))
                         .with_hint(format!("try it by hand: {command}")));
                 }
                 Report::new(att, format!("focused {label}"))
@@ -464,6 +464,12 @@ pub fn view(session_ref: &str, placement: &Settings) -> CliResult<Report> {
             _ => Report::new(att, format!("{label}: attach with\n  {command}")),
         });
     };
+    if backend == Some(Kind::Herdr) {
+        return Err(CliError::invalid(format!(
+            "{label} is a herdr session, which can't be viewed over SSH"
+        ))
+        .with_hint("add this node with `herdr machine add` to view its herdr sessions"));
+    }
     if backend != Some(Kind::Tmux) {
         return Err(CliError::invalid(format!(
             "{label} is a cmux session, which can't be attached over SSH"

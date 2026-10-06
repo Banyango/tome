@@ -28,7 +28,7 @@ Each project has a **message bus**. Anything can publish an **event** to a **top
 
 Events publish with `tome publish <topic> <text>`.
 
-tome publishes events too: `tome.run.<workflow>.started`, `.succeeded`, `.failed` and `.cancelled`. Subscribing to these lets one workflow chain onto another.
+tome publishes events too: `tome.run.<workflow>.started`, `.succeeded`, `.failed` and `.cancelled`, plus `.blocked` on herdr. Subscribing to these lets one workflow chain onto another.
 
 A run that was started by an event carries its depth, one more than the event that started it. Events deeper than 8 aren't delivered, which stops two workflows from triggering each other forever.
 

@@ -6,7 +6,7 @@ You don't have to write it yourself: with the [tome plugin](agents/skill.md), yo
 
 Tome gives you powerful primitives triggers, workers, worktrees, queues, remote nodes (ssh) and an event bus. Put them together and you can build anything from a single test fixer to a whole software factory.
 
-Every agent runs in a tmux or cmux session, so you can watch what it's doing and step in.
+Every agent runs in a tmux, cmux or herdr session, so you can watch what it's doing and step in.
 
 ## Quick start
 

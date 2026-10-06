@@ -257,12 +257,22 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
                     s(&x["name"]),
                     s(&x["role"]),
                     x["harness"].as_str().unwrap_or("").to_string(),
+                    x["agent_status"]
+                        .as_str()
+                        .map(|status| {
+                            if let Some(at) = x["blocked_at"].as_str() {
+                                format!("{status} since {at}")
+                            } else {
+                                status.to_string()
+                            }
+                        })
+                        .unwrap_or_default(),
                     s(&x["attach"]),
                 ]
             })
             .collect();
         out.push_str(&indent(&table(
-            &["SESSION", "ROLE", "HARNESS", "ATTACH"],
+            &["SESSION", "ROLE", "HARNESS", "AGENT", "ATTACH"],
             rows,
         )));
     }

@@ -6,7 +6,7 @@
 //! the backend allows, and is an error.
 
 use super::split::Opening;
-use super::{workspace, Cmux, Kind, Layout, Split, Surface, Target, Tmux};
+use super::{workspace, Cmux, Herdr, Kind, Layout, Split, Surface, Target, Tmux};
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::store::Session;
@@ -33,12 +33,19 @@ pub fn move_to(s: &Session, m: &Move) -> CliResult<(Session, Vec<String>)> {
         ))
     })?;
     let mut warnings = Vec::new();
-    let handle = match Kind::parse(&s.backend) {
+    let (handle, pane_id) = match Kind::parse(&s.backend) {
         Some(Kind::Tmux) => Tmux {
             socket: s.socket.clone(),
         }
-        .move_pane(s, pane, m, &mut warnings)?,
-        Some(Kind::Cmux) => Some(Cmux.move_surface(s, pane, m, &mut warnings)?),
+        .move_pane(s, pane, m, &mut warnings)
+        .map(|h| (h, pane.to_string()))?,
+        Some(Kind::Cmux) => (
+            Some(Cmux.move_surface(s, pane, m, &mut warnings)?),
+            pane.to_string(),
+        ),
+        Some(Kind::Herdr) => {
+            Herdr::from_socket(s.socket.as_deref())?.move_pane(s, pane, m, &mut warnings)?
+        }
         None => {
             return Err(CliError::invalid(format!(
                 "session `{}` has an unknown backend `{}`",
@@ -48,6 +55,7 @@ pub fn move_to(s: &Session, m: &Move) -> CliResult<(Session, Vec<String>)> {
     };
     let moved = Session {
         handle,
+        pane: Some(pane_id),
         layout: Some(m.layout.as_str().to_string()),
         ..s.clone()
     };

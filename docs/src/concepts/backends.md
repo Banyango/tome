@@ -2,14 +2,15 @@
 
 A **backend** is the terminal multiplexer tome uses as its user interface. tome starts every agent in a **session** on a backend, so you can watch it, type into it, and attach from anywhere.
 
-tome supports two backends:
+tome supports three backends:
 
 | Backend | Sessions are |
 | --- | --- |
 | `tmux` | tmux sessions, panes and windows. Attach with `tmux attach -t <name>`. |
 | `cmux` | tabs, splits and workspaces in the cmux app. |
+| `herdr` | workspaces, tabs and splits in the herdr app. |
 
-A run's backend comes from, in order: `defaults.backend` in the workflow, the `TOME_BACKEND` environment variable, `backend:` in `.tome/config.yaml` or `~/.tome/config.yaml`, then cmux if the daemon runs inside cmux, and tmux otherwise.
+A run's backend comes from, in order: `defaults.backend` in the workflow, the `TOME_BACKEND` environment variable, `backend:` in `.tome/config.yaml` or `~/.tome/config.yaml`, then cmux if the daemon runs inside cmux, herdr if it runs inside herdr, and tmux otherwise. Herdr is also chosen when `tome run` is started from a herdr pane, even if the daemon isn't inside herdr. tome finds the herdr server from `HERDR_SOCKET_PATH`, `HERDR_SESSION`, then `herdr.session` in `~/.tome/config.yaml`, then the default socket (`~/.config/herdr/herdr.sock`), in that order. See [Sessions and backends](../guides/sessions.md#herdr).
 
 ## Sessions
 

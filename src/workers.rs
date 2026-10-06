@@ -158,10 +158,46 @@ impl Engine {
             "worker.spawn" => self.spawn_worker(run_id, p),
             "worker.report" => self.report_worker(run_id, p),
             "worker.status" => self.with_store(|store| match opt_str(p, "name") {
-                Some(name) => Ok(json!(store.require_worker(run_id, name)?)),
+                Some(name) => {
+                    let worker = store.require_worker(run_id, name)?;
+                    let session = store
+                        .sessions(run_id)?
+                        .into_iter()
+                        .find(|s| s.name == worker.session.as_deref().unwrap_or(""));
+                    let mut value = json!(worker);
+                    if let Some(session) = session {
+                        if let Some(status) = session.agent_status {
+                            value["agent_status"] = json!(status);
+                        }
+                        if let Some(at) = session.blocked_at {
+                            value["blocked_at"] = json!(at);
+                        }
+                    }
+                    Ok(value)
+                }
                 None => {
                     store.require_run(run_id)?;
-                    Ok(json!({ "workers": store.workers(run_id)? }))
+                    let mut workers = store.workers(run_id)?;
+                    let sessions = store.sessions(run_id)?;
+                    let values: Vec<Value> = workers
+                        .drain(..)
+                        .map(|w| {
+                            let mut value = json!(w);
+                            if let Some(session) = sessions
+                                .iter()
+                                .find(|s| s.name == w.session.as_deref().unwrap_or(""))
+                            {
+                                if let Some(status) = &session.agent_status {
+                                    value["agent_status"] = json!(status);
+                                }
+                                if let Some(at) = &session.blocked_at {
+                                    value["blocked_at"] = json!(at);
+                                }
+                            }
+                            value
+                        })
+                        .collect();
+                    Ok(json!({ "workers": values }))
                 }
             }),
             "worker.kill" => self.kill_worker(run_id, req_str(p, "name")?),

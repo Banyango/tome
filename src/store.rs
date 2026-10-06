@@ -253,6 +253,8 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE runs ADD COLUMN mode VARCHAR;
     UPDATE runs SET mode = 'orchestrated';
     ",
+    // 13: Herdr's informational agent status for each session
+    "ALTER TABLE sessions ADD COLUMN agent_status VARCHAR; ALTER TABLE sessions ADD COLUMN blocked_at VARCHAR;",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -430,6 +432,10 @@ pub struct Session {
     /// The resolved placement; `None` for sessions from before placements.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placement: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_at: Option<String>,
     pub created_at: String,
 }
 
@@ -719,6 +725,12 @@ impl Store {
             .execute(
                 "UPDATE runs SET status = ?, reason = ?, summary = coalesce(?, summary), finished_at = ? WHERE id = ?",
                 params![status.as_str(), reason, summary, now(), id],
+            )
+            .map_err(internal)?;
+        self.conn
+            .execute(
+                "UPDATE sessions SET agent_status = NULL, blocked_at = NULL WHERE run_id = ?",
+                params![id],
             )
             .map_err(internal)?;
         self.require_run(id)
@@ -1049,7 +1061,7 @@ impl Store {
     /// Record a session (its `created_at` is set to now).
     pub fn add_session(&mut self, s: &Session) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO sessions (run_id, name, role, backend, socket, handle, pane, layout, harness, placement, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO sessions (run_id, name, role, backend, socket, handle, pane, layout, harness, placement, agent_status, blocked_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 s.run_id,
                 s.name,
@@ -1061,6 +1073,8 @@ impl Store {
                 s.layout,
                 s.harness,
                 s.placement.as_ref().map(Value::to_string),
+                s.agent_status,
+                s.blocked_at,
                 now()
             ],
         )?;
@@ -1074,13 +1088,24 @@ impl Store {
         )
     }
 
-    /// The main sessions (orchestrators and single runs' agents) of running
-    /// runs.
-    pub fn running_orchestrators(&self) -> anyhow::Result<Vec<Session>> {
-        self.query_sessions(
-            "JOIN runs r ON r.id = s.run_id WHERE r.status = 'running' AND s.role IN ('orchestrator', 'agent') ORDER BY s.run_id",
-            params![],
-        )
+    pub fn set_session_agent_status(
+        &mut self,
+        run_id: i64,
+        name: &str,
+        status: Option<&str>,
+        blocked_at: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET agent_status = ?, blocked_at = ? WHERE run_id = ? AND name = ?",
+            params![status, blocked_at, run_id, name],
+        )?;
+        Ok(())
+    }
+
+    /// The main sessions (orchestrators and single runs' agents) and running
+    /// workers' sessions of running runs.
+    pub fn running_sessions(&self) -> anyhow::Result<Vec<Session>> {
+        self.query_sessions("JOIN runs r ON r.id = s.run_id WHERE r.status = 'running' AND (s.role IN ('orchestrator', 'agent') OR s.name IN (SELECT session FROM workers WHERE status = 'running' AND session IS NOT NULL)) ORDER BY s.run_id, s.created_at", params![])
     }
 
     fn query_sessions(
@@ -1090,7 +1115,7 @@ impl Store {
     ) -> anyhow::Result<Vec<Session>> {
         let mut stmt = self
             .conn
-            .prepare(&format!("SELECT s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.pane, s.layout, s.harness, s.placement, s.created_at FROM sessions s {rest}"))?;
+            .prepare(&format!("SELECT s.run_id, s.name, s.role, s.backend, s.socket, s.handle, s.pane, s.layout, s.harness, s.placement, s.created_at, s.agent_status, s.blocked_at FROM sessions s {rest}"))?;
         let rows = stmt.query_map(args, |r| {
             Ok(Session {
                 run_id: r.get(0)?,
@@ -1106,6 +1131,8 @@ impl Store {
                     .get::<_, Option<String>>(9)?
                     .and_then(|p| serde_json::from_str(&p).ok()),
                 created_at: fmt_ts(r.get(10)?),
+                agent_status: r.get(11)?,
+                blocked_at: r.get(12)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)

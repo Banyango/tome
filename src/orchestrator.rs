@@ -33,6 +33,7 @@ pub const AGENT_ROLE: &str = "agent";
 pub const EXITED: &str = "orchestrator_exited";
 /// Why a single run failed when its agent went away before `tome run finish`.
 pub const AGENT_EXITED: &str = "agent_exited";
+pub const BACKEND_UNAVAILABLE: &str = "backend_unavailable";
 
 /// The role of a run's main session in `mode`.
 pub fn role(mode: Mode) -> &'static str {
@@ -139,9 +140,18 @@ pub fn caller_anchor(
     caller: Option<&serde_json::Value>,
 ) -> Result<(Anchor, String), String> {
     if backend == Kind::Tmux {
-        return Err("`from: caller` is cmux only, and this session is on tmux".into());
+        return Err("`from: caller` needs cmux or herdr, and this session is on tmux".into());
     }
     let caller = caller.ok_or("no caller was recorded")?;
+    if backend == Kind::Herdr {
+        let pane = caller["herdr_pane"].as_str().ok_or_else(|| {
+            caller["unknown"]
+                .as_str()
+                .unwrap_or("no herdr caller was recorded")
+                .to_string()
+        })?;
+        return session::herdr_caller_anchor(pane);
+    }
     let surface = caller["surface"].as_str().ok_or_else(|| {
         caller["unknown"]
             .as_str()
@@ -257,7 +267,13 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
         role,
         harness,
         model,
-        backend: Kind::choose(wf.frontmatter.defaults.backend.as_deref(), project)?,
+        backend: Kind::choose_with_caller(
+            wf.frontmatter.defaults.backend.as_deref(),
+            project,
+            run.placement
+                .as_ref()
+                .is_some_and(|p| p["caller"]["herdr_pane"].is_string()),
+        )?,
         placement: placement(&wf.frontmatter, mode, run_flags(run)?.as_ref(), project)?,
         session: session::run_session_name(run.id, &run.workflow_name, role),
         title: format!("tome: {} #{}", run.workflow_name, run.id),
@@ -438,15 +454,18 @@ pub fn notify(run: &Run, sessions: &[Session], cut: &[Worker]) {
         run.workflow_name,
         run.status.as_str()
     );
-    let in_cmux = sessions.iter().any(|s| s.backend == Kind::Cmux.as_str());
-    if in_cmux && std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
+    let backend = sessions.iter().find_map(|s| Kind::parse(&s.backend));
+    if let Some(backend) = backend.filter(|k| *k != Kind::Tmux) {
+        if std::env::var("TOME_NOTIFY").as_deref() == Ok("off") {
+            return;
+        }
         let title = format!(
             "tome: {} #{} {}",
             run.workflow_name,
             run.id,
             run.status.as_str()
         );
-        Cmux.notify(&title, &message);
+        session::notify(backend, &title, &message);
     }
 }
 
@@ -467,6 +486,18 @@ pub fn notify_delivery(title: &str, message: &str) {
     eprintln!("tome daemon: notify: {title}: {message}");
     if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
         Cmux.notify(&format!("tome: {title}"), message);
+    }
+}
+
+pub fn notify_blocked(run: &Run, who: &str) {
+    let message = format!("run {}: {who} is waiting for input", run.id);
+    eprintln!("tome daemon: notify: {message}");
+    if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
+        session::notify(
+            Kind::Herdr,
+            &format!("tome: {} #{} blocked", run.workflow_name, run.id),
+            &message,
+        );
     }
 }
 

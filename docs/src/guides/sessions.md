@@ -4,12 +4,12 @@ Every agent tome starts runs in a **session** on a **backend**. This guide cover
 
 ## Choosing a backend
 
-tome supports tmux and cmux. It picks one for a run in this order:
+tome supports tmux, cmux and herdr. It picks one for a run in this order:
 
 1. `defaults.backend` in the workflow
 2. the `TOME_BACKEND` environment variable
 3. `backend:` in `.tome/config.yaml` (project) or `~/.tome/config.yaml` (global)
-4. cmux, if the daemon runs inside cmux, and tmux otherwise
+4. cmux, if the daemon runs inside cmux; otherwise herdr, if the daemon or caller is inside herdr; otherwise tmux
 
 ### tmux
 
@@ -18,6 +18,24 @@ Sessions are ordinary tmux sessions on your default tmux server. List them with 
 ### cmux
 
 Sessions are tabs, splits and workspaces in the cmux app. cmux only lets its own processes control it, so **start the daemon from a terminal inside cmux**: `tome daemon start`. The daemon inherits access from there. A daemon started elsewhere can't open sessions in cmux.
+
+### herdr
+
+Sessions open as tabs, splits and workspaces in the herdr app. tome talks to herdr over its local socket, found from `HERDR_SOCKET_PATH`, `HERDR_SESSION`, then `herdr.session` in `~/.tome/config.yaml`, then the default socket (`~/.config/herdr/herdr.sock`), in that order.
+
+To pin a herdr session, set it in the global config (it isn't accepted in a project's config):
+
+```yaml title=~/.tome/config.yaml
+herdr:
+  session: work
+```
+
+Things that differ from the other backends:
+
+- **Unavailable.** If herdr isn't running, a run fails with `backend_unavailable`, and you get a notification. A daemon that can't reach herdr later doesn't treat that as the agent exiting; it checks again.
+- **Agent status.** The daemon reads each agent's status from herdr. `tome runs show` and `tome worker status` list it in an `AGENT` column. When an agent is waiting for input it shows `blocked since <time>`.
+- **Blocked agents.** tome publishes `tome.run.<workflow>.blocked` (see [Triggers](triggers.md#chaining-workflows)) when an agent becomes blocked. If it stays blocked for 5 seconds you get a herdr notification, repeated at most once a minute. Notifications also announce a run's end. Set `TOME_NOTIFY=off` to turn them off.
+- **Attaching.** `tome session view` focuses the pane in herdr. Herdr sessions on another node can't be viewed over SSH.
 
 ## Harnesses
 
@@ -76,7 +94,7 @@ Any agent works as long as it can run `tome` commands. An agent must call `tome 
 | `workspace` | `project` (the default: one shared workspace for the project), `focused` (whatever is focused when the run starts), `own` (a new workspace for each session), or a name, which becomes the workspace `<project>-<name>` |
 | `split.direction` | `right`, `left`, `down` or `up` |
 | `split.size` | a percentage like `30%`, or a number of cells |
-| `from` | the pane a new tab or split opens from: `orchestrator`, `last`, `first`, or `caller` (cmux only, for the run's agent or orchestrator: the pane where you ran `tome run`) |
+| `from` | the pane a new tab or split opens from: `orchestrator`, `last`, `first`, or `caller` (cmux or herdr, for the run's agent or orchestrator: the pane where you ran `tome run`) |
 | `preset` | the name of a preset to build on |
 
 `layout: workspace` still works and means `workspace: own`. In tmux, a workspace is a tmux session, and a tab is a window.

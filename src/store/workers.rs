@@ -365,6 +365,7 @@ impl Store {
                 params![status.as_str(), reason, summary, exit_code, now(), w.run_id, w.name],
             )
             .map_err(internal)?;
+        self.conn.execute("UPDATE sessions SET agent_status = NULL, blocked_at = NULL WHERE run_id = ? AND name = ?", params![w.run_id, w.session.as_deref().unwrap_or("")]).map_err(internal)?;
         let message = summary.or(reason);
         self.worker_event(
             w.run_id,

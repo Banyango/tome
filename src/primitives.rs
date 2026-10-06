@@ -412,14 +412,21 @@ fn worker_detail(w: &Value) -> String {
             out.push_str(&format!("\n  {label}: {v}"));
         }
     }
+    if let Some(status) = w["agent_status"].as_str() {
+        out.push_str(&format!("\n  agent: {status}"));
+        if let Some(at) = w["blocked_at"].as_str() {
+            out.push_str(&format!(" since {at}"));
+        }
+    }
     out
 }
 
 pub fn workers_table(workers: &[Value]) -> String {
+    let has_agent_status = workers.iter().any(|w| w["agent_status"].is_string());
     let rows = workers
         .iter()
         .map(|w| {
-            vec![
+            let mut row = vec![
                 s(&w["name"]),
                 s(&w["kind"]),
                 s(&w["status"]),
@@ -433,13 +440,26 @@ pub fn workers_table(workers: &[Value]) -> String {
                     .next()
                     .unwrap_or("")
                     .to_string(),
-            ]
+            ];
+            if has_agent_status {
+                row.insert(3, w["agent_status"].as_str().unwrap_or("").to_string());
+            }
+            row
         })
         .collect();
-    table(
-        &["WORKER", "KIND", "STATUS", "GROUP", "BRANCH", "SUMMARY"],
-        rows,
-    )
+    if has_agent_status {
+        table(
+            &[
+                "WORKER", "KIND", "STATUS", "AGENT", "GROUP", "BRANCH", "SUMMARY",
+            ],
+            rows,
+        )
+    } else {
+        table(
+            &["WORKER", "KIND", "STATUS", "GROUP", "BRANCH", "SUMMARY"],
+            rows,
+        )
+    }
 }
 
 fn s(v: &Value) -> String {
