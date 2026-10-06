@@ -65,6 +65,10 @@ enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
+    /// Start the daemon in the background (same as `tome daemon start`).
+    Start,
+    /// Stop the running daemon (same as `tome daemon stop`).
+    Stop,
     /// Create, list and remove workflows.
     Workflow {
         #[command(subcommand)]
@@ -739,7 +743,15 @@ fn main() {
         return;
     }
 
-    let mut command = cli.command;
+    let mut command = match cli.command {
+        Command::Start => Command::Daemon {
+            command: DaemonCommand::Start,
+        },
+        Command::Stop => Command::Daemon {
+            command: DaemonCommand::Stop,
+        },
+        other => other,
+    };
     match route(&mut command, cli.on) {
         Ok(Some(node)) => node::set_target(node),
         Ok(None) => {}
@@ -874,6 +886,7 @@ fn route(command: &mut Command, on: Option<String>) -> CliResult<Option<node::No
 
 fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
     match command {
+        Command::Start | Command::Stop => unreachable!("rewritten to `daemon` in main"),
         Command::Daemon { command } => match command {
             DaemonCommand::Start => lifecycle::start(),
             DaemonCommand::Stop => lifecycle::stop(),

@@ -19,6 +19,8 @@ tome daemon stop
 tome daemon install   # start at login (launchd on macOS, systemd --user on Linux)
 ```
 
+`tome start` and `tome stop` are shorthands for `tome daemon start` and `tome daemon stop`.
+
 A daemon that crashes is restarted by the login service. `tome daemon stop` is a clean exit, so it stays stopped.
 
 With cmux, start the daemon from a terminal inside cmux. cmux only lets its own processes control it, and the daemon inherits that from where it started. See [Backends](backends.md).

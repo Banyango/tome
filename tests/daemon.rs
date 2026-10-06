@@ -47,6 +47,20 @@ fn start_status_stop_lifecycle() {
 }
 
 #[test]
+fn start_and_stop_are_shorthands_for_the_daemon_commands() {
+    let env = Env::new();
+    let (code, v) = env.json(&["start"]);
+    assert_eq!(code, 0, "{v}");
+    let (code, v) = env.json(&["daemon", "status"]);
+    assert_eq!((code, &v["running"]), (0, &json!(true)));
+
+    let (code, v) = env.json(&["stop"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["stopped"], true);
+    assert!(!env.socket().exists());
+}
+
+#[test]
 fn tome_output_env_selects_json() {
     let env = Env::new();
     let out = env

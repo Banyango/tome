@@ -9,6 +9,8 @@ tome daemon stop
 tome daemon run        # in the foreground, for debugging or a service manager
 ```
 
+`tome start` and `tome stop` are shorthands for `tome daemon start` and `tome daemon stop`.
+
 To keep it running across logins and reboots, register it as a service:
 
 ```sh
