@@ -46,3 +46,4 @@
 - [015 - herdr backend](features/015-herdr-backend/feature.md)
 - [016 - Single-agent runs](features/016-single-agent-runs/feature.md)
 - [017 - Resume failed runs](features/017-resume-failed-runs/feature.md)
+- [018 - Custom step statuses](features/018-custom-step-statuses/feature.md)

@@ -88,8 +88,20 @@ suggested answer for each, and use your question tool if you have one.
    `defaults.model` (workers) and `defaults.orchestrator_model`, and a single
    worker can differ with `tome worker spawn --model <m>`. Use the names the
    harness understands (`opus`, `sonnet`, `haiku` for `claude`). A custom
-   harness only takes a model if it has `model_flag` or `{{model}}` (see the
-   docs), so `tome validate` and `tome run` refuse one that can't.
+   harness only takes a model if its command includes `{{model}}` or it has
+   `model_flag` (see the docs), so `tome validate` and `tome run` refuse one
+   that can't. When adding a harness, prefer putting `{{model}}` directly in
+   its command where the CLI expects the model; that keeps the model handling
+   visible with the other arguments and avoids a separate `model_flag` setting.
+   `{{model}}` expands to an empty string when no model is set, so use
+   `model_flag` instead when the model is optional and the CLI rejects an
+   empty model argument. For example:
+
+   ```yaml
+   harnesses:
+     codex:
+       command: ["codex", "--model", "{{model}}", "{{prompt}}"]
+   ```
 
 Then say back, in two or three lines, what the workflow will do (for example,
 "one agent at a time, one branch per task, merged when tests pass, stops when
@@ -268,6 +280,9 @@ local ones (`validate`, `workflow`, `layout`, `node`). Inside a run,
 
 - `agent_exited` / `orchestrator_exited` / `worker_exited`: the agent's session ended without
   reporting. Read `tome runs logs <id>`.
+- Harness won't open: run `tome harness validate <name> --model <model>` to
+  check the config, executable on this shell's `PATH`, model forwarding, and
+  the expanded launch command. It prints a preview without starting the agent.
 - `tome worker ... isn't available: this run is a single-agent run`: add
   `mode: orchestrated` to the workflow's frontmatter.
 - "never made a first tome call": the harness started too slowly. Raise

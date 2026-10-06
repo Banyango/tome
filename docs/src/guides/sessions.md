@@ -49,7 +49,12 @@ harnesses:
     command: ["claude", "--model", "opus", "--allowedTools", "Bash(tome:*)", "--", "{{prompt}}"]
   aider:
     command: aider --message-file {{prompt_file}}
+  codex:
+    command: ["codex", "{{prompt}}"]
+    model_flag: --model
 ```
+
+A harness chooses the agent CLI; `backend` chooses the terminal multiplexer that hosts it. The `codex` harness can run inside either tmux or cmux. Install the agent CLI and complete its sign-in before using it with tome. Installing the [tome plugin](../agents/skill.md) teaches the agent how to use tome; configure its launch command here as well.
 
 A list is an argv: one element per argument, with no shell involved. A string is run with `sh -c`, with each value shell-quoted. The variables are:
 
@@ -82,7 +87,30 @@ A harness that does neither refuses a model, and `tome run` and `tome worker spa
 
 A project harness replaces a global one of the same name. Pick a harness in a workflow with `defaults.harness` (a single run's agent, and workers) and `defaults.orchestrator_harness` (the orchestrator), or per worker with `tome worker spawn --harness`.
 
+To change the harness or model for one run without editing the workflow:
+
+```sh
+tome run my-workflow --harness codex
+tome run my-workflow --harness codex --model <model-name>
+```
+
+`--harness` overrides both `defaults.harness` and `defaults.orchestrator_harness`; `--model` overrides both `defaults.model` and `defaults.orchestrator_model`. These choices apply to the main agent and workers. A worker's explicit `--harness` or `--model` still takes precedence. Each run flag overrides only its own setting: changing the harness keeps the workflow's models unless you also pass `--model`. Use a model accepted by the selected agent CLI.
+
 Any agent works as long as it can run `tome` commands. An agent must call `tome ready` first and `tome worker done` or `fail` last, and tome tells it so in its prompt.
+
+If a harness won't open, run `tome harness validate <name>` to check its
+configuration, find its executable on the current `PATH`, and see the command
+tome will launch. Add `--model <name>` to check model forwarding too. This
+prints a preview without starting the agent; the agent itself opens inside the
+configured session backend.
+
+```sh
+tome harness validate                 # every known harness, including claude
+tome harness validate codex
+tome harness validate codex --model <model-name>
+```
+
+Validation checks whether tome can forward a model, not whether the agent provider supports it. For a shell command template it checks `sh` and shell syntax; check the agent executable separately. It doesn't check sign-in or launch an agent. The command exits with code 2 if a check fails and supports `--json` for structured results.
 
 ## Placement
 

@@ -11,6 +11,7 @@ mod gc;
 mod glob;
 mod handshake;
 mod harness;
+mod harnesscmd;
 mod inspect;
 mod lifecycle;
 mod node;
@@ -68,6 +69,11 @@ enum Command {
     Workflow {
         #[command(subcommand)]
         command: WorkflowCommand,
+    },
+    /// Inspect configured agent harnesses.
+    Harness {
+        #[command(subcommand)]
+        command: HarnessCommand,
     },
     /// Validate workflows (all visible ones, or one by name or path).
     Validate {
@@ -268,6 +274,18 @@ enum WorkflowCommand {
         /// Delete it even if it has running or queued runs (or the daemon is down).
         #[arg(long)]
         force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HarnessCommand {
+    /// Check harness config, command availability and the expanded command.
+    Validate {
+        /// Harness name (defaults to every known harness).
+        name: Option<String>,
+        /// Check whether this model can be passed to the harness.
+        #[arg(long)]
+        model: Option<String>,
     },
 }
 
@@ -764,6 +782,7 @@ fn reach(command: &Command) -> Reach {
             command: SessionCommand::Move { .. },
         } => Reach::Agent,
         Command::Validate { .. }
+        | Command::Harness { .. }
         | Command::Workflow { .. }
         | Command::Layout { .. }
         | Command::Node { .. }
@@ -882,6 +901,11 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 global,
                 force,
             } => scaffold::rm(&current_dir()?, &workflow, global, force),
+        },
+        Command::Harness { command } => match command {
+            HarnessCommand::Validate { name, model } => {
+                harnesscmd::validate(&current_dir()?, name.as_deref(), model.as_deref())
+            }
         },
         Command::Validate { workflow, params } => {
             validate::run(&current_dir()?, workflow.as_deref(), &params)
