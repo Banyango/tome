@@ -1,0 +1,12 @@
+: 1791127219:0;cat ~/.ssh/known_hosts
+: 1791127229:0;ssh kyle@ai-lab-1 -p 2234
+: 1791248647:0;make docs
+: 1791248737:0;git merge feature/herdr-backend
+: 1791248742:0;git log
+: 1791248763:0;git checkout main
+: 1791248772:0;git checkout -
+: 1791248778:0;git commit -am "Update docs"
+: 1791248783:0;git checkout main
+: 1791248796:0;git merge feature/herdr-backend
+: 1791248887:0;git log
+: 1791248902:0;clear
