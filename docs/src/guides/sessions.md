@@ -35,7 +35,7 @@ Things that differ from the other backends:
 - **Unavailable.** If herdr isn't running, a run fails with `backend_unavailable`, and you get a notification. A daemon that can't reach herdr later doesn't treat that as the agent exiting; it checks again.
 - **Agent status.** The daemon reads each agent's status from herdr. `tome runs show` and `tome worker status` list it in an `AGENT` column. When an agent is waiting for input it shows `blocked since <time>`.
 - **Blocked agents.** tome publishes `tome.run.<workflow>.blocked` (see [Triggers](triggers.md#chaining-workflows)) when an agent becomes blocked. If it stays blocked for 5 seconds you get a herdr notification, repeated at most once a minute. Notifications also announce a run's end. Set `TOME_NOTIFY=off` to turn them off.
-- **Attaching.** `tome session view` focuses the pane in herdr. Herdr sessions on another node can't be viewed over SSH.
+- **Attaching.** `tome session view` focuses the session's workspace in herdr. Herdr sessions on another node can't be viewed over SSH.
 
 ## Harnesses
 

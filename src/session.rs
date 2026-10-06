@@ -477,10 +477,10 @@ pub fn attach_command(s: &Session) -> String {
             format!("cmux select-workspace --workspace {id} && cmux focus-panel --panel {surface} --workspace {id}")
         }
         (Some(Kind::Cmux), Some(id), _) => format!("cmux select-workspace --workspace {id}"),
-        (Some(Kind::Herdr), _, Some(pane)) => format!(
-            "HERDR_SOCKET_PATH={} herdr pane focus {}",
+        (Some(Kind::Herdr), Some(id), _) => format!(
+            "HERDR_SOCKET_PATH={} herdr workspace focus {}",
             shell_quote(&s.socket.clone().unwrap_or_default()),
-            shell_quote(pane)
+            shell_quote(id)
         ),
         _ => {
             let tmux = match &s.socket {

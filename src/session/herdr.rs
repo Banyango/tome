@@ -102,12 +102,12 @@ impl Herdr {
 
     pub fn launch(&self, l: &Launch, warnings: &mut Vec<String>) -> CliResult<(String, String)> {
         self.call("ping", json!({}))?;
-        let command = json!(["sh", l.script.to_string_lossy()]);
+        std::fs::write(l.script, super::script(l, super::Capture::Script))?;
         let env: serde_json::Map<String, Value> =
             l.env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
         let focus = false;
         let (workspace, pane) = if l.layout == Layout::Workspace {
-            let created = self.call("workspace.create", json!({"label":l.name,"cwd":l.cwd,"command":command.clone(),"env":env.clone(),"focus":focus}))?;
+            let created = self.call("workspace.create", json!({"label":l.name,"cwd":l.cwd,"env":env.clone(),"focus":focus}))?;
             let ws = created["workspace"]["workspace_id"]
                 .as_str()
                 .or(created["workspace"]["id"].as_str())
@@ -128,7 +128,7 @@ impl Herdr {
                     warnings,
                 )?,
             };
-            let response = self.call("tab.create", json!({"workspace_id":ws,"label":l.title,"cwd":l.cwd,"command":command.clone(),"env":env.clone(),"focus":focus}))?;
+            let response = self.call("tab.create", json!({"workspace_id":ws,"label":l.title,"cwd":l.cwd,"env":env.clone(),"focus":focus}))?;
             let pane = response["root_pane"]["pane_id"]
                 .as_str()
                 .or(response["pane"]["pane_id"].as_str())
@@ -182,7 +182,7 @@ impl Herdr {
                 crate::placement::Direction::Down | crate::placement::Direction::Up => "down",
                 _ => "right",
             };
-            let mut params = json!({"pane_id":anchor,"direction":direction,"command":command.clone(),"cwd":l.cwd,"env":env.clone(),"label":l.name,"focus":focus});
+            let mut params = json!({"target_pane_id":anchor,"direction":direction,"cwd":l.cwd,"env":env.clone(),"focus":focus});
             if let Some(ratio) =
                 self.split_ratio(&anchor, l.split.size, l.split.direction, warnings)
             {
@@ -212,8 +212,19 @@ impl Herdr {
             }
             (ws, pane)
         };
-        let _ = workspace;
         let _ = self.call("pane.rename", json!({"pane_id":pane,"label":l.name}));
+        // Herdr panes start a shell and take no command, so type the launcher
+        // in. `exec` makes the pane close when the agent exits.
+        if !self.send_line(
+            &pane,
+            &format!(" exec sh {}", crate::session::shell_quote(&l.script.to_string_lossy())),
+        ) {
+            let _ = self.close(&pane);
+            return Err(CliError::internal(format!(
+                "herdr couldn't start `{}` in its new pane",
+                l.name
+            )));
+        }
         Ok((workspace, pane))
     }
 
@@ -435,4 +446,119 @@ fn workspace_label(project: Option<&Path>, target: &Target) -> String {
         _ => "orchestrator",
     };
     format!("{base}-{tail}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::Split;
+    use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex};
+
+    /// A herdr that records each request and answers like the real one.
+    fn fake(socket: &Path) -> Arc<Mutex<Vec<Value>>> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let listener = UnixListener::bind(socket).unwrap();
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let result = match request["method"].as_str().unwrap() {
+                    "workspace.create" | "tab.create" => json!({
+                        "workspace": {"workspace_id": "w1"},
+                        "root_pane": {"pane_id": "w1:p9"},
+                    }),
+                    "session.snapshot" => json!({
+                        "panes": [{"pane_id": "w1:p1", "workspace_id": "w1"}],
+                    }),
+                    "pane.split" => json!({"pane": {"pane_id": "w1:p2"}}),
+                    _ => json!({}),
+                };
+                log.lock().unwrap().push(request.clone());
+                let mut stream = &stream;
+                let _ = writeln!(stream, "{}", json!({"id": request["id"], "result": result}));
+            }
+        });
+        seen
+    }
+
+    fn launch_with(layout: Layout) -> (Vec<Value>, Vec<String>, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("herdr.sock");
+        let seen = fake(&socket);
+        let script = dir.path().join("agent.sh");
+        let log = dir.path().join("agent.log");
+        let split = Split::default();
+        let target = Target::Focused("w1".into());
+        let argv = vec!["agent".to_string()];
+        let launch = Launch {
+            name: "tome-1-build",
+            title: "tome: build #1",
+            cwd: dir.path(),
+            argv: &argv,
+            env: &[],
+            script: &script,
+            log: &log,
+            layout,
+            split: &split,
+            target: &target,
+            project: None,
+        };
+        let mut warnings = Vec::new();
+        let (_, pane) = Herdr {
+            socket: socket.clone(),
+        }
+        .launch(&launch, &mut warnings)
+        .unwrap();
+        assert_eq!(warnings, Vec::<String>::new());
+        let written = std::fs::read_to_string(&script).unwrap();
+        let requests = seen.lock().unwrap().clone();
+        (requests, vec![pane], written)
+    }
+
+    fn typed(requests: &[Value]) -> String {
+        requests
+            .iter()
+            .find(|r| r["method"] == "pane.send_text")
+            .map(|r| r["params"]["text"].as_str().unwrap().to_owned())
+            .expect("the launcher was typed into the pane")
+    }
+
+    #[test]
+    fn a_tab_writes_the_launcher_and_runs_it_in_the_pane() {
+        let (requests, pane, script) = launch_with(Layout::Tab);
+        assert_eq!(pane, ["w1:p9"]);
+        assert!(script.contains("exec script -q -a -F"), "{script}");
+        assert!(typed(&requests).contains("exec sh "), "{requests:?}");
+        let sent = requests.iter().position(|r| r["method"] == "pane.send_text");
+        let keys = requests.iter().position(|r| r["method"] == "pane.send_keys");
+        assert!(sent < keys, "{requests:?}");
+        // Herdr takes no command: it would be ignored.
+        assert!(requests.iter().all(|r| r["params"]["command"].is_null()));
+    }
+
+    #[test]
+    fn a_split_names_its_anchor_as_the_target_pane() {
+        let (requests, pane, _) = launch_with(Layout::Split);
+        assert_eq!(pane, ["w1:p2"]);
+        let split = requests
+            .iter()
+            .find(|r| r["method"] == "pane.split")
+            .unwrap();
+        assert_eq!(split["params"]["target_pane_id"], "w1:p1", "{split}");
+        assert!(split["params"]["pane_id"].is_null(), "{split}");
+        assert!(split["params"]["command"].is_null(), "{split}");
+        assert!(typed(&requests).contains("exec sh "));
+    }
+
+    #[test]
+    fn an_unreachable_herdr_is_unknown_not_dead() {
+        let dir = tempfile::tempdir().unwrap();
+        let herdr = Herdr {
+            socket: dir.path().join("none.sock"),
+        };
+        assert_eq!(herdr.alive("w1:p1"), None);
+    }
 }
