@@ -56,7 +56,7 @@ tome events ls --on mini
 
 Set `TOME_NODE=mini` to make `--on mini` the default for a shell. `--on local` overrides it.
 
-These commands only work on this machine, so they refuse `--on`: `validate`, `workflow …`, `layout …`, `node …`, and `daemon start|run|install|uninstall`. Run them on the node over `ssh`. The commands agents use inside a run (`ready`, `step`, `worker`, `run finish` and so on) refuse it too, because they act on the run the agent is in.
+These commands only work on this machine, so they refuse `--on`: `validate`, `harness validate`, `workflow …`, `layout …`, `node …`, and `daemon start|run|install|uninstall`. Run them on the node over `ssh`. The commands agents use inside a run (`ready`, `step`, `worker`, `run finish` and so on) refuse it too, because they act on the run the agent is in.
 
 ### Which project
 

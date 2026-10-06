@@ -29,8 +29,11 @@ With cmux, start the daemon from a terminal inside cmux; see [Sessions and backe
 ```sh
 tome run my-workflow --param key=value   # attached: streams progress, Ctrl-C cancels
 tome run my-workflow --detach            # print the run id and return
+tome run my-workflow --harness codex --model <model-name>
 tome run cancel <id>                     # kill its sessions; worktrees are kept
 ```
+
+`--harness` and `--model` override the workflow's choices for the main agent and workers, including the orchestrator. Configure the harness first; see [Sessions and backends](sessions.md#harnesses).
 
 ## Looking at runs
 
@@ -91,6 +94,8 @@ There's no prompt. The file is deleted, and runs and their logs stay. The comman
 **A run fails because an agent "never made a first tome call".** The agent didn't start in time. tome nudges it once, then fails it. If your harness is slow to start, raise `defaults.start_timeout` in the workflow, or set it to `off`.
 
 **Sessions don't open in cmux.** The daemon has to be started from inside a cmux terminal. Stop it and start it again from there.
+
+**A harness won't start or refuses a model.** Run `tome harness validate <name> --model <model-name>` to check configuration, executable availability and model forwarding without launching the agent. Omit `--model` when none is selected. For shell templates, check the agent executable separately; validation checks `sh` and shell syntax. Complete the agent CLI's sign-in, and make sure the daemon's `PATH` includes it.
 
 **A workflow isn't found.** `tome validate` lists every workflow tome can see. Project workflows are looked up from the current directory upwards, so run commands from inside the project.
 

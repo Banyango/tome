@@ -81,6 +81,8 @@ Workflow-wide settings.
 | `timeout` | A duration, like `30m`, or a number of seconds. tome accepts and records it, but doesn't enforce a run timeout today. |
 | `on_failure` | A string, accepted and recorded. tome doesn't act on it today; say in the body what should happen on failure. |
 
+`tome run my-workflow --harness <name> --model <model>` overrides the harness and model for that run, including `orchestrator_harness` and `orchestrator_model`. Workers inherit the run's choices unless overridden with `tome worker spawn --harness` or `--model`. The workflow file stays unchanged. See [Harnesses](sessions.md#harnesses) for setup.
+
 ### `concurrency` and `on_conflict`
 
 `concurrency: N` limits how many runs of this workflow go at once. Runs are unlimited by default. When the limit is reached, `on_conflict: queue` (the default) makes the new run wait, and `on_conflict: reject` refuses it.

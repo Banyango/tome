@@ -20,3 +20,5 @@ Where a session opens is its **placement**: a layout (`tab` or `split`, or a wor
 ## Harnesses
 
 An agent starts through a **harness**: a command template that launches an agent CLI with a prompt. Claude Code (`claude`) is built in. Others are defined in config, so tome isn't tied to one agent. Workflows pick one with `defaults.harness`, and can give the orchestrator a different one with `defaults.orchestrator_harness`.
+
+For example, configure a `codex` harness and use `tome run my-workflow --harness codex` to select it for one run. `--model` selects a model for that run. Both flags apply to the main agent and workers, including the orchestrator in an orchestrated workflow. The harness runs on the chosen tmux or cmux backend. See [Harnesses](../guides/sessions.md#harnesses) for configuration and validation.
