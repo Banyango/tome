@@ -2,7 +2,7 @@
   "name": "tome",
   "displayName": "tome",
   "description": "Write, run and debug tome workflows: repeatable agentic workflows triggered by file changes, schedules and messages.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "Kyle Reczek",
     "email": "kyle@banyango.com"
