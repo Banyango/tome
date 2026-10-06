@@ -14,7 +14,7 @@ tome worker spawn --name reviewer --prompt "Review src/lib.rs and report what yo
 tome worker spawn --name tests -- cargo test
 ```
 
-An agent worker starts through a harness (`--harness` picks one, otherwise the workflow's, otherwise `claude`). It runs in its own session, and it finishes by calling `tome worker done --summary "..."` or `tome worker fail --summary "..."`. If it exits without doing either, it is marked failed. A command worker is done when it exits 0, and its summary is the exit code and the last lines of output.
+An agent worker starts through a harness (`--harness` picks one, otherwise the workflow's `defaults.harness`, otherwise the one its orchestrator runs). It runs in its own session, and it finishes by calling `tome worker done --summary "..."` or `tome worker fail --summary "..."`. If it exits without doing either, it is marked failed. A command worker is done when it exits 0, and its summary is the exit code and the last lines of output.
 
 Only the orchestrator starts workers. Workers can't start workers, so if a task needs splitting, a worker says so in its summary and the orchestrator decides.
 

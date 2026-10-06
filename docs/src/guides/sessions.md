@@ -87,7 +87,7 @@ harnesses:
 
 A harness that does neither refuses a model, and `tome run` and `tome worker spawn` say so. If you redefine `claude` in config, add `model_flag: --model` again, or the model can't reach it. `tome worker spawn --model <m>` overrides the workflow's model for one worker.
 
-A project harness replaces a global one of the same name. Pick a harness in a workflow with `defaults.harness` (a single run's agent, and workers) and `defaults.orchestrator_harness` (the orchestrator), or per worker with `tome worker spawn --harness`.
+A project harness replaces a global one of the same name. Pick a harness in a workflow with `defaults.harness` (a single run's agent, and workers) and `defaults.orchestrator_harness` (the orchestrator), or per worker with `tome worker spawn --harness`. A worker with no explicit harness runs its orchestrator's.
 
 To change the harness or model for one run without editing the workflow:
 

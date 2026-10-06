@@ -261,10 +261,19 @@ impl Engine {
         let wf = orchestrator::snapshot(&run)?;
         let task = match (prompt, command) {
             (Some(prompt), None) => {
-                let name = opt_str(p, "harness")
+                let project = orchestrator::run_project(&run);
+                // Without an explicit choice, workers run the harness their
+                // orchestrator runs.
+                let harness = match opt_str(p, "harness")
                     .or(wf.frontmatter.defaults.harness.as_deref())
-                    .unwrap_or(harness::DEFAULT);
-                let harness = harness::resolve(name, orchestrator::run_project(&run).as_deref())?;
+                {
+                    Some(name) => harness::resolve(name, project.as_deref())?,
+                    None => orchestrator::harness_for(
+                        &wf.frontmatter,
+                        wf.frontmatter.mode,
+                        project.as_deref(),
+                    )?,
+                };
                 let model = opt_str(p, "model")
                     .or(wf.frontmatter.defaults.model.as_deref())
                     .map(str::to_string);

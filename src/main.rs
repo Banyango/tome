@@ -354,7 +354,7 @@ enum WorkerCommand {
         /// Name the worktree's new branch (default: tome/<run>/<name>).
         #[arg(long, value_name = "NAME")]
         branch: Option<String>,
-        /// Harness for an agent worker (default: the workflow's, else claude).
+        /// Harness for an agent worker (default: the workflow's, else the orchestrator's).
         #[arg(long)]
         harness: Option<String>,
         /// Model for an agent worker (default: the workflow's `defaults.model`).

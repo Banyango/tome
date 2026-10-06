@@ -208,6 +208,18 @@ sleep 30
 "#;
 
 #[test]
+fn agent_workers_default_to_the_orchestrators_harness() {
+    let env = setup(&[("painter", AGENT)], "painter");
+    let run = start(&env);
+    let w = ok(
+        &env,
+        &run,
+        &["worker", "spawn", "--name", "p", "--prompt", "Paint the fence."],
+    );
+    assert_eq!(w["harness"], "painter", "{w}");
+}
+
+#[test]
 fn agent_workers_report_and_are_closed() {
     let env = setup(&[("painter", AGENT), ("quitter", "exit 0\n")], "claude");
     let run = start(&env);
