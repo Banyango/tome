@@ -26,7 +26,7 @@ mod workers;
 pub use events::{check_payload, BusEvent, Delivery, DeliveryState, NewEvent, Subscriber};
 pub use queues::Pulled;
 pub use triggers::{Fire, NewFire, Project};
-pub use workers::{check_name, NewWorker, Worker, WorkerEnd, WorkerHistory, WorkerStatus};
+pub use workers::{check_name, Group, NewWorker, Worker, WorkerEnd, WorkerHistory, WorkerStatus};
 
 /// Schema migrations, applied in order. Never edit a released entry; append
 /// a new one instead. The daemon applies pending ones on startup.

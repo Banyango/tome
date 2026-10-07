@@ -8,9 +8,11 @@ use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use crate::placement::Settings;
 use crate::store::{
-    NewRun, NewWorktree, Run, RunStatus, Session, StepEvent, StepStatus, Store, Worktree,
+    Group, NewRun, NewWorktree, Run, RunStatus, Session, StepEvent, StepStatus, Store, Worker,
+    WorkerStatus, Worktree,
 };
 use crate::triggers;
+use crate::workflow::Mode;
 use crate::workflow::{self, Invalid};
 use crate::worktree;
 use serde_json::{Map, Value};
@@ -216,6 +218,9 @@ pub struct Context {
     pub worktrees: Vec<Worktree>,
     /// The resumed run's worktrees that were gone, so weren't adopted.
     pub gone: Vec<Worktree>,
+    /// The resumed run's workers and groups, for an orchestrator.
+    pub workers: Vec<Worker>,
+    pub groups: Vec<Group>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -328,6 +333,12 @@ pub fn context(store: &Store, run: &Run) -> anyhow::Result<Option<Context>> {
             .collect(),
         None => Vec::new(),
     };
+    let (workers, groups) = match chain.last() {
+        Some(last) if run.mode == Mode::Orchestrated => {
+            (store.workers(last.id)?, store.groups(last.id)?)
+        }
+        _ => (Vec::new(), Vec::new()),
+    };
     let earlier = chain
         .into_iter()
         .map(|r| Earlier {
@@ -343,6 +354,8 @@ pub fn context(store: &Store, run: &Run) -> anyhow::Result<Option<Context>> {
         start,
         worktrees,
         gone,
+        workers,
+        groups,
     }))
 }
 
@@ -414,6 +427,26 @@ pub fn render(ctx: &Context) -> String {
             out.push_str(&format!("- {}\n", describe(w)));
         }
     }
+    if let Some(last) = ctx.earlier.last().filter(|_| !ctx.workers.is_empty()) {
+        out.push_str(&format!(
+            "\nWorkers of run #{} (none of them is running now; spawn again only the ones still needed):\n",
+            last.id
+        ));
+        for w in &ctx.workers {
+            out.push_str(&format!("- {}\n", worker(w, last)));
+        }
+    }
+    if !ctx.groups.is_empty() {
+        out.push_str("\nIts groups:\n");
+        for g in &ctx.groups {
+            out.push_str(&format!(
+                "- `{}`: {}{}\n",
+                g.name,
+                g.status,
+                if g.fail_fast { " (fail-fast)" } else { "" }
+            ));
+        }
+    }
     out.push_str("\nWhere to start: ");
     out.push_str(&match &ctx.start {
         Start::Given(text) => format!("the user said: {}\n", text.trim()),
@@ -440,6 +473,36 @@ fn describe(w: &Worktree) -> String {
     };
     if let Some(branch) = &w.branch {
         out.push_str(&format!(", branch `{branch}`"));
+    }
+    out
+}
+
+/// A worker's kind, group and how it ended. One the run's end cut off is
+/// marked as stopped mid-task.
+fn worker(w: &Worker, run: &Earlier) -> String {
+    let mut out = format!("`{}` ({}", w.name, w.kind);
+    if let Some(group) = &w.group {
+        out.push_str(&format!(", group `{group}`"));
+    }
+    out.push_str(&format!("): {}", w.status.as_str()));
+    let cut = match w.status {
+        WorkerStatus::Pending | WorkerStatus::Running => true,
+        WorkerStatus::Done => false,
+        WorkerStatus::Failed | WorkerStatus::Cancelled => {
+            w.reason.is_some() && w.reason == run.reason
+        }
+    };
+    if let Some(reason) = &w.reason {
+        out.push_str(&format!(" ({reason})"));
+    }
+    if cut {
+        out.push_str(match w.started_at {
+            Some(_) => ", stopped mid-task when the run ended",
+            None => ", never started",
+        });
+    }
+    if let Some(summary) = &w.summary {
+        out.push_str(&format!(": {}", one_line(summary)));
     }
     out
 }
@@ -817,5 +880,71 @@ mod tests {
         assert!(adopted(&store, new.id, &repo.join("other"), "api", false)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn an_orchestrator_hears_how_the_old_workers_ended() {
+        use crate::store::NewWorker;
+        let (dir, mut store) = store();
+        let old = new_run(&mut store, "build");
+        store.create_group(old.id, "tests", true).unwrap();
+        for (name, group) in [("api", Some("tests")), ("ui", None), ("later", None)] {
+            let new = NewWorker {
+                name: Some(name),
+                kind: "agent",
+                group,
+                harness: None,
+                command: None,
+                keep_open: false,
+            };
+            store.reserve_worker(old.id, &new).unwrap();
+        }
+        store.start_worker(old.id, "api", "s-api").unwrap();
+        store
+            .finish_worker(
+                old.id,
+                "api",
+                WorkerStatus::Done,
+                None,
+                Some("api built"),
+                None,
+                true,
+            )
+            .unwrap();
+        store.start_worker(old.id, "ui", "s-ui").unwrap();
+        store
+            .abort_run(old.id, RunStatus::Cancelled, "user_cancelled", None)
+            .unwrap();
+        let mut old = store.get_run(old.id, true).unwrap().unwrap();
+        old.project_path = Some(dir.path().display().to_string());
+        let new = create(
+            &mut store,
+            &old,
+            "s",
+            None,
+            None,
+            &origin(),
+            RunStatus::Running,
+        )
+        .unwrap();
+
+        let ctx = context(&store, &new).unwrap().unwrap();
+        assert_eq!(ctx.workers.len(), 3);
+        let text = render(&ctx);
+        for want in [
+            format!("Workers of run #{}", old.id),
+            "- `api` (agent, group `tests`): done: api built".to_string(),
+            "- `ui` (agent): cancelled (user_cancelled), stopped mid-task".to_string(),
+            "- `tests`: ".to_string(),
+            "- `later` (agent): cancelled (user_cancelled), never started".to_string(),
+        ] {
+            assert!(text.contains(&want), "missing {want:?} in\n{text}");
+        }
+
+        // A single agent has no workers to hear about.
+        let mut single = new.clone();
+        single.mode = Mode::Single;
+        let ctx = context(&store, &single).unwrap().unwrap();
+        assert!(ctx.workers.is_empty() && ctx.groups.is_empty());
     }
 }

@@ -49,7 +49,7 @@ impl WorkerStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Worker {
     #[serde(skip)]
     pub run_id: RunId,
@@ -83,7 +83,7 @@ pub struct NewWorker<'a> {
     pub keep_open: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Group {
     pub name: String,
     pub fail_fast: bool,
