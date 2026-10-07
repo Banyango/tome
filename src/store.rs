@@ -1256,7 +1256,7 @@ pub fn read_tail_bytes(path: &Path, lines: usize, max_bytes: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 

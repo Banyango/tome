@@ -24,7 +24,7 @@ use crate::workflow::{self, Invalid, OnConflict};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,9 @@ pub mod reason {
 const WATCH_POLL: Duration = Duration::from_millis(200);
 /// How often a watch re-syncs from the store, as a safety net.
 const WATCH_RESYNC: Duration = Duration::from_secs(1);
+/// Events queued for one watch before it counts as fallen behind. A watch
+/// that falls behind is dropped and catches up from the store.
+const WATCH_QUEUE: usize = 256;
 /// How often herdr agents' statuses are read.
 const STATUS_POLL: Duration = Duration::from_secs(2);
 
@@ -66,7 +69,8 @@ fn status_subject(engine: &Engine, session: &store::Session) -> String {
 
 /// The watchers of one run, and how far they've been sent.
 struct Watchers {
-    senders: Vec<Sender<Value>>,
+    /// Each event goes with the history id it brings its watcher up to.
+    senders: Vec<SyncSender<(i64, Value)>>,
     /// Highest step or worker history id already sent (they share a
     /// sequence).
     last_event: i64,
@@ -894,71 +898,93 @@ impl Engine {
         cancel_on_disconnect: bool,
         sink: &mut dyn Sink,
     ) -> Option<CliResult<Run>> {
-        let (tx, rx) = mpsc::channel();
-        let replay = self.with_store(|store| {
-            let run = store.require_run(id)?;
-            let history = history(store, id, 0)?;
-            if !run.status.is_finished() {
-                let mut watchers = self.watchers.lock().unwrap_or_else(|p| p.into_inner());
-                let w = watchers.entry(id).or_insert_with(|| Watchers {
-                    senders: Vec::new(),
-                    last_event: history.last().map_or(0, |(hid, _)| *hid),
-                    status: run.status,
-                });
-                w.senders.push(tx);
+        let mut sent = Sent::default();
+        loop {
+            let (replay, rx) = match self.subscribe(id, &sent) {
+                Ok(s) => s,
+                Err(e) => return Some(Err(e)),
+            };
+            for (seq, event) in replay {
+                if sink.send(&event).is_err() {
+                    return self.caller_gone(id, cancel_on_disconnect);
+                }
+                sent.note(seq, &event);
             }
-            Ok((run, history))
-        });
-        let (run, history) = match replay {
-            Ok(r) => r,
-            Err(e) => return Some(Err(e)),
-        };
+            let Some(rx) = rx else {
+                return Some(self.with_store(|store| store.require_run(id)));
+            };
+            match self.pump(id, &rx, &mut sent, cancel_on_disconnect, sink) {
+                // Fell behind and was dropped: catch up from the store.
+                Pump::Behind => continue,
+                Pump::Done(result) => return result,
+            }
+        }
+    }
 
-        let mut replay = Vec::new();
-        if !run.status.is_finished() {
-            replay.push(run_event(&run));
-        }
-        replay.extend(history.into_iter().map(|(_, e)| e));
-        if run.status.is_finished() {
-            replay.push(run_event(&run));
-        }
-        for event in &replay {
-            if sink.send(event).is_err() {
-                return self.caller_gone(id, cancel_on_disconnect);
+    /// What a watch hasn't sent yet of run `id`, and (unless the run has
+    /// finished) a queue for what happens next.
+    fn subscribe(
+        &self,
+        id: RunId,
+        sent: &Sent,
+    ) -> CliResult<(Vec<(i64, Value)>, Option<Receiver<(i64, Value)>>)> {
+        self.with_store(|store| {
+            let run = store.require_run(id)?;
+            let history = history(store, id, sent.event)?;
+            let seq = history.last().map_or(sent.event, |(hid, _)| *hid);
+            let finished = run.status.is_finished();
+            let mut replay = Vec::new();
+            let status = (sent.status != Some(run.status)).then(|| (seq, run_event(&run)));
+            if !finished {
+                replay.extend(status.clone());
             }
-        }
-        if run.status.is_finished() {
-            return Some(Ok(run));
-        }
-        self.pump(id, &rx, cancel_on_disconnect, sink)
+            replay.extend(history);
+            if finished {
+                replay.extend(status);
+                return Ok((replay, None));
+            }
+            // Bring the run's other watchers up to what's replayed here, so
+            // this one's queue starts where its replay ends.
+            self.sync(store, id);
+            let (tx, rx) = mpsc::sync_channel(WATCH_QUEUE);
+            self.watchers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(id)
+                .or_insert_with(|| Watchers {
+                    senders: Vec::new(),
+                    last_event: seq,
+                    status: run.status,
+                })
+                .senders
+                .push(tx);
+            Ok((replay, Some(rx)))
+        })
     }
 
     fn pump(
         &self,
         id: RunId,
-        rx: &Receiver<Value>,
+        rx: &Receiver<(i64, Value)>,
+        sent: &mut Sent,
         cancel_on_disconnect: bool,
         sink: &mut dyn Sink,
-    ) -> Option<CliResult<Run>> {
+    ) -> Pump {
         let mut last_sync = Instant::now();
         loop {
             match rx.recv_timeout(WATCH_POLL) {
-                Ok(event) => {
+                Ok((seq, event)) => {
                     if sink.send(&event).is_err() {
-                        return self.caller_gone(id, cancel_on_disconnect);
+                        return Pump::Done(self.caller_gone(id, cancel_on_disconnect));
                     }
-                    let finished = event["type"] == "run"
-                        && event["status"]
-                            .as_str()
-                            .and_then(RunStatus::parse)
-                            .is_some_and(RunStatus::is_finished);
-                    if finished {
-                        return Some(self.with_store(|store| store.require_run(id)));
+                    sent.note(seq, &event);
+                    if sent.status.is_some_and(RunStatus::is_finished) {
+                        return Pump::Done(Some(self.with_store(|store| store.require_run(id))));
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     if sink.gone() {
-                        return self.caller_gone(id, cancel_on_disconnect);
+                        return Pump::Done(self.caller_gone(id, cancel_on_disconnect));
                     }
                     if last_sync.elapsed() >= WATCH_RESYNC {
                         last_sync = Instant::now();
@@ -966,15 +992,11 @@ impl Engine {
                             self.sync(store, id);
                             Ok(())
                         }) {
-                            return Some(Err(e));
+                            return Pump::Done(Some(Err(e)));
                         }
                     }
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Some(Err(CliError::internal(
-                        "the daemon stopped watching the run",
-                    )));
-                }
+                Err(RecvTimeoutError::Disconnected) => return Pump::Behind,
             }
         }
     }
@@ -1015,14 +1037,50 @@ impl Engine {
             w.status = run.status;
             events.push(run_event(&run));
         }
+        let seq = w.last_event;
         for event in events {
-            w.senders.retain(|tx| tx.send(event.clone()).is_ok());
+            w.senders
+                .retain(|tx| match tx.try_send((seq, event.clone())) {
+                    Ok(()) => true,
+                    Err(TrySendError::Full(_)) => {
+                        eprintln!(
+                            "tome daemon: a watch of run {run_id} fell behind; it will catch up"
+                        );
+                        false
+                    }
+                    Err(TrySendError::Disconnected(_)) => false,
+                });
         }
         // Nothing more will happen to a finished run.
         if w.senders.is_empty() || run.status.is_finished() {
             watchers.remove(&run_id);
         }
     }
+}
+
+/// How far a watch has got: the last history id and run status it sent.
+#[derive(Default)]
+struct Sent {
+    event: i64,
+    status: Option<RunStatus>,
+}
+
+impl Sent {
+    fn note(&mut self, seq: i64, event: &Value) {
+        self.event = self.event.max(seq);
+        if event["type"] == "run" {
+            if let Some(status) = event["status"].as_str().and_then(RunStatus::parse) {
+                self.status = Some(status);
+            }
+        }
+    }
+}
+
+/// Why a watch's queue stopped.
+enum Pump {
+    /// It fell behind and was dropped.
+    Behind,
+    Done(Option<CliResult<Run>>),
 }
 
 /// A run's step and worker events after `after`, in order, with their ids.
@@ -1183,5 +1241,86 @@ pub fn worker_event(run_id: RunId, main: &str, h: &WorkerHistory) -> Value {
             "message": h.message,
             "time": h.occurred_at,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::tests::{new_run, store};
+    use crate::store::StepEvent;
+
+    /// Holds up the watch on its first event while `steps` steps happen and
+    /// the run finishes, more than its queue can take.
+    struct Slow<'a> {
+        engine: &'a Engine,
+        run: RunId,
+        steps: usize,
+        got: Vec<Value>,
+    }
+
+    impl Sink for Slow<'_> {
+        fn send(&mut self, event: &Value) -> std::io::Result<()> {
+            self.got.push(event.clone());
+            if self.got.len() == 1 {
+                for i in 0..self.steps {
+                    self.engine
+                        .with_store(|store| {
+                            store.report_step(
+                                self.run,
+                                &format!("s{i}"),
+                                StepEvent::Start,
+                                None,
+                            )?;
+                            self.engine.sync(store, self.run);
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+                self.engine
+                    .with_store(|store| {
+                        store.finish_run(self.run, RunStatus::Succeeded, None, None)?;
+                        self.engine.sync(store, self.run);
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            Ok(())
+        }
+
+        fn gone(&mut self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_watch_that_falls_behind_catches_up_from_the_store() {
+        let (_dir, mut store) = store();
+        let run = new_run(&mut store, "w");
+        let engine = Engine::new(store);
+        let steps = WATCH_QUEUE + 10;
+        let mut sink = Slow {
+            engine: &engine,
+            run: run.id,
+            steps,
+            got: Vec::new(),
+        };
+
+        let done = engine.watch(run.id, false, &mut sink).unwrap().unwrap();
+
+        assert_eq!(done.status, RunStatus::Succeeded);
+        let kinds: Vec<String> = sink
+            .got
+            .iter()
+            .map(|e| match e["type"].as_str() {
+                Some("run") => format!("run {}", e["status"].as_str().unwrap()),
+                _ => e["step"].as_str().unwrap_or("?").to_string(),
+            })
+            .collect();
+        let mut want = vec!["run running".to_string()];
+        want.extend((0..steps).map(|i| format!("s{i}")));
+        want.push("run succeeded".into());
+        assert_eq!(kinds, want, "every event once, in order");
+        assert!(engine.watchers.lock().unwrap().is_empty());
     }
 }

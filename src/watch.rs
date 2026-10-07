@@ -11,8 +11,9 @@
 //! fires nothing). An event is turned into changes by re-reading the paths
 //! it names and diffing them against the index, so the index decides
 //! created vs modified. When the OS says it dropped events (an inotify
-//! queue overflow, FSEvents MustScanSubDirs), the watched tree is walked
-//! once and diffed against the index, so no change is lost. The polling
+//! queue overflow, FSEvents MustScanSubDirs), or tome's own bounded event
+//! queue fills between polls, the watched tree is walked once and diffed
+//! against the index, so no change is lost. The polling
 //! watcher instead walks the whole tree every tick and diffs it the same
 //! way. Changes are batched until the
 //! debounce window passes with no new ones, then fire as one event.
@@ -33,8 +34,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
+
+/// OS events queued for one trigger between drains. Past this the trigger
+/// is rescanned instead, as when the OS itself drops events.
+const OS_QUEUE: usize = 4096;
 
 /// Never watched, at any depth.
 const SKIPPED_DIRS: &[&str] = &[".git", ".tome"];
@@ -181,6 +188,8 @@ enum Source {
 struct Os {
     watcher: RecommendedWatcher,
     events: Receiver<notify::Result<notify::Event>>,
+    /// Set when `events` was full and an event was dropped.
+    overflowed: Arc<AtomicBool>,
     /// The watched directory, as the spec sees it and as the OS reports it
     /// (FSEvents reports resolved paths: `/private/tmp` for `/tmp`).
     root: PathBuf,
@@ -196,11 +205,13 @@ struct Os {
 
 impl Os {
     fn start(base: &Path, per_dir: bool) -> notify::Result<Os> {
-        let (tx, events) = mpsc::channel();
-        let watcher = notify::recommended_watcher(tx)?;
+        let (tx, events) = mpsc::sync_channel(OS_QUEUE);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let watcher = notify::recommended_watcher(enqueue(tx, Arc::clone(&overflowed)))?;
         let mut os = Os {
             watcher,
             events,
+            overflowed,
             root: base.to_path_buf(),
             real: base.to_path_buf(),
             per_dir,
@@ -285,7 +296,7 @@ impl Os {
     /// `None` when the OS dropped events, so the whole tree needs a rescan.
     fn drain(&mut self) -> Result<Option<BTreeMap<PathBuf, bool>>, String> {
         let mut touched: BTreeMap<PathBuf, bool> = BTreeMap::new();
-        let mut rescan = false;
+        let mut rescan = self.overflowed.swap(false, Ordering::Relaxed);
         loop {
             match self.events.try_recv() {
                 Ok(Ok(ev)) if ev.need_rescan() => rescan = true,
@@ -302,9 +313,26 @@ impl Os {
                     }
                 }
                 Ok(Err(e)) => return Err(format!("the OS watch failed: {e}")),
-                Err(TryRecvError::Empty) => return Ok((!rescan).then_some(touched)),
+                Err(TryRecvError::Empty) => {
+                    // An overflow while draining loses events too.
+                    rescan |= self.overflowed.swap(false, Ordering::Relaxed);
+                    return Ok((!rescan).then_some(touched));
+                }
                 Err(TryRecvError::Disconnected) => return Err("the OS watch stopped".into()),
             }
+        }
+    }
+}
+
+/// An OS event handler that queues events without ever blocking the OS's
+/// thread, setting `overflowed` for any that don't fit.
+fn enqueue(
+    tx: SyncSender<notify::Result<notify::Event>>,
+    overflowed: Arc<AtomicBool>,
+) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
+    move |ev| {
+        if let Err(TrySendError::Full(_)) = tx.try_send(ev) {
+            overflowed.store(true, Ordering::Relaxed);
         }
     }
 }
@@ -908,7 +936,7 @@ mod tests {
             w.poll(&s, now, |_| false);
             // Swap in a channel the OS never writes to, so every real event
             // is lost, then report the loss.
-            let (tx, rx) = mpsc::channel();
+            let (tx, rx) = mpsc::sync_channel(1);
             let Some(Source::Os(os)) = w.states.values_mut().next().map(|s| &mut s.source) else {
                 panic!("{name}: not watching")
             };
@@ -936,6 +964,56 @@ mod tests {
             assert!(
                 !os.dirs.contains(&root.join("docs/gone")),
                 "{name}: gone dirs are forgotten"
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_os_queue_flags_an_overflow_instead_of_blocking() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let mut handle = enqueue(tx, Arc::clone(&overflowed));
+        handle(Ok(notify::Event::new(EventKind::Any)));
+        assert!(!overflowed.load(Ordering::Relaxed));
+        handle(Ok(notify::Event::new(EventKind::Any)));
+        assert!(
+            overflowed.load(Ordering::Relaxed),
+            "the second event didn't fit"
+        );
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn an_os_queue_overflow_is_caught_by_a_rescan() {
+        for (name, mut w) in watchers().into_iter().filter(|(_, w)| w.mode == Mode::Os) {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            write(&root.join("docs/old.md"), "x");
+            let s = scan(armed(&root, "file: \"docs/**/*.md\"\n    debounce: 0"));
+            let now = Instant::now();
+            w.poll(&s, now, |_| false);
+            // Swap in a queue the OS never writes to, as if every event
+            // overflowed it.
+            let (_tx, rx) = mpsc::sync_channel(1);
+            let Some(Source::Os(os)) = w.states.values_mut().next().map(|s| &mut s.source) else {
+                panic!("{name}: not watching")
+            };
+            os.events = rx;
+            std::thread::sleep(Duration::from_millis(20));
+            write(&root.join("docs/old.md"), "changed");
+            write(&root.join("docs/new.md"), "a");
+            assert!(
+                paths(&w.poll(&s, now, |_| false)).is_empty(),
+                "{name}: nothing queued"
+            );
+            let Some(Source::Os(os)) = w.states.values().next().map(|s| &s.source) else {
+                panic!("{name}: not watching")
+            };
+            os.overflowed.store(true, Ordering::Relaxed);
+            assert_eq!(
+                paths(&w.poll(&s, now, |_| false)),
+                ["docs/new.md created", "docs/old.md modified"],
+                "{name}"
             );
         }
     }
@@ -975,7 +1053,7 @@ mod tests {
         let Some(Source::Os(os)) = w.states.values_mut().next().map(|s| &mut s.source) else {
             panic!("not watching")
         };
-        os.events = mpsc::channel().1;
+        os.events = mpsc::sync_channel(1).1;
         write(&root.join("docs/a.md"), "a");
         assert_eq!(
             paths(&w.poll(&s, now, |_| false)),
