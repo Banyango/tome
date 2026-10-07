@@ -260,16 +260,18 @@ pub struct Frontmatter {
     pub orchestrator: Option<String>,
 }
 
+/// A validated workflow. Only [`parse`]/[`load`] make one, and changes go
+/// back through them, so its frontmatter always matches its source.
 #[derive(Debug, Clone)]
 pub struct Workflow {
-    pub path: PathBuf,
-    pub source: String,
-    pub frontmatter: Frontmatter,
+    path: PathBuf,
+    source: String,
+    frontmatter: Frontmatter,
     /// Raw frontmatter text (between the `---` fences).
-    pub frontmatter_text: String,
-    pub body: String,
+    frontmatter_text: String,
+    body: String,
     /// 1-based file line of the body's first line.
-    pub body_line: usize,
+    body_line: usize,
 }
 
 /// A workflow file that failed validation.
@@ -1423,6 +1425,68 @@ impl Workflow {
         &self.frontmatter.name
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The file's text as it was parsed.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn frontmatter(&self) -> &Frontmatter {
+        &self.frontmatter
+    }
+
+    /// The Markdown after the frontmatter, unrendered.
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
+    /// This workflow with `--harness`/`--model` replacing its defaults for
+    /// both the orchestrator and the workers. The changed source is parsed
+    /// again, so the result is validated like any other workflow.
+    pub fn with_agent_defaults(
+        &self,
+        harness: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Workflow, Invalid> {
+        let invalid = |message: String| Invalid {
+            path: self.path.clone(),
+            name: Some(self.name().to_string()),
+            errors: vec![Diagnostic::new(1, message)],
+        };
+        let mut fm: Yaml = serde_yaml::from_str(&self.frontmatter_text)
+            .map_err(|e| invalid(format!("invalid workflow frontmatter: {e}")))?;
+        let root = fm
+            .as_mapping_mut()
+            .ok_or_else(|| invalid("workflow frontmatter must be a mapping".into()))?;
+        let defaults_key = Yaml::String("defaults".into());
+        if !root.contains_key(&defaults_key) {
+            root.insert(defaults_key.clone(), Yaml::Mapping(Default::default()));
+        }
+        let defaults = root
+            .get_mut(&defaults_key)
+            .and_then(Yaml::as_mapping_mut)
+            .ok_or_else(|| invalid("workflow defaults must be a mapping".into()))?;
+        for (value, worker_key, orch_key) in [
+            (harness, "harness", "orchestrator_harness"),
+            (model, "model", "orchestrator_model"),
+        ] {
+            if let Some(value) = value {
+                defaults.insert(Yaml::String(worker_key.into()), Yaml::String(value.into()));
+                defaults.insert(Yaml::String(orch_key.into()), Yaml::String(value.into()));
+            }
+        }
+        let body = self
+            .source
+            .split_once("---")
+            .and_then(|(_, s)| s.split_once("---").map(|(_, b)| b))
+            .unwrap_or("");
+        let text = serde_yaml::to_string(&fm).map_err(|e| invalid(e.to_string()))?;
+        parse(&self.path, &format!("---\n{text}\n---{body}"))
+    }
+
     /// Things `tome validate` warns about without failing: topic triggers
     /// that can match the same topic (an event is delivered once, for the
     /// first), and patterns that match the workflow's own lifecycle events.
@@ -1825,6 +1889,37 @@ mod tests {
 
     fn errs(src: &str) -> Vec<Diagnostic> {
         p(src).expect_err("expected invalid").errors
+    }
+
+    #[test]
+    fn agent_defaults_override_through_validation() {
+        let wf = p(GOOD).unwrap();
+        let changed = wf.with_agent_defaults(Some("codex"), Some("o3")).unwrap();
+        let d = &changed.frontmatter().defaults;
+        assert_eq!(d.harness.as_deref(), Some("codex"));
+        assert_eq!(d.orchestrator_harness.as_deref(), Some("codex"));
+        assert_eq!(d.model.as_deref(), Some("o3"));
+        assert_eq!(d.orchestrator_model.as_deref(), Some("o3"));
+        // Everything else, body included, is kept.
+        assert_eq!(changed.body(), wf.body());
+        assert_eq!(changed.name(), wf.name());
+        assert_eq!(changed.frontmatter().concurrency, Some(2));
+        assert_eq!(changed.path(), wf.path());
+
+        // Only the model: the harness stays as it was.
+        let changed = wf.with_agent_defaults(None, Some("o3")).unwrap();
+        assert_eq!(
+            changed.frontmatter().defaults.harness.as_deref(),
+            Some("claude")
+        );
+
+        // A workflow without `defaults:` gets them.
+        let bare = p("---\nname: bare\n---\nhi\n").unwrap();
+        let changed = bare.with_agent_defaults(Some("codex"), None).unwrap();
+        assert_eq!(
+            changed.frontmatter().defaults.harness.as_deref(),
+            Some("codex")
+        );
     }
 
     const GOOD: &str = "---

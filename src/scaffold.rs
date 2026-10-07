@@ -39,7 +39,10 @@ pub fn ls(cwd: &Path, global_only: bool) -> CliResult<Report> {
     let mut data = Vec::new();
     for e in ordered {
         let (description, valid) = match &e.result {
-            Ok(wf) => (wf.frontmatter.description.clone().unwrap_or_default(), true),
+            Ok(wf) => (
+                wf.frontmatter().description.clone().unwrap_or_default(),
+                true,
+            ),
             Err(_) => ("invalid; run `tome validate`".to_string(), false),
         };
         let name = e.name().unwrap_or("<unnamed>").to_string();

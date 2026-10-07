@@ -742,7 +742,7 @@ mod tests {
             name: "w".into(),
             project: Some(root.to_path_buf()),
             index: 0,
-            trigger: wf.frontmatter.triggers[0].clone(),
+            trigger: wf.frontmatter().triggers[0].clone(),
         }
     }
 

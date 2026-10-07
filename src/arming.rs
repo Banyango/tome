@@ -131,7 +131,7 @@ pub fn scan(projects: &[PathBuf]) -> Scan {
             }
             match entry.result {
                 Ok(wf) => {
-                    for (index, trigger) in wf.frontmatter.triggers.iter().enumerate() {
+                    for (index, trigger) in wf.frontmatter().triggers.iter().enumerate() {
                         if matches!(trigger.kind, TriggerKind::Manual) {
                             continue;
                         }
@@ -387,7 +387,7 @@ mod tests {
             name: "w".into(),
             project: None,
             index: 0,
-            trigger: wf.frontmatter.triggers[0].clone(),
+            trigger: wf.frontmatter().triggers[0].clone(),
         }
     }
 

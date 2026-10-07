@@ -265,16 +265,16 @@ impl Engine {
                 // Without an explicit choice, workers run the harness their
                 // orchestrator runs.
                 let harness =
-                    match opt_str(p, "harness").or(wf.frontmatter.defaults.harness.as_deref()) {
+                    match opt_str(p, "harness").or(wf.frontmatter().defaults.harness.as_deref()) {
                         Some(name) => harness::resolve(name, project.as_deref())?,
                         None => orchestrator::harness_for(
-                            &wf.frontmatter,
-                            wf.frontmatter.mode,
+                            &wf.frontmatter(),
+                            wf.frontmatter().mode,
                             project.as_deref(),
                         )?,
                     };
                 let model = opt_str(p, "model")
-                    .or(wf.frontmatter.defaults.model.as_deref())
+                    .or(wf.frontmatter().defaults.model.as_deref())
                     .map(str::to_string);
                 harness.check_model(model.as_deref())?;
                 Task::Agent {
@@ -398,7 +398,7 @@ impl Engine {
         if matches!(task, Task::Agent { .. }) {
             self.expect_start(
                 agent.clone(),
-                handshake::timeout(&wf.frontmatter),
+                handshake::timeout(&wf.frontmatter()),
                 prompt_file(run_id, &name),
             );
         }
@@ -470,7 +470,7 @@ impl Engine {
         let kind = match orch.and_then(|s| Kind::parse(&s.backend)) {
             Some(kind) => kind,
             None => Kind::choose(
-                wf.frontmatter.defaults.backend.as_deref(),
+                wf.frontmatter().defaults.backend.as_deref(),
                 project.as_deref(),
             )?,
         };
@@ -479,7 +479,7 @@ impl Engine {
             role: Role::Worker(name),
             flags,
             run_flags: run_flags.as_ref(),
-            spec: wf.frontmatter.defaults.layout.as_ref(),
+            spec: wf.frontmatter().defaults.layout.as_ref(),
         };
         let mut placement = placement::resolve(&inputs, project.as_deref())?;
         let layout = placement.layout;

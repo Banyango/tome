@@ -410,7 +410,7 @@ impl Engine {
             return "would be dropped: no run to signal".into();
         }
         let start = format!("would start a run of {}", a.name);
-        let Some(limit) = wf.frontmatter.concurrency.map(|n| n as usize) else {
+        let Some(limit) = wf.frontmatter().concurrency.map(|n| n as usize) else {
             return start;
         };
         let active = active.len();
@@ -549,7 +549,7 @@ impl Engine {
         };
         // Signalling running runs isn't held to the limit; starting them is.
         let limit = wf
-            .frontmatter
+            .frontmatter()
             .concurrency
             .map(|n| n as usize)
             .filter(|_| a.trigger.to == Target::New);
@@ -657,7 +657,7 @@ mod tests {
             name: name.into(),
             project: Some("/p".into()),
             index,
-            trigger: wf.frontmatter.triggers[0].clone(),
+            trigger: wf.frontmatter().triggers[0].clone(),
         }
     }
 

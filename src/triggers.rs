@@ -331,7 +331,7 @@ impl Engine {
                 // The first real trigger, so `tome triggers fire <wf>` does the obvious thing.
                 match load(&workflow_path, project.as_deref()) {
                     Ok(wf) => wf
-                        .frontmatter
+                        .frontmatter()
                         .triggers
                         .iter()
                         .position(|t| !matches!(t.kind, TriggerKind::Manual))
@@ -357,14 +357,14 @@ impl Engine {
         let loaded = load(&workflow_path, project.as_deref()).ok();
         let kind = loaded
             .as_ref()
-            .and_then(|wf| wf.frontmatter.triggers.get(index).map(|t| t.kind.clone()));
+            .and_then(|wf| wf.frontmatter().triggers.get(index).map(|t| t.kind.clone()));
         if let (Some(wf), Some(TriggerKind::Topic { .. })) = (&loaded, &kind) {
             let armed = arming::Armed {
                 workflow_path: workflow_path.clone(),
                 name: wf.name().to_string(),
                 project: project.clone(),
                 index,
-                trigger: wf.frontmatter.triggers[index].clone(),
+                trigger: wf.frontmatter().triggers[index].clone(),
             };
             return self.fire_topic(&armed, opt_str(p, "payload"), p["dry_run"] == true);
         }
@@ -403,7 +403,7 @@ impl Engine {
         let trigger_desc = wf
             .as_ref()
             .ok()
-            .and_then(|wf| wf.frontmatter.triggers.get(req.index))
+            .and_then(|wf| wf.frontmatter().triggers.get(req.index))
             .map(|t| t.describe())
             .unwrap_or_else(|| format!("trigger {}", req.index));
         let fired = match wf {
@@ -460,8 +460,8 @@ impl Engine {
             runs: Vec::new(),
             data: json!({}),
         };
-        let Some(trigger) = wf.frontmatter.triggers.get(req.index) else {
-            let n = wf.frontmatter.triggers.len();
+        let Some(trigger) = wf.frontmatter().triggers.get(req.index) else {
+            let n = wf.frontmatter().triggers.len();
             return err(
                 outcome::ERROR,
                 format!(
@@ -472,7 +472,7 @@ impl Engine {
                 ),
             );
         };
-        let active = match self.active_runs(wf.name(), &wf.path) {
+        let active = match self.active_runs(wf.name(), &wf.path()) {
             Ok(runs) => runs,
             Err(e) => return err(outcome::ERROR, e.message),
         };
@@ -731,13 +731,13 @@ impl Engine {
             };
         }
         let start = workflow::parse_param_args(&params).map(|overrides| StartRequest {
-            source: Some(wf.source.clone()),
+            source: Some(wf.source().to_string()),
             project_path: req.project.clone(),
             params: overrides,
             trigger: fields.clone(),
             cause: Some(cause),
             delivery_id: req.event.bus.as_ref().map(|(_, d)| *d),
-            ..StartRequest::new(wf.path.clone())
+            ..StartRequest::new(wf.path().to_path_buf())
         });
         match start.and_then(|start| self.start(&start)) {
             Ok(run) => Fired {
@@ -816,7 +816,7 @@ mod tests {
             "---\nname: w\ntriggers:\n  - file: \"*.md\"\n---\n",
         )
         .unwrap();
-        let f = fields(&wf.frontmatter.triggers[0].kind, &ev, now);
+        let f = fields(&wf.frontmatter().triggers[0].kind, &ev, now);
         assert_eq!(f["kind"], "file");
         assert_eq!(f["event"], "created, modified");
         assert_eq!(f["paths"][1]["path"], "b.md");

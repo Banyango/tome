@@ -38,8 +38,9 @@ enum Segment {
     Rest,
 }
 
-/// A topic pattern.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// A topic pattern; only [`Pattern::parse`] makes one, so it always has at
+/// least one valid segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
     segments: Vec<Segment>,
 }
@@ -175,6 +176,13 @@ mod tests {
         assert_eq!(p("a.*.**").to_string(), "a.*.**");
         for bad in ["a.**.b", "A", "a..b", "a.b*", ""] {
             assert!(Pattern::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn empty_patterns_are_rejected() {
+        for bad in ["", ".", "a.", "a..b", "**.a"] {
+            assert!(Pattern::parse(bad).is_err(), "{bad:?}");
         }
     }
 

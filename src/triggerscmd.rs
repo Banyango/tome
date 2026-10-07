@@ -53,7 +53,7 @@ pub fn fire(
             let library = Library::discover(cwd);
             // An invalid workflow still fires, so the daemon records the error.
             let path = match library.locate(target)? {
-                Ok(wf) => wf.path,
+                Ok(wf) => wf.path().to_path_buf(),
                 Err(inv) => inv.path,
             };
             let project = match library.scope_of(&path) {

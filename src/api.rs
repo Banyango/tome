@@ -204,17 +204,17 @@ pub fn create_run(
         .create_run(
             NewRun {
                 workflow_name: wf.name(),
-                workflow_path: Some(&wf.path),
+                workflow_path: Some(&wf.path()),
                 project_path: req.project_path.as_deref(),
                 params: &params,
                 status,
                 trigger: req.cause.as_ref(),
                 placement: placement.as_ref(),
-                mode: wf.frontmatter.mode,
+                mode: wf.frontmatter().mode,
             },
             |id| {
                 if deferred {
-                    body = wf.body.clone();
+                    body = wf.body().to_string();
                     return wf.template_snapshot();
                 }
                 body = wf.render_body(&params, &id.to_string(), &req.trigger);

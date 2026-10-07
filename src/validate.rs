@@ -19,7 +19,7 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
         Some(target) => match library.locate(target)? {
             Ok(wf) => {
                 let check = wf.resolve_params(&overrides, !overrides.is_empty()).err();
-                let mut r = result_json(wf.name(), &wf.path, None, check.as_ref(), None);
+                let mut r = result_json(wf.name(), &wf.path(), None, check.as_ref(), None);
                 r["warnings"] = warnings_json(&wf, cwd);
                 results.push(r);
             }
@@ -141,7 +141,7 @@ fn warnings_json(wf: &Workflow, cwd: &Path) -> Value {
         .map(|d| json!({ "line": d.line, "message": d.message }))
         .collect();
     // Presets depend on the environment, so a missing one only warns.
-    for name in placement::undefined_presets(wf.frontmatter.defaults.layout.as_ref(), Some(cwd)) {
+    for name in placement::undefined_presets(wf.frontmatter().defaults.layout.as_ref(), Some(cwd)) {
         let line = preset_line(wf, &name);
         all.push(json!({
             "line": line,
@@ -153,7 +153,7 @@ fn warnings_json(wf: &Workflow, cwd: &Path) -> Value {
 
 /// The file line naming a preset, or the frontmatter's first.
 fn preset_line(wf: &Workflow, name: &str) -> usize {
-    wf.source
+    wf.source()
         .lines()
         .position(|l| {
             let l = l.trim_start().trim_start_matches("- ");

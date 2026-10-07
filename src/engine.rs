@@ -19,7 +19,7 @@ use crate::store::{
 };
 use crate::triggers;
 use crate::workers;
-use crate::workflow::{self, OnConflict};
+use crate::workflow::{self, Invalid, OnConflict};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -172,9 +172,11 @@ impl Engine {
     pub(crate) fn start(&self, req: &StartRequest) -> CliResult<Run> {
         let mut wf = req.load_workflow()?;
         if req.harness.is_some() || req.model.is_some() {
-            wf = with_agent_defaults(&wf, req.harness.as_deref(), req.model.as_deref())?;
+            wf = wf
+                .with_agent_defaults(req.harness.as_deref(), req.model.as_deref())
+                .map_err(Invalid::into_cli_error)?;
         }
-        let fm = &wf.frontmatter;
+        let fm = &wf.frontmatter();
         // An unknown harness, backend, placement value or preset is a bad
         // request: refuse before recording a run.
         let project = req.project_path.as_deref();
@@ -1022,57 +1024,6 @@ impl Engine {
     }
 }
 
-/// `wf` with `--harness`/`--model` replacing its defaults for both the
-/// orchestrator and the workers.
-fn with_agent_defaults(
-    wf: &crate::workflow::Workflow,
-    harness: Option<&str>,
-    model: Option<&str>,
-) -> CliResult<crate::workflow::Workflow> {
-    let mut fm: serde_yaml::Value = serde_yaml::from_str(&wf.frontmatter_text)
-        .map_err(|e| CliError::invalid(format!("invalid workflow frontmatter: {e}")))?;
-    let root = fm
-        .as_mapping_mut()
-        .ok_or_else(|| CliError::invalid("workflow frontmatter must be a mapping"))?;
-    let defaults_key = serde_yaml::Value::String("defaults".into());
-    if !root.contains_key(&defaults_key) {
-        root.insert(
-            defaults_key.clone(),
-            serde_yaml::Value::Mapping(Default::default()),
-        );
-    }
-    let defaults = root
-        .get_mut(&defaults_key)
-        .and_then(serde_yaml::Value::as_mapping_mut)
-        .ok_or_else(|| CliError::invalid("workflow defaults must be a mapping"))?;
-    for (value, worker_key, orch_key) in [
-        (harness, "harness", "orchestrator_harness"),
-        (model, "model", "orchestrator_model"),
-    ] {
-        if let Some(value) = value {
-            defaults.insert(
-                serde_yaml::Value::String(worker_key.into()),
-                serde_yaml::Value::String(value.into()),
-            );
-            defaults.insert(
-                serde_yaml::Value::String(orch_key.into()),
-                serde_yaml::Value::String(value.into()),
-            );
-        }
-    }
-    let body = wf
-        .source
-        .split_once("---")
-        .and_then(|(_, s)| s.split_once("---").map(|(_, b)| b))
-        .unwrap_or("");
-    let source = format!(
-        "---\n{}\n---{}",
-        serde_yaml::to_string(&fm).map_err(|e| CliError::internal(e.to_string()))?,
-        body
-    );
-    crate::workflow::parse(&wf.path, &source).map_err(crate::workflow::Invalid::into_cli_error)
-}
-
 /// A run's step and worker events after `after`, in order, with their ids.
 fn history(store: &Store, run_id: i64, after: i64) -> CliResult<Vec<(i64, Value)>> {
     let main = store
@@ -1138,7 +1089,7 @@ fn snapshot_limit(run: &Run) -> Option<usize> {
     let snapshot = run.workflow_snapshot.as_deref()?;
     let path = PathBuf::from(run.workflow_path.clone().unwrap_or_default());
     let wf = workflow::parse_snapshot(&path, snapshot).ok()?;
-    wf.frontmatter.concurrency.map(|n| n as usize)
+    wf.frontmatter().concurrency.map(|n| n as usize)
 }
 
 /// Where a watch writes its events.

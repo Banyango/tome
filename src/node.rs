@@ -360,7 +360,7 @@ pub fn resolve_workflow_rpc(p: &Value) -> CliResult<Value> {
         .unwrap_or_else(|| PathBuf::from("/"));
     let library = crate::workflow::Library::discover(&dir);
     let wf = match library.locate(name)? {
-        Ok(wf) => wf.path,
+        Ok(wf) => wf.path().to_path_buf(),
         Err(inv) => inv.path,
     };
     let scope = match library.scope_of(&wf) {

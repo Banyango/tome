@@ -42,8 +42,8 @@ pub fn start_params(
 ) -> CliResult<Value> {
     let wf = Library::discover(cwd).find(target)?;
     let mut p = json!({
-        "workflow_path": wf.path,
-        "source": wf.source,
+        "workflow_path": wf.path(),
+        "source": wf.source(),
         "project_path": cwd,
         "params": params,
     });

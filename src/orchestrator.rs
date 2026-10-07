@@ -259,8 +259,8 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
     // The mode stored on the run, not the snapshot's: runs from before
     // modes were orchestrated.
     let mode = run.mode;
-    let harness = harness_for(&wf.frontmatter, mode, project)?;
-    let model = model_for(&wf.frontmatter, mode).map(str::to_string);
+    let harness = harness_for(&wf.frontmatter(), mode, project)?;
+    let model = model_for(&wf.frontmatter(), mode).map(str::to_string);
     harness.check_model(model.as_deref())?;
     let role = role(mode);
     Ok(Plan {
@@ -268,18 +268,18 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
         harness,
         model,
         backend: Kind::choose_with_caller(
-            wf.frontmatter.defaults.backend.as_deref(),
+            wf.frontmatter().defaults.backend.as_deref(),
             project,
             run.placement
                 .as_ref()
                 .is_some_and(|p| p["caller"]["herdr_pane"].is_string()),
         )?,
-        placement: placement(&wf.frontmatter, mode, run_flags(run)?.as_ref(), project)?,
+        placement: placement(&wf.frontmatter(), mode, run_flags(run)?.as_ref(), project)?,
         session: session::run_session_name(run.id, &run.workflow_name, role),
         title: format!("tome: {} #{}", run.workflow_name, run.id),
         cwd,
-        prompt: bootstrap(run, &wf.frontmatter, &wf.body),
-        start_timeout: crate::handshake::timeout(&wf.frontmatter),
+        prompt: bootstrap(run, &wf.frontmatter(), &wf.body()),
+        start_timeout: crate::handshake::timeout(&wf.frontmatter()),
     })
 }
 
