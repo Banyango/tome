@@ -29,6 +29,7 @@ mod runcmd;
 mod scaffold;
 mod service;
 mod session;
+mod stop;
 mod store;
 mod topic;
 mod triggers;

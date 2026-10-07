@@ -8,7 +8,7 @@
 use crate::api;
 use crate::engine::{Engine, Sink};
 use crate::orchestrator;
-use crate::output::CliResult;
+use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::recovery;
 use crate::rpc::{self, codes, Request, Response};
@@ -21,14 +21,25 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// How long shutdown waits for background loops and streams to wind down
+/// before the database is closed regardless. Work stuck in I/O that can't
+/// be cancelled (a hung terminal multiplexer, a stalled ssh) is abandoned
+/// when the process exits; recovery deals with its runs on the next start.
+/// Below `tome daemon stop`'s own timeout.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 pub struct Daemon {
     started: Instant,
     started_at_unix: u64,
     socket: PathBuf,
     engine: Arc<Engine>,
+    /// Streaming requests being served.
+    streams: AtomicUsize,
     _lock: File,
 }
 
@@ -58,6 +69,10 @@ impl Daemon {
             "workflow.resolve" => (crate::node::resolve_workflow_rpc(&req.params), false),
             "daemon.status" => (Ok(self.status()), false),
             "daemon.shutdown" => (Ok(json!({ "stopping": true })), true),
+            _ if self.engine.stop.is_set() => (
+                Err(CliError::internal("the daemon is shutting down")),
+                false,
+            ),
             method if Engine::handles(method) => (self.engine.dispatch(method, &req.params), false),
             method if api::handles(method) => (
                 self.engine
@@ -69,12 +84,53 @@ impl Daemon {
         Some(handled)
     }
 
-    /// Release resources and exit the process.
-    fn shutdown(&self) -> ! {
+    /// Stop admitting work and wake the accept loop, which finishes the
+    /// shutdown.
+    fn request_stop(&self) {
+        self.engine.stop();
+        let _ = UnixStream::connect(&self.socket);
+    }
+
+    /// Wait (up to `SHUTDOWN_GRACE`) for the background loops and streams,
+    /// then close the database.
+    fn finish(&self, background: Vec<JoinHandle<()>>) {
         let _ = fs::remove_file(&self.socket);
+        let deadline = Instant::now() + SHUTDOWN_GRACE;
+        let settled = || {
+            background.iter().all(JoinHandle::is_finished)
+                && self.streams.load(Ordering::SeqCst) == 0
+        };
+        while !settled() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if settled() {
+            for handle in background {
+                let _ = handle.join();
+            }
+        } else {
+            eprintln!(
+                "tome daemon: background work still busy after {}s; closing anyway",
+                SHUTDOWN_GRACE.as_secs()
+            );
+        }
         self.engine.close();
-        eprintln!("tome daemon: shutting down");
-        std::process::exit(0);
+        eprintln!("tome daemon: shut down");
+    }
+}
+
+/// Counts a streaming request while it's served.
+struct Streaming<'a>(&'a AtomicUsize);
+
+impl<'a> Streaming<'a> {
+    fn new(count: &'a AtomicUsize) -> Streaming<'a> {
+        count.fetch_add(1, Ordering::SeqCst);
+        Streaming(count)
+    }
+}
+
+impl Drop for Streaming<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -115,6 +171,7 @@ pub fn run_foreground() -> anyhow::Result<()> {
             .unwrap_or(0),
         socket: socket.clone(),
         engine: Arc::new(Engine::new(store)),
+        streams: AtomicUsize::new(0),
         _lock: lock,
     });
     eprintln!(
@@ -122,16 +179,30 @@ pub fn run_foreground() -> anyhow::Result<()> {
         socket.display(),
         std::process::id()
     );
-    let engine = Arc::clone(&daemon.engine);
-    std::thread::spawn(move || engine.resume_queued());
-    let engine = Arc::clone(&daemon.engine);
-    let status_engine = engine.clone();
-    std::thread::spawn(move || status_engine.status_monitor());
-    std::thread::spawn(move || engine.monitor());
-    let engine = Arc::clone(&daemon.engine);
-    std::thread::spawn(move || engine.trigger_loop());
+    let engine = &daemon.engine;
+    let background = vec![
+        std::thread::spawn({
+            let engine = Arc::clone(engine);
+            move || engine.resume_queued()
+        }),
+        std::thread::spawn({
+            let engine = Arc::clone(engine);
+            move || engine.status_monitor()
+        }),
+        std::thread::spawn({
+            let engine = Arc::clone(engine);
+            move || engine.monitor()
+        }),
+        std::thread::spawn({
+            let engine = Arc::clone(engine);
+            move || engine.trigger_loop()
+        }),
+    ];
 
     for stream in listener.incoming() {
+        if daemon.engine.stop.is_set() {
+            break;
+        }
         match stream {
             Ok(stream) => {
                 let daemon = Arc::clone(&daemon);
@@ -140,6 +211,7 @@ pub fn run_foreground() -> anyhow::Result<()> {
             Err(e) => eprintln!("tome daemon: accept failed: {e}"),
         }
     }
+    daemon.finish(background);
     Ok(())
 }
 
@@ -184,6 +256,11 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
         {
             daemon.engine.seen(agent);
         }
+        // Held until the response is written, so shutdown waits for it.
+        let _streaming = req
+            .as_ref()
+            .is_ok_and(streams)
+            .then(|| Streaming::new(&daemon.streams));
         let (resp, shutdown) = match req {
             Ok(req) if streams(&req) => match stream_run(daemon, &req, &mut writer) {
                 Some(Ok(value)) => (Response::ok(req.id, value), false),
@@ -216,7 +293,8 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
             return;
         }
         if shutdown {
-            daemon.shutdown();
+            daemon.request_stop();
+            return;
         }
     }
 }
@@ -229,6 +307,9 @@ fn streams(req: &Request) -> bool {
 
 /// Serve a streaming request. `None` if the caller disconnected first.
 fn stream_run(daemon: &Daemon, req: &Request, writer: &mut UnixStream) -> Option<CliResult<Value>> {
+    if daemon.engine.stop.is_set() {
+        return Some(Err(CliError::internal("the daemon is shutting down")));
+    }
     let mut sink = SocketSink { out: writer };
     let result = if req.method == "run.watch" {
         match api::req_id(&req.params) {

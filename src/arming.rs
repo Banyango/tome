@@ -329,7 +329,9 @@ impl Engine {
             self.settle_ended();
             self.drain_all(&current.armed);
             self.forward_pending();
-            std::thread::sleep(tick());
+            if !self.stop.sleep(tick()) {
+                return;
+            }
         }
     }
 

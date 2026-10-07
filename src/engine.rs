@@ -15,6 +15,7 @@ use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::placement;
 use crate::session;
+use crate::stop::Stop;
 use crate::store::{
     self, Run, RunStatus, StepEvent, StepHistory, Store, WorkerHistory, WorkerStatus,
 };
@@ -106,6 +107,8 @@ pub struct Engine {
     pub(crate) forwarding: Mutex<crate::bus::forward::State>,
     blocked_since: Mutex<HashMap<(RunId, String), Instant>>,
     blocked_notified: Mutex<HashMap<(RunId, String), Instant>>,
+    /// Set when the daemon starts shutting down.
+    pub(crate) stop: Stop,
 }
 
 impl Engine {
@@ -121,6 +124,7 @@ impl Engine {
             forwarding: Mutex::new(Default::default()),
             blocked_since: Mutex::new(HashMap::new()),
             blocked_notified: Mutex::new(HashMap::new()),
+            stop: Stop::default(),
         }
     }
 
@@ -128,11 +132,23 @@ impl Engine {
         let mut guard = self.store.lock().unwrap_or_else(|p| p.into_inner());
         match guard.as_mut() {
             Some(store) => f(store),
-            None => Err(CliError::internal("the daemon is shutting down")),
+            None => Err(shutting_down()),
         }
     }
 
-    /// Close (and checkpoint) the database.
+    /// Start shutting down: background loops stop at their next wait, and
+    /// streaming watches end with an error rather than wait for their runs.
+    pub fn stop(&self) {
+        self.stop.set();
+        // Dropping the queues wakes every watch at once.
+        self.watchers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+    }
+
+    /// Close (and checkpoint) the database. Waits for whatever holds it, so
+    /// a mutation in flight finishes first.
     pub fn close(&self) {
         drop(self.store.lock().unwrap_or_else(|p| p.into_inner()).take());
     }
@@ -687,10 +703,9 @@ impl Engine {
     /// Fail running runs whose orchestrator or agent has exited without
     /// finishing the run (`orchestrator_exited`, `agent_exited`), end workers whose session is over, and
     /// nudge or fail agents that haven't started. Runs until the daemon
-    /// closes the store.
+    /// stops.
     pub fn monitor(self: Arc<Self>) {
-        loop {
-            std::thread::sleep(MONITOR_POLL);
+        while self.stop.sleep(MONITOR_POLL) {
             self.check_workers();
             let Ok(sessions) = self.with_store(|store| store.running_sessions().map_err(internal))
             else {
@@ -746,8 +761,7 @@ impl Engine {
     /// Herdr's agent statuses, polled apart from `monitor` so a slow herdr
     /// can't hold up liveness checks.
     pub fn status_monitor(self: Arc<Self>) {
-        loop {
-            std::thread::sleep(STATUS_POLL);
+        while self.stop.sleep(STATUS_POLL) {
             let Ok(sessions) = self.with_store(|store| store.running_sessions().map_err(internal))
             else {
                 return;
@@ -900,6 +914,9 @@ impl Engine {
     ) -> Option<CliResult<Run>> {
         let mut sent = Sent::default();
         loop {
+            if self.stop.is_set() {
+                return Some(Err(shutting_down()));
+            }
             let (replay, rx) = match self.subscribe(id, &sent) {
                 Ok(s) => s,
                 Err(e) => return Some(Err(e)),
@@ -983,6 +1000,9 @@ impl Engine {
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {
+                    if self.stop.is_set() {
+                        return Pump::Done(Some(Err(shutting_down())));
+                    }
                     if sink.gone() {
                         return Pump::Done(self.caller_gone(id, cancel_on_disconnect));
                     }
@@ -1056,6 +1076,10 @@ impl Engine {
             watchers.remove(&run_id);
         }
     }
+}
+
+fn shutting_down() -> CliError {
+    CliError::internal("the daemon is shutting down")
 }
 
 /// How far a watch has got: the last history id and run status it sent.

@@ -23,6 +23,8 @@ tome daemon install   # start at login (launchd on macOS, systemd --user on Linu
 
 A daemon that crashes is restarted by the login service. `tome daemon stop` is a clean exit, so it stays stopped.
 
+When it stops, the daemon refuses new requests, and attached `tome run` or watch commands end with a "shutting down" error. It gives its background work up to 5 seconds to finish, then closes the database. Anything still stuck after that, such as a terminal multiplexer that doesn't respond, is abandoned. Runs it left in progress are failed when the daemon next starts.
+
 With cmux, start the daemon from a terminal inside cmux. cmux only lets its own processes control it, and the daemon inherits that from where it started. See [Backends](backends.md).
 
 See [Operating tome](../guides/operating.md) for more.
