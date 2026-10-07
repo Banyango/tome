@@ -20,7 +20,7 @@ Source feature: [feature.md](./feature.md)
 
 **Blocked by:** 017-1
 
-The built-in prompt (the agent in `single` mode, the orchestrator in `orchestrated` mode) gets a "Resuming" section. It contains the merged step history of the whole chain: each step's latest outcome with its done/fail messages, plus each earlier attempt's failure reason and summary. It also says where to start. With `--from`, that is the user's text passed through unchecked. Without it, it is the step that failed or was still running, or else the step after the last finished one. The agent is told to skip steps that succeeded and to check any state the interrupted step left behind before redoing it.
+The built-in prompt (the agent in `single` mode, the orchestrator in `orchestrated` mode) gets a "Resuming" section. It contains the merged step history of the whole chain: each step's latest outcome with its done/fail messages, plus each earlier attempt's failure reason and summary. It also says where to start. With `--start-at` (named so it does not clash with the placement flag `--from`), that is the user's text passed through unchecked. Without it, it is the step that failed or was still running, or else the step after the last finished one. The agent is told to skip steps that succeeded and to check any state the interrupted step left behind before redoing it.
 
 ### 017-4. Adopt the old run's worktrees
 

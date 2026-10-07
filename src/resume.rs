@@ -474,7 +474,10 @@ pub fn render(ctx: &Context) -> String {
     }
     out.push_str("\nWhere to start: ");
     out.push_str(&match &ctx.start {
-        Start::Given(text) => format!("the user said: {}\n", text.trim()),
+        Start::Given(text) => format!(
+            "the user said: {}\nWork out what they mean, and take the work before that point as done.\n",
+            text.trim()
+        ),
         Start::Redo(step) => format!("step `{step}`, which didn't finish.\n"),
         Start::After(step) => {
             format!("the step after `{step}`, the last one that finished.\n")

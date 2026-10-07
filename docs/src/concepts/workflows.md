@@ -49,6 +49,8 @@ A **run** is one execution of a workflow. Start one with `tome run <workflow>`, 
 | `failed` | the agent failed it, or it stopped without finishing |
 | `cancelled` | someone cancelled it |
 
+A failed or cancelled run can be resumed with `tome run resume <id>`. That starts a new run from the old one's saved workflow, and its agent is told what the earlier run finished and where to start. See [Resuming a failed run](../guides/operating.md#resuming-a-failed-run).
+
 `concurrency` in the frontmatter caps how many runs of a workflow go at once. When it is full, `on_conflict: queue` (the default) makes a new run wait, and `on_conflict: reject` refuses it.
 
 When the run starts, tome fills in the placeholders in the body: `{{params.<name>}}`, `{{run.id}}` and, for runs started by a trigger, `{{trigger.<field>}}`. The filled-in workflow is saved with the run.

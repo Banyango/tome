@@ -5,7 +5,7 @@
 A [[run]] that fails, or that you cancel, can be picked up again where it stopped instead of starting over:
 
 ```sh
-tome run resume <id> [--from "<text>"] [--detach | --view] [placement flags]
+tome run resume <id> [--start-at "<text>"] [--detach | --view] [placement flags]
 ```
 
 Resuming creates a **new run linked to the old one** (`resumed_from`). The old run's status, history and logs aren't changed. A run can be resumed only if it ended as `failed` (for any reason, such as `daemon_restart`, `agent_exited` or a handshake failure) or as `cancelled`. A user can resume a run, and so can any agent, such as another workflow, by running the command. Nothing resumes a run automatically.
@@ -16,8 +16,8 @@ Resuming creates a **new run linked to the old one** (`resumed_from`). The old r
 - **A "Resuming" section in the built-in prompt** (for the agent in `single` mode, the [[orchestrator]] in `orchestrated` mode), containing:
   - the **merged step history of the whole resume chain**: each [[step]]'s latest outcome across all attempts, with its done/fail messages, plus each earlier attempt's failure reason and summary;
   - **where to start:**
-    - with `--from`, the text the user gave, passed through unchecked. The agent works out what it means and treats the work before it as done;
-    - without `--from`, the step that failed or was still running when the run ended. If there's none, the step after the last step that finished.
+    - with `--start-at`, the text the user gave, passed through unchecked. The agent works out what it means and treats the work before it as done;
+    - without `--start-at`, the step that failed or was still running when the run ended. If there's none, the step after the last step that finished.
     
     The agent is told to skip steps that succeeded and to check any state the interrupted step left behind before redoing it;
   - the **adopted [[worktree]]s** (paths and branches);
@@ -44,7 +44,7 @@ Resuming creates a **new run linked to the old one** (`resumed_from`). The old r
 ## Use Cases
 
 1. As a user, I want to resume a failed run from where it stopped, so that I don't redo steps that already succeeded.
-2. As a user, I want `--from "<step>"` to choose where the resumed run restarts, so that I can redo an earlier step that turned out to be wrong.
+2. As a user, I want `--start-at "<step>"` to choose where the resumed run restarts, so that I can redo an earlier step that turned out to be wrong.
 3. As a user, I want runs that failed with `daemon_restart` or `agent_exited`, or that I cancelled, to be resumable, so that an interruption doesn't throw away progress.
 4. As a resumed run's agent, I want the merged history of earlier attempts and the adopted worktrees in my prompt, so that I can see what's done and where the partial work is.
 5. As a resumed run's orchestrator, I want a summary of the old run's workers and groups, so that I re-spawn only what's still needed.
@@ -70,7 +70,7 @@ Resuming creates a **new run linked to the old one** (`resumed_from`). The old r
 - **The run's project path no longer exists** → refused with exit `2`.
 - **The trigger delivery was already retried or removed** → it's left alone and not re-attached.
 - **The workflow file has since been edited or deleted** → no effect. The snapshot is used.
-- **`--from` names something that isn't a step** → it's passed through as is, and the agent interprets it.
+- **`--start-at` names something that isn't a step** → it's passed through as is, and the agent interprets it.
 - **An orchestrated run's workers were mid-task** → they aren't relaunched. They appear in the orchestrator's summary with their last status.
 
 ## Related Entities

@@ -239,11 +239,24 @@ tome runs list --status running
 tome runs show <id>                       # steps, workers, worktrees, sessions
 tome runs logs <id> --tail 100
 tome run cancel <id>
+tome run resume <id> --detach             # pick up a failed or cancelled run
+tome run resume <id> --start-at "Review"  # tell its agent where to start
 tome query "select id, workflow_name, status, reason from runs order by id desc limit 5"
 ```
 
 Add `--json` to any command, or set `TOME_OUTPUT=json`, for machine-readable
 output. Prefer it when you parse results.
+
+`tome run resume <id>` starts a new run linked to a failed or cancelled one. It
+reuses the old run's workflow snapshot, params, mode and worktrees, and takes
+back its parked trigger delivery. Its agent gets a "Resuming" prompt section
+with the steps already done and where to start, so finished steps aren't
+redone. Workers aren't relaunched. Each run can be resumed once; if the new run
+fails, resume that one (`tome runs show` gives `resumed_from` and
+`resumed_as`). Scripts and workflows can use it to automate recovery, for
+example by resuming a run that failed with `daemon_restart`. If you are asked
+to design a workflow, keep its steps safe to redo, since a resumed agent may
+redo the step that was interrupted.
 
 ## Other machines (nodes)
 
@@ -279,7 +292,9 @@ local ones (`validate`, `workflow`, `layout`, `node`). Inside a run,
 ## When something goes wrong
 
 - `agent_exited` / `orchestrator_exited` / `worker_exited`: the agent's session ended without
-  reporting. Read `tome runs logs <id>`.
+  reporting. Read `tome runs logs <id>`, fix the cause, then
+  `tome run resume <id>` to carry on rather than start over.
+- `daemon_restart`: the daemon stopped mid-run. `tome run resume <id>`.
 - Harness won't open: run `tome harness validate <name> --model <model>` to
   check the config, executable on this shell's `PATH`, model forwarding, and
   the expanded launch command. It prints a preview without starting the agent.
