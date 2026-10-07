@@ -11,6 +11,7 @@
 use super::{Publish, TOME};
 use crate::config::Config;
 use crate::engine::Engine;
+use crate::ids::DeliveryId;
 use crate::node::{self, Node};
 use crate::output::{CliError, CliResult, ErrorKind};
 use crate::rpc;
@@ -187,7 +188,7 @@ pub struct State {
     busy: HashSet<String>,
     /// Per delivery: when it was made pending (its `updated_at`), failed
     /// attempts since, and when to try next.
-    attempts: HashMap<i64, (String, u32, Instant)>,
+    attempts: HashMap<DeliveryId, (String, u32, Instant)>,
     /// Nodes whose authentication failure has been notified.
     auth_told: HashSet<String>,
 }
@@ -378,7 +379,7 @@ impl Engine {
         }
     }
 
-    fn attempts_of(&self, id: i64) -> u32 {
+    fn attempts_of(&self, id: DeliveryId) -> u32 {
         self.forwarding
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -491,6 +492,7 @@ fn is_transport(e: &CliError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{EventId, RunId};
 
     #[test]
     fn backoff_doubles_up_to_a_minute() {
@@ -508,8 +510,8 @@ mod tests {
 
     fn delivery(workflow: &str, path: &str) -> Delivery {
         Delivery {
-            id: 1,
-            event_id: 1,
+            id: DeliveryId::new(1),
+            event_id: EventId::new(1),
             project_path: "/p".into(),
             workflow: workflow.into(),
             workflow_path: path.into(),
@@ -534,12 +536,12 @@ mod tests {
     #[test]
     fn lifecycle_payloads_gain_the_node() {
         let mut e = BusEvent {
-            id: 1,
+            id: EventId::new(1),
             project_path: "/p".into(),
             topic: "tome.run.build.succeeded".into(),
             payload: r#"{"run_id":3}"#.into(),
             sender: TOME.into(),
-            sender_run_id: Some(3),
+            sender_run_id: Some(RunId::new(3)),
             depth: 0,
             refused: None,
             published_at: String::new(),

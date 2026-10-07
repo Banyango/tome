@@ -3,10 +3,11 @@
 
 use super::queues::MAX_MESSAGE_BYTES;
 use super::{fmt_ts, internal, now, Store};
+use crate::ids::{DeliveryId, EventId, RunId};
 use crate::output::{CliError, CliResult};
 use duckdb::{params, OptionalExt, Row};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::json;
 
 /// Where a delivery is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -48,13 +49,13 @@ impl DeliveryState {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BusEvent {
-    pub id: i64,
+    pub id: EventId,
     pub project_path: String,
     pub topic: String,
     pub payload: String,
     /// `user`, `run N`, `run N worker W`, `tome` or `test`.
     pub sender: String,
-    pub sender_run_id: Option<i64>,
+    pub sender_run_id: Option<RunId>,
     pub depth: i64,
     /// Why it wasn't delivered (a chain too deep), if it wasn't.
     pub refused: Option<String>,
@@ -66,7 +67,7 @@ pub struct NewEvent<'a> {
     pub topic: &'a str,
     pub payload: &'a str,
     pub sender: &'a str,
-    pub sender_run_id: Option<i64>,
+    pub sender_run_id: Option<RunId>,
     pub depth: i64,
     pub refused: Option<&'a str>,
 }
@@ -82,15 +83,15 @@ pub struct Subscriber {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Delivery {
-    pub id: i64,
-    pub event_id: i64,
+    pub id: DeliveryId,
+    pub event_id: EventId,
     pub project_path: String,
     pub workflow: String,
     pub workflow_path: String,
     pub pattern: String,
     pub state: DeliveryState,
     /// The runs that claimed it.
-    pub run_ids: Vec<i64>,
+    pub run_ids: Vec<RunId>,
     pub updated_at: String,
 }
 
@@ -128,8 +129,8 @@ fn delivery_from_row(r: &Row<'_>) -> duckdb::Result<Delivery> {
     })
 }
 
-fn ids_json(ids: &[i64]) -> String {
-    Value::from(ids.to_vec()).to_string()
+fn ids_json(ids: &[RunId]) -> String {
+    json!(ids).to_string()
 }
 
 /// Refuse a payload over the queue message limit.
@@ -155,7 +156,7 @@ impl Store {
         check_payload(e.payload)?;
         let tx = self.conn.transaction().map_err(internal)?;
         let at = now();
-        let id: i64 = tx
+        let id: EventId = tx
             .query_row(
                 "INSERT INTO bus_events (project_path, topic, payload, sender, sender_run_id, depth, refused, published_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
@@ -178,7 +179,7 @@ impl Store {
         Ok((event, self.deliveries_of(id)?))
     }
 
-    pub fn bus_event(&self, id: i64) -> CliResult<Option<BusEvent>> {
+    pub fn bus_event(&self, id: EventId) -> CliResult<Option<BusEvent>> {
         let sql = format!("SELECT {EVENT_COLUMNS} FROM bus_events WHERE id = ?");
         self.conn
             .query_row(&sql, params![id], event_from_row)
@@ -187,7 +188,7 @@ impl Store {
     }
 
     /// Delete an event outright. Only for one with no deliveries.
-    pub fn delete_bus_event(&mut self, id: i64) -> CliResult<()> {
+    pub fn delete_bus_event(&mut self, id: EventId) -> CliResult<()> {
         self.conn
             .execute("DELETE FROM bus_events WHERE id = ?", params![id])
             .map_err(internal)?;
@@ -229,11 +230,11 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(internal)
     }
 
-    pub fn deliveries_of(&self, event_id: i64) -> CliResult<Vec<Delivery>> {
+    pub fn deliveries_of(&self, event_id: EventId) -> CliResult<Vec<Delivery>> {
         self.deliveries_where("event_id = ?", &[&event_id])
     }
 
-    pub fn delivery(&self, id: i64) -> CliResult<Option<Delivery>> {
+    pub fn delivery(&self, id: DeliveryId) -> CliResult<Option<Delivery>> {
         Ok(self.deliveries_where("id = ?", &[&id])?.pop())
     }
 
@@ -265,10 +266,10 @@ impl Store {
     /// False if it wasn't in `from` (any more).
     pub fn move_delivery(
         &mut self,
-        id: i64,
+        id: DeliveryId,
         from: DeliveryState,
         to: DeliveryState,
-        runs: Option<&[i64]>,
+        runs: Option<&[RunId]>,
     ) -> CliResult<bool> {
         let (from, to) = (from.as_str(), to.as_str());
         let n = match runs {
@@ -285,7 +286,7 @@ impl Store {
     }
 
     /// Record the runs that claimed a delivery.
-    pub fn set_delivery_runs(&mut self, id: i64, runs: &[i64]) -> CliResult<()> {
+    pub fn set_delivery_runs(&mut self, id: DeliveryId, runs: &[RunId]) -> CliResult<()> {
         self.conn
             .execute(
                 "UPDATE deliveries SET run_ids = ?, updated_at = ? WHERE id = ?",
@@ -353,7 +354,7 @@ impl Store {
 
     /// Which lifecycle events have been published for a run: `None`,
     /// `started` or `ended`.
-    pub fn announced(&self, run_id: i64) -> CliResult<Option<String>> {
+    pub fn announced(&self, run_id: RunId) -> CliResult<Option<String>> {
         self.conn
             .query_row(
                 "SELECT announced FROM runs WHERE id = ?",
@@ -365,7 +366,7 @@ impl Store {
             .map(Option::flatten)
     }
 
-    pub fn set_announced(&mut self, run_id: i64, what: &str) -> CliResult<()> {
+    pub fn set_announced(&mut self, run_id: RunId, what: &str) -> CliResult<()> {
         self.conn
             .execute(
                 "UPDATE runs SET announced = ? WHERE id = ?",
@@ -377,7 +378,7 @@ impl Store {
 
     /// Finished runs whose end hasn't been handled yet (lifecycle event,
     /// deliveries settled).
-    pub fn unannounced_ends(&self) -> CliResult<Vec<i64>> {
+    pub fn unannounced_ends(&self) -> CliResult<Vec<RunId>> {
         let mut stmt = self
             .conn
             .prepare("SELECT id FROM runs WHERE finished_at IS NOT NULL AND coalesce(announced, '') <> 'ended' ORDER BY finished_at, id")
@@ -498,7 +499,7 @@ mod tests {
                 first,
                 DeliveryState::Pending,
                 DeliveryState::Claimed,
-                Some(&[7])
+                Some(&[RunId::new(7)])
             )
             .unwrap());
         assert!(
@@ -507,12 +508,15 @@ mod tests {
                     first,
                     DeliveryState::Pending,
                     DeliveryState::Claimed,
-                    Some(&[8])
+                    Some(&[RunId::new(8)])
                 )
                 .unwrap(),
             "claimed once"
         );
-        assert_eq!(store.delivery(first).unwrap().unwrap().run_ids, [7]);
+        assert_eq!(
+            store.delivery(first).unwrap().unwrap().run_ids,
+            [RunId::new(7)]
+        );
         assert_eq!(
             store.deliveries_in(DeliveryState::Claimed).unwrap().len(),
             1

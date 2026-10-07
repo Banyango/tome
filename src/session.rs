@@ -25,6 +25,7 @@ mod moves;
 mod split;
 mod workspace;
 
+use crate::ids::RunId;
 use herdr::Herdr;
 pub use moves::{move_to, Move};
 pub use split::{Anchor, Split};
@@ -219,7 +220,7 @@ impl Backend {
             }
         };
         let session = Session {
-            run_id: 0,
+            run_id: RunId::new(0),
             name: launch.name.to_string(),
             role: String::new(),
             backend: self.kind().as_str().to_string(),
@@ -1222,7 +1223,7 @@ fn script(launch: &Launch, capture: Capture) -> String {
 
 /// A session name for a run: `tome-<id>-<workflow>`. tmux doesn't allow `.`
 /// or `:` in names, so anything but letters, digits, `_` and `-` becomes `-`.
-pub fn run_session_name(run_id: i64, workflow: &str, role: &str) -> String {
+pub fn run_session_name(run_id: RunId, workflow: &str, role: &str) -> String {
     let slug: String = workflow
         .chars()
         .map(|c| {
@@ -1240,7 +1241,7 @@ pub fn run_session_name(run_id: i64, workflow: &str, role: &str) -> String {
 }
 
 /// Every session of a run starts with this.
-pub fn run_prefix(run_id: i64) -> String {
+pub fn run_prefix(run_id: RunId) -> String {
     format!("tome-{run_id}-")
 }
 
@@ -1350,7 +1351,7 @@ mod tests {
         assert!(tmux.is_alive("tome-7-build"));
         assert!(!tmux.is_alive("tome-7-buil"), "names match exactly");
 
-        let mut killed = tmux.kill_prefix(&run_prefix(7));
+        let mut killed = tmux.kill_prefix(&run_prefix(RunId::new(7)));
         killed.sort();
         assert_eq!(killed, ["tome-7-build", "tome-7-build-worker"]);
         assert!(!tmux.is_alive("tome-7-build"));
@@ -1402,13 +1403,14 @@ mod tests {
     #[test]
     fn run_session_names_are_tmux_safe() {
         assert_eq!(
-            run_session_name(42, "review.loop:v2", "orchestrator"),
+            run_session_name(RunId::new(42), "review.loop:v2", "orchestrator"),
             "tome-42-review-loop-v2"
         );
         assert_eq!(
-            run_session_name(42, "build", "worker"),
+            run_session_name(RunId::new(42), "build", "worker"),
             "tome-42-build-worker"
         );
-        assert!(run_session_name(42, "build", "orchestrator").starts_with(&run_prefix(42)));
+        assert!(run_session_name(RunId::new(42), "build", "orchestrator")
+            .starts_with(&run_prefix(RunId::new(42))));
     }
 }

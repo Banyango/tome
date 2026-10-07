@@ -7,10 +7,11 @@
 //! directory, so a command worker's result survives `--keep-open` and a
 //! session that's already gone.
 
-use crate::api::{internal, opt_str, req_id_at, req_str};
+use crate::api::{internal, opt_str, req_id_at, req_num_at, req_str};
 use crate::engine::Engine;
 use crate::handshake::{self, Agent};
 use crate::harness::{self, shell_quote, Vars};
+use crate::ids::RunId;
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::paths;
@@ -73,25 +74,25 @@ fn caller(p: &Value) -> Option<&str> {
     opt_str(p, "caller").filter(|c| !c.is_empty())
 }
 
-fn run_dir(run_id: i64) -> PathBuf {
+fn run_dir(run_id: RunId) -> PathBuf {
     paths::runs_dir().join(run_id.to_string())
 }
 
-fn exit_file(run_id: i64, name: &str) -> PathBuf {
+fn exit_file(run_id: RunId, name: &str) -> PathBuf {
     run_dir(run_id).join(format!("worker-{name}.exit"))
 }
 
 /// Where an agent worker's prompt is written.
-fn prompt_file(run_id: i64, name: &str) -> PathBuf {
+fn prompt_file(run_id: RunId, name: &str) -> PathBuf {
     run_dir(run_id).join(format!("worker-{name}-prompt.md"))
 }
 
-fn log_file(run_id: i64, name: &str) -> PathBuf {
+fn log_file(run_id: RunId, name: &str) -> PathBuf {
     run_dir(run_id).join(format!("worker-{name}.log"))
 }
 
 /// The exit code a worker's wrapper recorded, once it has.
-fn recorded_exit(run_id: i64, name: &str) -> Option<i32> {
+fn recorded_exit(run_id: RunId, name: &str) -> Option<i32> {
     fs::read_to_string(exit_file(run_id, name))
         .ok()?
         .trim()
@@ -220,7 +221,7 @@ impl Engine {
 
     /// `worker.spawn {run_id, name?, group?, worktree?, base?, harness?, model?,
     /// keep_open?, prompt? | command?, placement?, caller?, cwd?}`
-    fn spawn_worker(&self, run_id: i64, p: &Value) -> CliResult<Value> {
+    fn spawn_worker(&self, run_id: RunId, p: &Value) -> CliResult<Value> {
         if let Some(me) = caller(p) {
             return Err(CliError::invalid(format!(
                 "worker `{me}` can't spawn workers; only the orchestrator can"
@@ -550,7 +551,7 @@ impl Engine {
     }
 
     /// `worker.report {run_id, name, event: done|fail, summary?}`
-    fn report_worker(&self, run_id: i64, p: &Value) -> CliResult<Value> {
+    fn report_worker(&self, run_id: RunId, p: &Value) -> CliResult<Value> {
         let name = opt_str(p, "name").or(caller(p)).ok_or_else(|| {
             CliError::invalid(
                 "which worker? `tome worker done|fail` is for workers (TOME_WORKER_ID isn't set)",
@@ -584,7 +585,7 @@ impl Engine {
     }
 
     /// `worker.kill {run_id, name}`: stop it now, `cancelled`.
-    fn kill_worker(&self, run_id: i64, name: &str) -> CliResult<Value> {
+    fn kill_worker(&self, run_id: RunId, name: &str) -> CliResult<Value> {
         let end = self.with_store(|store| {
             let end = store.finish_worker(
                 run_id,
@@ -609,7 +610,7 @@ impl Engine {
     /// (the first `wait` does, and so does `group.close`).
     fn group_status(
         &self,
-        run_id: i64,
+        run_id: RunId,
         name: &str,
         close: bool,
         waiting: bool,
@@ -633,7 +634,7 @@ impl Engine {
 
     /// `worktree.create {run_id, name, base?, branch?, cwd?}`: a worktree not tied to
     /// a worker.
-    fn create_worktree(&self, run_id: i64, p: &Value) -> CliResult<Value> {
+    fn create_worktree(&self, run_id: RunId, p: &Value) -> CliResult<Value> {
         let name = req_str(p, "name")?;
         store::check_name("worktree", name)?;
         let run = self.with_store(|store| store.require_run(run_id))?;
@@ -664,7 +665,7 @@ impl Engine {
         )
     }
 
-    pub(crate) fn worker_session(&self, run_id: i64, w: &Worker) -> Option<store::Session> {
+    pub(crate) fn worker_session(&self, run_id: RunId, w: &Worker) -> Option<store::Session> {
         let name = w.session.as_deref()?;
         self.recorded_sessions(run_id)
             .into_iter()
@@ -674,7 +675,7 @@ impl Engine {
     /// After a worker ended: close its session (after `grace`, unless it
     /// was kept open), kill any members fail-fast cut off, and tell the
     /// orchestrator.
-    pub(crate) fn after_end(&self, run_id: i64, end: &WorkerEnd, grace: Option<Duration>) {
+    pub(crate) fn after_end(&self, run_id: RunId, end: &WorkerEnd, grace: Option<Duration>) {
         let sessions = self.recorded_sessions(run_id);
         let session_of = |w: &Worker| {
             w.session
@@ -841,7 +842,7 @@ fn queue(store: &mut Store, method: &str, p: &Value) -> CliResult<Value> {
             let messages = store.peek_messages(&project, req_str(p, "queue")?, limit)?;
             Ok(json!({ "queue": req_str(p, "queue")?, "messages": messages }))
         }
-        "queue.ack" => Ok(json!(store.ack_message(&project, req_id_at(p, "id")?)?)),
+        "queue.ack" => Ok(json!(store.ack_message(&project, req_num_at(p, "id")?)?)),
         "queue.close" => Ok(json!(store.close_queue(&project, req_str(p, "queue")?)?)),
         "queue.ls" => Ok(json!({ "project": project, "queues": store.queues(&project)? })),
         _ => Err(CliError::invalid(format!("unknown method `{method}`"))),

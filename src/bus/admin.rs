@@ -2,9 +2,10 @@
 //! trigger by hand (`tome triggers fire`).
 
 use super::{matching, pattern_of, subscriptions, Publish, TEST};
-use crate::api::{opt_str, req_id_at, req_str};
+use crate::api::{opt_str, req_num_at, req_str};
 use crate::arming::Armed;
 use crate::engine::Engine;
+use crate::ids::{DeliveryId, EventId, RunId};
 use crate::output::{CliError, CliResult};
 use crate::store::{BusEvent, Delivery, DeliveryState};
 use crate::triggers::{outcome, Event, FireRequest, Fired};
@@ -40,7 +41,7 @@ impl Engine {
             }
             Ok((topics, store.project_deliveries(project)?, events))
         })?;
-        let topic_of: BTreeMap<i64, &str> =
+        let topic_of: BTreeMap<EventId, &str> =
             events.iter().map(|e| (e.id, e.topic.as_str())).collect();
         let topics: Vec<Value> = topics
             .iter()
@@ -117,7 +118,7 @@ impl Engine {
         from: &[DeliveryState],
         to: DeliveryState,
     ) -> CliResult<Value> {
-        let id = req_id_at(p, "event")?;
+        let id = EventId::new(req_num_at(p, "event")?);
         let workflow = opt_str(p, "workflow");
         let project = opt_str(p, "project_path");
         let verb = if to == DeliveryState::Pending {
@@ -181,7 +182,7 @@ impl Engine {
             }
             let d = movable[0].clone();
             // A retried delivery starts over: no runs yet.
-            let runs: Option<&[i64]> = (to == DeliveryState::Pending).then_some(&[]);
+            let runs: Option<&[RunId]> = (to == DeliveryState::Pending).then_some(&[]);
             if !store.move_delivery(d.id, d.state, to, runs)? {
                 return Err(CliError::conflict(format!(
                     "event {id}'s delivery to `{}` changed meanwhile; try again",
@@ -246,7 +247,7 @@ impl Engine {
         let pattern = pattern_of(a).expect("a topic trigger").clone();
         // Hold off the trigger loop, so it doesn't take the event first.
         let _draining = self.draining.lock().unwrap_or_else(|p| p.into_inner());
-        let respond = |fired: Fired, event: Option<i64>| {
+        let respond = |fired: Fired, event: Option<EventId>| {
             let mut out = json!({
                 "outcome": fired.outcome,
                 "message": fired.message,
@@ -266,7 +267,7 @@ impl Engine {
                 project: Some(project.clone()),
                 index: a.index,
                 event: Event {
-                    bus: Some((event, 0)),
+                    bus: Some((event, DeliveryId::new(0))),
                     synthetic: true,
                     ..Default::default()
                 },
@@ -279,7 +280,7 @@ impl Engine {
                 let topic = pattern.example();
                 if dry_run {
                     let event = BusEvent {
-                        id: 0,
+                        id: EventId::new(0),
                         project_path: project.display().to_string(),
                         topic,
                         payload: payload.to_string(),

@@ -1,6 +1,7 @@
 //! `tome publish` and `tome events ...`: the client side of the project
 //! message bus.
 
+use crate::ids::RunId;
 use crate::output::{table, CliError, CliResult, Report};
 use crate::triggerscmd::project_of;
 use crate::{node, paths, rpc};
@@ -66,7 +67,7 @@ fn publish_to(
             let shown = rpc::Client::local(&paths::socket_path())?
                 .call("runs.show", json!({ "id": id }))?;
             let run = &shown["run"];
-            let id = run["id"].as_i64().unwrap_or_default();
+            let id = RunId::new(run["id"].as_i64().unwrap_or_default());
             let project = run["project_path"].as_str().map(PathBuf::from);
             let depth = Some(&run["trigger"])
                 .filter(|t| t["event_id"].is_i64())

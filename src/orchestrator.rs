@@ -10,6 +10,7 @@
 //! launches later exactly as it was when it was requested.
 
 use crate::harness::{self, Harness, Vars};
+use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::placement::{self, From, Inputs, Placement, Role, Settings, Workspace};
@@ -323,7 +324,7 @@ pub fn bootstrap(run: &Run, fm: &Frontmatter, body: &str) -> String {
 }
 
 /// Where the prompt of a run's main session (`role`) is written.
-pub fn prompt_file(run_id: i64, role: &str) -> PathBuf {
+pub fn prompt_file(run_id: RunId, role: &str) -> PathBuf {
     paths::runs_dir()
         .join(run_id.to_string())
         .join(format!("{role}-prompt.md"))
@@ -396,7 +397,7 @@ pub fn launch(
 }
 
 /// What a run's agents need to call back into tome.
-pub fn session_env(run_id: i64) -> Vec<(String, String)> {
+pub fn session_env(run_id: RunId) -> Vec<(String, String)> {
     let mut env = vec![
         ("TOME_RUN_ID".to_string(), run_id.to_string()),
         ("TOME_OUTPUT".to_string(), "json".to_string()),
@@ -431,7 +432,7 @@ pub fn session_env(run_id: i64) -> Vec<(String, String)> {
 /// server they were started on) and any other `tome-<id>-*` tmux session on
 /// the current server. cmux is shared with the user, so only recorded
 /// workspaces are closed there.
-pub fn kill_sessions(run_id: i64, recorded: &[Session]) {
+pub fn kill_sessions(run_id: RunId, recorded: &[Session]) {
     for s in recorded {
         session::kill(s);
     }

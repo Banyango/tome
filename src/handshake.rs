@@ -14,6 +14,7 @@
 
 use crate::api::{opt_str, req_id_at};
 use crate::engine::Engine;
+use crate::ids::RunId;
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::session;
@@ -46,7 +47,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Who a tome call came from, as the CLI sends it (from `TOME_RUN_ID` and
 /// `TOME_WORKER_ID`).
-pub fn caller_of(req_caller: &Value) -> Option<(i64, Option<String>)> {
+pub fn caller_of(req_caller: &Value) -> Option<Agent> {
     let run_id = req_id_at(req_caller, "run_id").ok()?;
     let worker = opt_str(req_caller, "worker")
         .filter(|w| !w.is_empty())
@@ -92,7 +93,7 @@ pub struct Pending {
 
 /// An agent: a run's main session, its orchestrator or single agent
 /// (`None`), or one of its workers.
-pub type Agent = (i64, Option<String>);
+pub type Agent = (RunId, Option<String>);
 
 fn describe(agent: &Agent) -> String {
     match &agent.1 {

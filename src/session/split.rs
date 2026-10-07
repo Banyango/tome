@@ -395,7 +395,7 @@ mod tests {
 
     fn session(role: &str, pane: &str) -> Session {
         Session {
-            run_id: 1,
+            run_id: crate::ids::RunId::new(1),
             name: format!("tome-1-x-{role}"),
             role: role.into(),
             backend: "tmux".into(),

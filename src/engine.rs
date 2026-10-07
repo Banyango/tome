@@ -10,6 +10,7 @@
 
 use crate::api::{self, internal, opt_str, req_id, req_id_at, req_str, StartRequest};
 use crate::handshake::{self, Agent, Pending};
+use crate::ids::RunId;
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::placement;
@@ -84,9 +85,9 @@ const METHODS: &[&str] = &[
 pub struct Engine {
     /// `None` only once shutdown has closed the database.
     store: Mutex<Option<Store>>,
-    watchers: Mutex<HashMap<i64, Watchers>>,
+    watchers: Mutex<HashMap<RunId, Watchers>>,
     /// Runs whose orchestrator is being started; the monitor leaves them be.
-    launching: Mutex<HashSet<i64>>,
+    launching: Mutex<HashSet<RunId>>,
     /// File triggers polling rather than on OS events, by armed key, with
     /// why. Kept by the trigger loop.
     pub(crate) file_polling: Mutex<HashMap<String, String>>,
@@ -99,8 +100,8 @@ pub struct Engine {
     pub(crate) stalled: Mutex<HashMap<String, String>>,
     /// The forwarder's attempts and the nodes it's sending to.
     pub(crate) forwarding: Mutex<crate::bus::forward::State>,
-    blocked_since: Mutex<HashMap<(i64, String), Instant>>,
-    blocked_notified: Mutex<HashMap<(i64, String), Instant>>,
+    blocked_since: Mutex<HashMap<(RunId, String), Instant>>,
+    blocked_notified: Mutex<HashMap<(RunId, String), Instant>>,
 }
 
 impl Engine {
@@ -463,7 +464,7 @@ impl Engine {
     /// cancelled, then kill its sessions (a queued run has none) and start
     /// the next queued run of its workflow. Its worktrees are kept, and no
     /// notification is sent.
-    pub fn cancel(&self, id: i64, reason: &str) -> CliResult<Run> {
+    pub fn cancel(&self, id: RunId, reason: &str) -> CliResult<Run> {
         let run = self.with_store(|store| {
             let run = store.cancel_run(id, reason)?;
             self.sync(store, id);
@@ -474,7 +475,7 @@ impl Engine {
         Ok(run)
     }
 
-    pub(crate) fn recorded_sessions(&self, run_id: i64) -> Vec<store::Session> {
+    pub(crate) fn recorded_sessions(&self, run_id: RunId) -> Vec<store::Session> {
         self.with_store(|store| store.sessions(run_id).map_err(internal))
             .unwrap_or_default()
     }
@@ -483,7 +484,7 @@ impl Engine {
     /// the run and all its recorded sessions.
     fn find_session(
         &self,
-        run_id: i64,
+        run_id: RunId,
         name: &str,
     ) -> CliResult<(store::Run, Vec<store::Session>, store::Session)> {
         let run = self.with_store(|store| {
@@ -675,7 +676,7 @@ impl Engine {
         Ok(out)
     }
 
-    pub(crate) fn kill_sessions(&self, run_id: i64) {
+    pub(crate) fn kill_sessions(&self, run_id: RunId) {
         orchestrator::kill_sessions(run_id, &self.recorded_sessions(run_id));
     }
 
@@ -748,7 +749,7 @@ impl Engine {
                 return;
             };
             // Forget blocked-tracking for runs that are no longer running.
-            let running: HashSet<i64> = sessions.iter().map(|s| s.run_id).collect();
+            let running: HashSet<RunId> = sessions.iter().map(|s| s.run_id).collect();
             self.blocked_since
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -889,7 +890,7 @@ impl Engine {
     /// cancels the run when `cancel_on_disconnect`).
     pub fn watch(
         &self,
-        id: i64,
+        id: RunId,
         cancel_on_disconnect: bool,
         sink: &mut dyn Sink,
     ) -> Option<CliResult<Run>> {
@@ -934,7 +935,7 @@ impl Engine {
 
     fn pump(
         &self,
-        id: i64,
+        id: RunId,
         rx: &Receiver<Value>,
         cancel_on_disconnect: bool,
         sink: &mut dyn Sink,
@@ -978,7 +979,7 @@ impl Engine {
         }
     }
 
-    fn caller_gone(&self, id: i64, cancel: bool) -> Option<CliResult<Run>> {
+    fn caller_gone(&self, id: RunId, cancel: bool) -> Option<CliResult<Run>> {
         if cancel {
             // Already finished is fine: nothing left to cancel.
             if let Ok(run) = self.cancel(id, reason::CALLER_EXITED) {
@@ -995,7 +996,7 @@ impl Engine {
 
     /// Send watchers of `run_id` whatever changed since they were last
     /// synced. Call with the store locked, after changing the run.
-    pub(crate) fn sync(&self, store: &Store, run_id: i64) {
+    pub(crate) fn sync(&self, store: &Store, run_id: RunId) {
         let mut watchers = self.watchers.lock().unwrap_or_else(|p| p.into_inner());
         let Some(w) = watchers.get_mut(&run_id) else {
             return;
@@ -1025,7 +1026,7 @@ impl Engine {
 }
 
 /// A run's step and worker events after `after`, in order, with their ids.
-fn history(store: &Store, run_id: i64, after: i64) -> CliResult<Vec<(i64, Value)>> {
+fn history(store: &Store, run_id: RunId, after: i64) -> CliResult<Vec<(i64, Value)>> {
     let main = store
         .get_run(run_id, false)
         .map_err(internal)?
@@ -1115,7 +1116,7 @@ pub fn run_event(run: &Run) -> Value {
 }
 
 /// `{"type": "step", "run_id", "step", "event": start|done|fail, "message", "time"}`
-pub fn step_event(run_id: i64, h: &StepHistory) -> Value {
+pub fn step_event(run_id: RunId, h: &StepHistory) -> Value {
     json!({
         "type": "step",
         "run_id": run_id,
@@ -1136,7 +1137,7 @@ pub fn step_event(run_id: i64, h: &StepHistory) -> Value {
 /// or for a publish `{"type": "publish", "run_id", "event": "published", "message", "time"}`.
 ///
 /// `main` is the role of the run's main session (`orchestrator` or `agent`).
-pub fn worker_event(run_id: i64, main: &str, h: &WorkerHistory) -> Value {
+pub fn worker_event(run_id: RunId, main: &str, h: &WorkerHistory) -> Value {
     if h.group.is_none() && handshake::state::ALL.contains(&h.event.as_str()) {
         return json!({
             "type": "handshake",

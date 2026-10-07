@@ -7,6 +7,7 @@
 //! index of raw log files under `~/.tome/runs/<run-id>/<step>.log`, and the
 //! worktrees a run created (so gc can remove them).
 
+use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use crate::workflow::Mode;
 use anyhow::Context;
@@ -365,7 +366,7 @@ impl StepStatus {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Run {
-    pub id: i64,
+    pub id: RunId,
     pub workflow_name: String,
     pub workflow_path: Option<String>,
     pub project_path: Option<String>,
@@ -440,7 +441,7 @@ pub struct NewWorktree<'a> {
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
     #[serde(skip)]
-    pub run_id: i64,
+    pub run_id: RunId,
     pub name: String,
     pub role: String,
     pub backend: String,
@@ -557,11 +558,11 @@ impl Store {
         &self.runs_dir
     }
 
-    pub fn run_dir(&self, run_id: i64) -> PathBuf {
+    pub fn run_dir(&self, run_id: RunId) -> PathBuf {
         self.runs_dir.join(run_id.to_string())
     }
 
-    pub fn log_path(&self, run_id: i64, step: &str) -> PathBuf {
+    pub fn log_path(&self, run_id: RunId, step: &str) -> PathBuf {
         self.run_dir(run_id)
             .join(format!("{}.log", log_file_stem(step)))
     }
@@ -609,10 +610,10 @@ impl Store {
     pub fn create_run(
         &mut self,
         new: NewRun<'_>,
-        render: impl FnOnce(i64) -> String,
+        render: impl FnOnce(RunId) -> String,
     ) -> anyhow::Result<Run> {
         let tx = self.conn.transaction()?;
-        let id: i64 = tx.query_row("SELECT nextval('run_id_seq')", [], |r| r.get(0))?;
+        let id: RunId = tx.query_row("SELECT nextval('run_id_seq')", [], |r| r.get(0))?;
         let snapshot = render(id);
         tx.execute(
             "INSERT INTO runs (id, workflow_name, workflow_path, project_path, params, workflow_snapshot, status, created_at, trigger_cause, placement, mode)
@@ -636,7 +637,7 @@ impl Store {
         Ok(self.get_run(id, true)?.expect("run just inserted"))
     }
 
-    pub fn get_run(&self, id: i64, with_snapshot: bool) -> anyhow::Result<Option<Run>> {
+    pub fn get_run(&self, id: RunId, with_snapshot: bool) -> anyhow::Result<Option<Run>> {
         let sql = format!("{} WHERE id = ?", run_select(with_snapshot));
         Ok(self
             .conn
@@ -644,7 +645,7 @@ impl Store {
             .optional()?)
     }
 
-    pub fn require_run(&self, id: i64) -> CliResult<Run> {
+    pub fn require_run(&self, id: RunId) -> CliResult<Run> {
         self.get_run(id, false)
             .map_err(|e| CliError::internal(format!("{e:#}")))?
             .ok_or_else(|| CliError::not_found(format!("no run with id {id}")))
@@ -701,7 +702,7 @@ impl Store {
 
     /// Delete a run's rows from every table. Files on disk are the caller's
     /// job.
-    pub fn delete_run(&mut self, id: i64) -> anyhow::Result<()> {
+    pub fn delete_run(&mut self, id: RunId) -> anyhow::Result<()> {
         let tx = self.conn.transaction()?;
         for table in [
             "step_events",
@@ -731,7 +732,7 @@ impl Store {
     /// Move a run to a finished status. Errors if it's already finished.
     pub fn finish_run(
         &mut self,
-        id: i64,
+        id: RunId,
         status: RunStatus,
         reason: Option<&str>,
         summary: Option<&str>,
@@ -766,7 +767,7 @@ impl Store {
 
     /// Cancel an unfinished run: any step still running is failed with
     /// `reason`, then the run is marked `cancelled`.
-    pub fn cancel_run(&mut self, id: i64, reason: &str) -> CliResult<Run> {
+    pub fn cancel_run(&mut self, id: RunId, reason: &str) -> CliResult<Run> {
         self.abort_run(id, RunStatus::Cancelled, reason, None)
     }
 
@@ -775,7 +776,7 @@ impl Store {
     /// cancelled and steps still running are failed with `reason` first.
     pub fn abort_run(
         &mut self,
-        id: i64,
+        id: RunId,
         status: RunStatus,
         reason: &str,
         summary: Option<&str>,
@@ -819,7 +820,7 @@ impl Store {
     }
 
     /// Move a queued run to running.
-    pub fn dequeue_run(&mut self, id: i64) -> CliResult<Run> {
+    pub fn dequeue_run(&mut self, id: RunId) -> CliResult<Run> {
         let n = self
             .conn
             .execute(
@@ -838,7 +839,7 @@ impl Store {
 
     /// Replace a queued run's trigger cause. False if the run isn't queued
     /// (any more).
-    pub fn set_queued_trigger(&mut self, id: i64, cause: &Value) -> anyhow::Result<bool> {
+    pub fn set_queued_trigger(&mut self, id: RunId, cause: &Value) -> anyhow::Result<bool> {
         let n = self.conn.execute(
             "UPDATE runs SET trigger_cause = ? WHERE id = ? AND status = 'queued'",
             params![cause.to_string(), id],
@@ -847,7 +848,7 @@ impl Store {
     }
 
     /// Add a note to a run's placement state (once).
-    pub fn add_run_note(&mut self, id: i64, note: &str) -> anyhow::Result<()> {
+    pub fn add_run_note(&mut self, id: RunId, note: &str) -> anyhow::Result<()> {
         let current: Option<String> = self
             .conn
             .query_row(
@@ -874,7 +875,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_snapshot(&mut self, id: i64, snapshot: &str) -> anyhow::Result<()> {
+    pub fn set_snapshot(&mut self, id: RunId, snapshot: &str) -> anyhow::Result<()> {
         self.conn.execute(
             "UPDATE runs SET workflow_snapshot = ? WHERE id = ?",
             params![snapshot, id],
@@ -886,7 +887,7 @@ impl Store {
 
     /// The step a bare `tome step done|fail` refers to: the most recently
     /// started step that's still running.
-    pub fn current_step(&self, run_id: i64) -> anyhow::Result<Option<String>> {
+    pub fn current_step(&self, run_id: RunId) -> anyhow::Result<Option<String>> {
         Ok(self
             .conn
             .query_row(
@@ -900,7 +901,7 @@ impl Store {
     /// Record a step transition reported by the orchestrator.
     pub fn report_step(
         &mut self,
-        run_id: i64,
+        run_id: RunId,
         step: &str,
         event: StepEvent,
         message: Option<&str>,
@@ -964,7 +965,7 @@ impl Store {
             .expect("step just written"))
     }
 
-    pub fn steps(&self, run_id: i64) -> anyhow::Result<Vec<Step>> {
+    pub fn steps(&self, run_id: RunId) -> anyhow::Result<Vec<Step>> {
         let mut stmt = self.conn.prepare(
             "SELECT name, status, attempts, message, started_at, finished_at FROM steps WHERE run_id = ?
              ORDER BY started_at NULLS LAST, name",
@@ -982,7 +983,7 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    pub fn step_history(&self, run_id: i64) -> anyhow::Result<Vec<StepHistory>> {
+    pub fn step_history(&self, run_id: RunId) -> anyhow::Result<Vec<StepHistory>> {
         let mut stmt =
             self.conn.prepare("SELECT id, step, event, message, occurred_at FROM step_events WHERE run_id = ? ORDER BY id")?;
         let rows = stmt.query_map(params![run_id], |r| {
@@ -1001,7 +1002,7 @@ impl Store {
 
     /// Re-scan `~/.tome/runs/<run-id>/*.log`, refresh the index (path, size,
     /// tail excerpt) and return it.
-    pub fn index_logs(&mut self, run_id: i64) -> anyhow::Result<Vec<LogEntry>> {
+    pub fn index_logs(&mut self, run_id: RunId) -> anyhow::Result<Vec<LogEntry>> {
         let dir = self.run_dir(run_id);
         let mut found = Vec::new();
         if let Ok(read) = std::fs::read_dir(&dir) {
@@ -1031,7 +1032,7 @@ impl Store {
         self.logs(run_id)
     }
 
-    pub fn logs(&self, run_id: i64) -> anyhow::Result<Vec<LogEntry>> {
+    pub fn logs(&self, run_id: RunId) -> anyhow::Result<Vec<LogEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT step, path, size, tail, updated_at FROM logs WHERE run_id = ? ORDER BY step",
         )?;
@@ -1049,7 +1050,7 @@ impl Store {
 
     // --- worktrees ---------------------------------------------------------
 
-    pub fn add_worktree(&mut self, run_id: i64, w: &NewWorktree<'_>) -> anyhow::Result<()> {
+    pub fn add_worktree(&mut self, run_id: RunId, w: &NewWorktree<'_>) -> anyhow::Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO worktrees (run_id, path, repo_path, branch, base, worker, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
@@ -1065,7 +1066,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn worktrees(&self, run_id: i64) -> anyhow::Result<Vec<Worktree>> {
+    pub fn worktrees(&self, run_id: RunId) -> anyhow::Result<Vec<Worktree>> {
         let mut stmt = self.conn.prepare(
             "SELECT path, repo_path, branch, base, worker, created_at FROM worktrees WHERE run_id = ? ORDER BY created_at, path",
         )?;
@@ -1109,7 +1110,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn sessions(&self, run_id: i64) -> anyhow::Result<Vec<Session>> {
+    pub fn sessions(&self, run_id: RunId) -> anyhow::Result<Vec<Session>> {
         self.query_sessions(
             "WHERE s.run_id = ? ORDER BY s.created_at, s.name",
             params![run_id],
@@ -1118,7 +1119,7 @@ impl Store {
 
     pub fn set_session_agent_status(
         &mut self,
-        run_id: i64,
+        run_id: RunId,
         name: &str,
         status: Option<&str>,
         blocked_at: Option<&str>,
@@ -1319,7 +1320,7 @@ mod tests {
         let (_d, mut store) = store();
         let a = new_run(&mut store, "wf");
         let b = new_run(&mut store, "wf");
-        assert_eq!(b.id, a.id + 1);
+        assert!(b.id > a.id);
         assert_eq!(
             b.workflow_snapshot.as_deref(),
             Some(format!("snapshot for run {}", b.id).as_str())
@@ -1392,7 +1393,7 @@ mod tests {
             .is_err());
         assert_eq!(
             store
-                .finish_run(999, RunStatus::Failed, None, None)
+                .finish_run(RunId::new(999), RunStatus::Failed, None, None)
                 .unwrap_err()
                 .kind,
             crate::output::ErrorKind::NotFound

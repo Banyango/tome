@@ -2,6 +2,7 @@
 //! history of both (streamed alongside step events).
 
 use super::{fmt_ts, internal, now, RunStatus, Store};
+use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use chrono::NaiveDateTime;
 use duckdb::{params, OptionalExt, Row};
@@ -51,7 +52,7 @@ impl WorkerStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct Worker {
     #[serde(skip)]
-    pub run_id: i64,
+    pub run_id: RunId,
     pub name: String,
     /// `agent` or `command`.
     pub kind: String,
@@ -188,7 +189,7 @@ impl Store {
     /// Record a new worker as `pending`, creating its group on first use.
     /// Refused if the run isn't running, the name is taken or the group is
     /// closed.
-    pub fn reserve_worker(&mut self, run_id: i64, new: &NewWorker<'_>) -> CliResult<Worker> {
+    pub fn reserve_worker(&mut self, run_id: RunId, new: &NewWorker<'_>) -> CliResult<Worker> {
         let run = self.require_run(run_id)?;
         if run.status != RunStatus::Running {
             return Err(CliError::invalid(format!(
@@ -243,7 +244,7 @@ impl Store {
         self.require_worker(run_id, &name)
     }
 
-    fn next_worker_name(&self, run_id: i64) -> CliResult<String> {
+    fn next_worker_name(&self, run_id: RunId) -> CliResult<String> {
         let taken: Vec<String> = self.workers(run_id)?.into_iter().map(|w| w.name).collect();
         let mut n = taken.len() + 1;
         loop {
@@ -256,7 +257,7 @@ impl Store {
     }
 
     /// Forget a worker that never got going (its spawn failed early).
-    pub fn delete_worker(&mut self, run_id: i64, name: &str) -> CliResult<()> {
+    pub fn delete_worker(&mut self, run_id: RunId, name: &str) -> CliResult<()> {
         self.conn
             .execute(
                 "DELETE FROM workers WHERE run_id = ? AND name = ?",
@@ -268,7 +269,7 @@ impl Store {
 
     pub fn set_worker_worktree(
         &mut self,
-        run_id: i64,
+        run_id: RunId,
         name: &str,
         path: &str,
         branch: &str,
@@ -285,7 +286,7 @@ impl Store {
 
     /// A pending worker's session started. Returns false if it isn't pending
     /// any more (it was ended meanwhile).
-    pub fn start_worker(&mut self, run_id: i64, name: &str, session: &str) -> CliResult<bool> {
+    pub fn start_worker(&mut self, run_id: RunId, name: &str, session: &str) -> CliResult<bool> {
         let n = self
             .conn
             .execute(
@@ -304,7 +305,7 @@ impl Store {
     /// in a fail-fast group cancels the group's other members.
     pub fn finish_worker(
         &mut self,
-        run_id: i64,
+        run_id: RunId,
         name: &str,
         status: WorkerStatus,
         reason: Option<&str>,
@@ -382,7 +383,7 @@ impl Store {
     /// is ending). Groups don't cascade. Returns the workers it ended.
     pub fn end_active_workers(
         &mut self,
-        run_id: i64,
+        run_id: RunId,
         status: WorkerStatus,
         reason: &str,
     ) -> CliResult<Vec<Worker>> {
@@ -399,7 +400,7 @@ impl Store {
         Ok(ended)
     }
 
-    pub fn worker(&self, run_id: i64, name: &str) -> CliResult<Option<Worker>> {
+    pub fn worker(&self, run_id: RunId, name: &str) -> CliResult<Option<Worker>> {
         let sql = format!("SELECT {WORKER_COLUMNS} FROM workers WHERE run_id = ? AND name = ?");
         self.conn
             .query_row(&sql, params![run_id, name], worker_from_row)
@@ -407,20 +408,20 @@ impl Store {
             .map_err(internal)
     }
 
-    pub fn require_worker(&self, run_id: i64, name: &str) -> CliResult<Worker> {
+    pub fn require_worker(&self, run_id: RunId, name: &str) -> CliResult<Worker> {
         self.worker(run_id, name)?.ok_or_else(|| {
             CliError::not_found(format!("run {run_id} has no worker named `{name}`"))
         })
     }
 
-    pub fn workers(&self, run_id: i64) -> CliResult<Vec<Worker>> {
+    pub fn workers(&self, run_id: RunId) -> CliResult<Vec<Worker>> {
         self.query_workers(
             "WHERE run_id = ? ORDER BY created_at, name",
             params![run_id],
         )
     }
 
-    fn group_members(&self, run_id: i64, group: &str) -> CliResult<Vec<Worker>> {
+    fn group_members(&self, run_id: RunId, group: &str) -> CliResult<Vec<Worker>> {
         self.query_workers(
             "WHERE run_id = ? AND group_name = ? ORDER BY created_at, name",
             params![run_id, group],
@@ -447,7 +448,7 @@ impl Store {
     // --- groups ------------------------------------------------------------
 
     /// `tome group create`: refused if the group exists.
-    pub fn create_group(&mut self, run_id: i64, name: &str, fail_fast: bool) -> CliResult<Group> {
+    pub fn create_group(&mut self, run_id: RunId, name: &str, fail_fast: bool) -> CliResult<Group> {
         check_name("group", name)?;
         let run = self.require_run(run_id)?;
         if run.status != RunStatus::Running {
@@ -465,7 +466,7 @@ impl Store {
         self.require_group(run_id, name)
     }
 
-    fn insert_group(&mut self, run_id: i64, name: &str, fail_fast: bool) -> CliResult<()> {
+    fn insert_group(&mut self, run_id: RunId, name: &str, fail_fast: bool) -> CliResult<()> {
         self.conn
             .execute(
                 "INSERT INTO worker_groups (run_id, name, fail_fast, closed, created_at) VALUES (?, ?, ?, false, ?)",
@@ -475,7 +476,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn group(&self, run_id: i64, name: &str) -> CliResult<Option<Group>> {
+    pub fn group(&self, run_id: RunId, name: &str) -> CliResult<Option<Group>> {
         self.conn
             .query_row(
                 "SELECT name, fail_fast, closed, created_at, finished_at FROM worker_groups WHERE run_id = ? AND name = ?",
@@ -486,12 +487,12 @@ impl Store {
             .map_err(internal)
     }
 
-    pub fn require_group(&self, run_id: i64, name: &str) -> CliResult<Group> {
+    pub fn require_group(&self, run_id: RunId, name: &str) -> CliResult<Group> {
         self.group(run_id, name)?
             .ok_or_else(|| CliError::not_found(format!("run {run_id} has no group named `{name}`")))
     }
 
-    pub fn groups(&self, run_id: i64) -> CliResult<Vec<Group>> {
+    pub fn groups(&self, run_id: RunId) -> CliResult<Vec<Group>> {
         let mut stmt = self
             .conn
             .prepare("SELECT name, fail_fast, closed, created_at, finished_at FROM worker_groups WHERE run_id = ? ORDER BY created_at, name")
@@ -503,13 +504,13 @@ impl Store {
     }
 
     /// A group's members, in spawn order.
-    pub fn members(&self, run_id: i64, group: &str) -> CliResult<Vec<Worker>> {
+    pub fn members(&self, run_id: RunId, group: &str) -> CliResult<Vec<Worker>> {
         self.group_members(run_id, group)
     }
 
     /// Stop a group taking new members. Returns the group, and whether that
     /// finished it (all its members had already ended).
-    pub fn close_group(&mut self, run_id: i64, name: &str) -> CliResult<(Group, bool)> {
+    pub fn close_group(&mut self, run_id: RunId, name: &str) -> CliResult<(Group, bool)> {
         let g = self.require_group(run_id, name)?;
         if !g.closed {
             self.conn
@@ -524,7 +525,7 @@ impl Store {
     }
 
     /// Finish a closed group once all its members have ended.
-    fn maybe_finish_group(&mut self, run_id: i64, name: &str) -> CliResult<Option<Group>> {
+    fn maybe_finish_group(&mut self, run_id: RunId, name: &str) -> CliResult<Option<Group>> {
         let g = self.require_group(run_id, name)?;
         if !g.closed || g.finished_at.is_some() {
             return Ok(None);
@@ -543,7 +544,7 @@ impl Store {
         Ok(Some(self.finish_group(run_id, name, &message)?))
     }
 
-    fn finish_group(&mut self, run_id: i64, name: &str, message: &str) -> CliResult<Group> {
+    fn finish_group(&mut self, run_id: RunId, name: &str, message: &str) -> CliResult<Group> {
         self.conn
             .execute(
                 "UPDATE worker_groups SET closed = true, finished_at = ? WHERE run_id = ? AND name = ?",
@@ -559,7 +560,7 @@ impl Store {
     /// Record a worker (or, with no worker, a group) event.
     pub fn worker_event(
         &mut self,
-        run_id: i64,
+        run_id: RunId,
         worker: Option<&str>,
         group: Option<&str>,
         event: &str,
@@ -574,7 +575,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn worker_history(&self, run_id: i64) -> CliResult<Vec<WorkerHistory>> {
+    pub fn worker_history(&self, run_id: RunId) -> CliResult<Vec<WorkerHistory>> {
         let mut stmt = self
             .conn
             .prepare("SELECT id, worker, group_name, event, message, occurred_at FROM worker_events WHERE run_id = ? ORDER BY id")
@@ -600,7 +601,7 @@ mod tests {
     use super::super::tests::{new_run, store};
     use super::*;
 
-    fn spawn(store: &mut Store, run: i64, name: Option<&str>, group: Option<&str>) -> Worker {
+    fn spawn(store: &mut Store, run: RunId, name: Option<&str>, group: Option<&str>) -> Worker {
         let w = store
             .reserve_worker(
                 run,

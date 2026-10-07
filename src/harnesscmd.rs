@@ -1,6 +1,7 @@
 //! Diagnostics for configured agent harnesses.
 
 use crate::harness::{self, Harness, Template, Vars};
+use crate::ids::RunId;
 use crate::output::{exit, CliError, CliResult, Report};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -98,7 +99,7 @@ fn preview(h: &Harness, model: Option<&str>) -> String {
     let vars = Vars {
         prompt: "<Tome prompt>",
         prompt_file: "<prompt file>",
-        run_id: 1,
+        run_id: RunId::new(1),
         session: "<session>",
         cwd: "<working directory>",
         model,

@@ -2,10 +2,10 @@
 //! whose triggers the daemon arms.
 
 use super::{fmt_ts, internal, now, Store};
+use crate::ids::RunId;
 use crate::output::CliResult;
 use duckdb::{params, OptionalExt, Row};
 use serde::Serialize;
-use serde_json::Value;
 
 /// What a fired trigger did.
 #[derive(Debug, Clone, Serialize)]
@@ -20,7 +20,7 @@ pub struct Fire {
     /// `rejected` or `error`.
     pub outcome: String,
     pub message: Option<String>,
-    pub run_ids: Vec<i64>,
+    pub run_ids: Vec<RunId>,
     pub fired_at: String,
 }
 
@@ -33,7 +33,7 @@ pub struct NewFire<'a> {
     pub trigger: &'a str,
     pub outcome: &'a str,
     pub message: Option<&'a str>,
-    pub run_ids: &'a [i64],
+    pub run_ids: &'a [RunId],
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,7 +77,7 @@ impl Store {
                     f.trigger,
                     f.outcome,
                     f.message,
-                    Value::from(f.run_ids.to_vec()).to_string(),
+                    serde_json::json!(f.run_ids).to_string(),
                     now()
                 ],
                 |r| r.get(0),
@@ -182,7 +182,7 @@ mod tests {
     use super::super::tests::store;
     use super::*;
 
-    fn fire<'a>(outcome: &'a str, index: i64, runs: &'a [i64]) -> NewFire<'a> {
+    fn fire<'a>(outcome: &'a str, index: i64, runs: &'a [RunId]) -> NewFire<'a> {
         NewFire {
             workflow_path: "/p/.tome/workflows/a.md",
             workflow_name: "a",
@@ -198,10 +198,14 @@ mod tests {
     #[test]
     fn fires_keep_the_latest_per_trigger() {
         let (_d, mut store) = store();
-        store.record_fire(&fire("started", 1, &[1])).unwrap();
+        store
+            .record_fire(&fire("started", 1, &[RunId::new(1)]))
+            .unwrap();
         store.record_fire(&fire("rejected", 1, &[])).unwrap();
-        let f = store.record_fire(&fire("started", 2, &[3, 4])).unwrap();
-        assert_eq!(f.run_ids, vec![3, 4]);
+        let f = store
+            .record_fire(&fire("started", 2, &[RunId::new(3), RunId::new(4)]))
+            .unwrap();
+        assert_eq!(f.run_ids, vec![RunId::new(3), RunId::new(4)]);
         let last = store.last_fires().unwrap();
         let summary: Vec<(i64, &str)> = last
             .iter()

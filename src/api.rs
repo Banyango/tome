@@ -2,6 +2,7 @@
 //! database connection; these handlers run with it locked.
 
 use crate::gc;
+use crate::ids::{DeliveryId, RunId};
 use crate::output::{CliError, CliResult};
 use crate::placement;
 use crate::query;
@@ -78,7 +79,7 @@ pub struct StartRequest {
     /// What started the run, if a trigger did; recorded with it.
     pub cause: Option<Value>,
     /// The topic-trigger delivery the run holds.
-    pub delivery_id: Option<i64>,
+    pub delivery_id: Option<DeliveryId>,
     /// Cancel an attached run when its caller disconnects.
     pub cancel_on_disconnect: bool,
 }
@@ -120,6 +121,7 @@ impl StartRequest {
             None | Some(Value::Null) => None,
             Some(v) => Some(
                 v.as_i64()
+                    .map(DeliveryId::new)
                     .ok_or_else(|| CliError::invalid("`delivery_id` must be an integer"))?,
             ),
         };
@@ -241,6 +243,7 @@ fn worktree_add(store: &mut Store, p: &Value) -> CliResult<Value> {
     let run_id = p
         .get("run_id")
         .and_then(Value::as_i64)
+        .map(RunId::new)
         .ok_or_else(|| CliError::invalid("missing integer `run_id`"))?;
     store.require_run(run_id)?;
     let path = PathBuf::from(req_str(p, "path")?);
@@ -370,12 +373,17 @@ pub fn internal(e: anyhow::Error) -> CliError {
     CliError::internal(format!("{e:#}"))
 }
 
-pub fn req_id(p: &Value) -> CliResult<i64> {
+pub fn req_id(p: &Value) -> CliResult<RunId> {
     req_id_at(p, "id")
 }
 
 /// A run id given as a number or a string like `42` / `#42`.
-pub fn req_id_at(p: &Value, key: &str) -> CliResult<i64> {
+pub fn req_id_at(p: &Value, key: &str) -> CliResult<RunId> {
+    req_num_at(p, key).map(RunId::new)
+}
+
+/// A numeric id given as a number or a string like `42` / `#42`.
+pub fn req_num_at(p: &Value, key: &str) -> CliResult<i64> {
     match p.get(key) {
         Some(Value::Number(n)) => n.as_i64(),
         Some(Value::String(s)) => s.trim().trim_start_matches('#').parse().ok(),
@@ -428,7 +436,7 @@ mod tests {
         );
         assert_eq!(req.harness.as_deref(), Some("codex"));
         assert!(req.placement.as_ref().is_some_and(|p| p.layout.is_some()));
-        assert_eq!(req.delivery_id, Some(7));
+        assert_eq!(req.delivery_id, Some(DeliveryId::new(7)));
         assert!(!req.cancel_on_disconnect);
         assert!(!req.by_trigger());
     }

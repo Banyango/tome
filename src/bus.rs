@@ -9,6 +9,7 @@
 use crate::api::{opt_str, req_id_at, req_str};
 use crate::arming::{self, Armed};
 use crate::engine::Engine;
+use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use crate::store::{BusEvent, Delivery, DeliveryState, NewEvent, Run, RunStatus, Subscriber};
 use crate::topic;
@@ -76,7 +77,7 @@ pub struct Publish<'a> {
     pub topic: &'a str,
     pub payload: &'a str,
     pub sender: String,
-    pub sender_run: Option<i64>,
+    pub sender_run: Option<RunId>,
     pub depth: i64,
     /// Deliver only to this workflow (a test event).
     pub only: Option<&'a str>,
@@ -92,7 +93,7 @@ pub struct Published {
 }
 
 /// `run 12`, or `run 12 worker w1`.
-pub fn run_sender(run_id: i64, worker: Option<&str>) -> String {
+pub fn run_sender(run_id: RunId, worker: Option<&str>) -> String {
     match worker {
         Some(w) => format!("run {run_id} worker {w}"),
         None => format!("run {run_id}"),
@@ -403,7 +404,7 @@ impl Engine {
             .active_runs(&a.name, &a.workflow_path)
             .unwrap_or_default();
         if a.trigger.to != Target::New && !active.is_empty() {
-            let ids: Vec<i64> = active.iter().map(|r| r.id).collect();
+            let ids: Vec<RunId> = active.iter().map(|r| r.id).collect();
             return format!("would signal run {}", triggers::join_ids(&ids));
         }
         if a.trigger.to == Target::Running {
@@ -678,7 +679,7 @@ mod tests {
     #[test]
     fn depth_counts_up_from_the_starting_event() {
         let run = |cause: Option<Value>| Run {
-            id: 1,
+            id: RunId::new(1),
             workflow_name: "w".into(),
             workflow_path: None,
             project_path: None,
@@ -699,6 +700,6 @@ mod tests {
             depth_from(&run(Some(json!({ "event_id": 4, "depth": 2 })))),
             3
         );
-        assert_eq!(run_sender(3, Some("w1")), "run 3 worker w1");
+        assert_eq!(run_sender(RunId::new(3), Some("w1")), "run 3 worker w1");
     }
 }

@@ -4,6 +4,7 @@
 
 use super::{depth_from, Publish, ENDED, STARTED, TOME};
 use crate::engine::Engine;
+use crate::ids::RunId;
 use crate::store::{Run, RunStatus};
 use crate::topic;
 use chrono::NaiveDateTime;
@@ -42,7 +43,7 @@ fn ended(run: &Run) -> Option<(&'static str, Value)> {
 impl Engine {
     /// A run's orchestrator (or single agent) has started: publish
     /// `.started`, once.
-    pub(crate) fn announce_started(&self, run_id: i64) {
+    pub(crate) fn announce_started(&self, run_id: RunId) {
         let first = self.with_store(|store| {
             if store.announced(run_id)?.is_some() {
                 return Ok(None);
@@ -65,7 +66,7 @@ impl Engine {
 
     /// A run has ended: publish how, once. Its end is marked handled first,
     /// so a failed publish isn't retried every tick.
-    pub(crate) fn announce_ended(&self, run_id: i64) {
+    pub(crate) fn announce_ended(&self, run_id: RunId) {
         let run = self.with_store(|store| {
             store.set_announced(run_id, ENDED)?;
             store.get_run(run_id, false).map_err(crate::api::internal)
@@ -112,7 +113,7 @@ impl Engine {
         }
     }
 
-    pub(crate) fn announce_blocked(&self, run_id: i64, session: &str, pane: &str, at: &str) {
+    pub(crate) fn announce_blocked(&self, run_id: RunId, session: &str, pane: &str, at: &str) {
         if let Ok(Some(run)) =
             self.with_store(|store| store.get_run(run_id, false).map_err(crate::api::internal))
         {
@@ -127,7 +128,7 @@ mod tests {
 
     fn run(status: RunStatus) -> Run {
         Run {
-            id: 3,
+            id: RunId::new(3),
             workflow_name: "implement".into(),
             workflow_path: None,
             project_path: None,

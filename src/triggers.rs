@@ -10,6 +10,7 @@
 use crate::api::{opt_str, req_str, StartRequest};
 use crate::arming;
 use crate::engine::Engine;
+use crate::ids::{DeliveryId, RunId};
 use crate::output::{CliError, CliResult, ErrorKind};
 use crate::store::{BusEvent, NewFire, Run, RunStatus};
 use crate::workflow::{self, FileEvent, Scope, Target, TriggerKind, WhileRunning, Workflow};
@@ -29,7 +30,7 @@ pub const METHODS: &[&str] = &[
 const SENDER: &str = "trigger";
 
 /// The project queue signals to a run are delivered on.
-pub fn signal_queue(run_id: i64) -> String {
+pub fn signal_queue(run_id: RunId) -> String {
     format!("events-{run_id}")
 }
 
@@ -58,7 +59,7 @@ pub struct Event {
     /// Sent by `tome triggers fire` rather than a real source.
     pub synthetic: bool,
     /// The bus event (topic triggers), and the delivery claimed for it.
-    pub bus: Option<(BusEvent, i64)>,
+    pub bus: Option<(BusEvent, DeliveryId)>,
 }
 
 /// One trigger of one workflow, where it's armed.
@@ -76,7 +77,7 @@ pub struct FireRequest {
 pub struct Fired {
     pub outcome: &'static str,
     pub message: Option<String>,
-    pub runs: Vec<i64>,
+    pub runs: Vec<RunId>,
     /// Extra detail (resolved params, the run started, ...).
     pub data: Value,
 }
@@ -476,7 +477,7 @@ impl Engine {
             Ok(runs) => runs,
             Err(e) => return err(outcome::ERROR, e.message),
         };
-        let active_ids: Vec<i64> = active.iter().map(|r| r.id).collect();
+        let active_ids: Vec<RunId> = active.iter().map(|r| r.id).collect();
         if let (TriggerKind::File(f), Target::New, false) =
             (&trigger.kind, trigger.to, active.is_empty())
         {
@@ -586,7 +587,7 @@ impl Engine {
     /// pane (dropped if the pane is gone).
     fn signal(&self, trigger: &workflow::Trigger, req: &FireRequest, active: &[Run]) -> Fired {
         let fields = fields(&trigger.kind, &req.event, Local::now());
-        let ids: Vec<i64> = active.iter().map(|r| r.id).collect();
+        let ids: Vec<RunId> = active.iter().map(|r| r.id).collect();
         if req.dry_run {
             return Fired {
                 outcome: outcome::SIGNALLED,
@@ -790,9 +791,9 @@ fn text(v: &Value) -> String {
     }
 }
 
-pub fn join_ids(ids: &[i64]) -> String {
+pub fn join_ids(ids: &[RunId]) -> String {
     ids.iter()
-        .map(i64::to_string)
+        .map(RunId::to_string)
         .collect::<Vec<_>>()
         .join(", ")
 }

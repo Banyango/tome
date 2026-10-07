@@ -493,7 +493,9 @@ mod tests {
         let project = dir.path().join("tome-7-x");
         fs::create_dir_all(&project).unwrap();
         let id = places.tmux(tmux, Some(&project), None, &project).unwrap();
-        assert!(tmux.kill_prefix(&super::super::run_prefix(7)).is_empty());
+        assert!(tmux
+            .kill_prefix(&super::super::run_prefix(crate::ids::RunId::new(7)))
+            .is_empty());
         assert!(tmux.tagged_sessions().iter().any(|(i, _)| *i == id));
     }
 }

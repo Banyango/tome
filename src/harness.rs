@@ -25,6 +25,7 @@
 //! or a `{{model}}` in its command. One that does neither refuses a model.
 
 use crate::config::{self, Config};
+use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use serde_yaml::Value as Yaml;
 use std::collections::BTreeMap;
@@ -203,7 +204,7 @@ fn check_vars(name: &str, template: &Template) -> Result<(), String> {
 pub struct Vars<'a> {
     pub prompt: &'a str,
     pub prompt_file: &'a str,
-    pub run_id: i64,
+    pub run_id: RunId,
     pub session: &'a str,
     pub cwd: &'a str,
     pub model: Option<&'a str>,
@@ -302,7 +303,7 @@ mod tests {
         Vars {
             prompt: "do it's thing",
             prompt_file: "/r/1/prompt.md",
-            run_id: 7,
+            run_id: RunId::new(7),
             session: "tome-7-x",
             cwd: "/p",
             model: None,

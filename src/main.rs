@@ -12,6 +12,7 @@ mod glob;
 mod handshake;
 mod harness;
 mod harnesscmd;
+mod ids;
 mod inspect;
 mod lifecycle;
 mod node;
