@@ -15,6 +15,7 @@ use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::placement::{self, From, Inputs, Placement, Role, Settings, Workspace};
 use crate::recovery::RecoveryHooks;
+use crate::resume;
 use crate::session::{self, Anchor, Backend, Cmux, Kind, Launch, Layout, Split, Target, Tmux};
 use crate::store::{Run, Session, Worker};
 use crate::workflow::{self, Frontmatter, Mode, Workflow};
@@ -252,7 +253,8 @@ pub fn run_project(run: &Run) -> Option<PathBuf> {
         .filter(|p| p.is_dir())
 }
 
-pub fn plan(run: &Run) -> CliResult<Plan> {
+/// `resuming` is the resume context when `run` resumes another.
+pub fn plan(run: &Run, resuming: Option<&resume::Context>) -> CliResult<Plan> {
     let wf = snapshot(run)?;
     let cwd = run_cwd(run);
     let project = run_project(run);
@@ -279,15 +281,20 @@ pub fn plan(run: &Run) -> CliResult<Plan> {
         session: session::run_session_name(run.id, &run.workflow_name, role),
         title: format!("tome: {} #{}", run.workflow_name, run.id),
         cwd,
-        prompt: bootstrap(run, &wf.frontmatter(), &wf.body()),
+        prompt: bootstrap(run, &wf.frontmatter(), &wf.body(), resuming),
         start_timeout: crate::handshake::timeout(&wf.frontmatter()),
     })
 }
 
 /// The main session's first message: the built-in prompt for the run's
 /// mode, the resolved workflow and any extra instructions the workflow gives
-/// it.
-pub fn bootstrap(run: &Run, fm: &Frontmatter, body: &str) -> String {
+/// it, and what earlier runs did if it resumes one.
+pub fn bootstrap(
+    run: &Run,
+    fm: &Frontmatter,
+    body: &str,
+    resuming: Option<&resume::Context>,
+) -> String {
     let prompt = match run.mode {
         Mode::Single => AGENT_PROMPT,
         Mode::Orchestrated => PROMPT,
@@ -320,6 +327,10 @@ pub fn bootstrap(run: &Run, fm: &Frontmatter, body: &str) -> String {
         out.push_str(&format!("\n## Instructions for this workflow\n\n{extra}\n"));
     }
     out.push_str(&format!("\n## The workflow\n\n{}\n", body.trim()));
+    if let Some(ctx) = resuming {
+        out.push('\n');
+        out.push_str(&resume::render(ctx));
+    }
     out
 }
 

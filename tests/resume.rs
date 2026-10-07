@@ -273,3 +273,39 @@ fn runs_show_links_the_chain_both_ways() {
         human(new)
     );
 }
+
+#[test]
+fn the_resumed_agent_is_told_where_to_start() {
+    let env = Env::new();
+    env.start_daemon();
+    write_wf(&env, "build", WF);
+    let old = start(&env, &["build"]);
+    cancel(&env, old);
+    let prompt = |id: i64| {
+        fs::read_to_string(env.home().join(format!("runs/{id}/orchestrator-prompt.md")))
+            .unwrap_or_default()
+    };
+    assert!(!prompt(old).contains("## Resuming"));
+
+    let (code, v) = env.json(&[
+        "run",
+        "resume",
+        &old.to_string(),
+        "--detach",
+        "--start-at",
+        "the Build step",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let id = v["id"].as_i64().unwrap();
+    let text = prompt(id);
+    assert!(
+        text.contains(&format!(
+            "## Resuming\n\nThis run picks up run #{old}, which cancelled"
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("Where to start: the user said: the Build step"),
+        "{text}"
+    );
+}

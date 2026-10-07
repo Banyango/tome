@@ -7,7 +7,7 @@ use crate::api::{self, internal, Origin};
 use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use crate::placement::Settings;
-use crate::store::{NewRun, Run, RunStatus, Session, Store};
+use crate::store::{NewRun, Run, RunStatus, Session, StepEvent, StepStatus, Store};
 use crate::triggers;
 use crate::workflow::{self, Invalid};
 use serde_json::{Map, Value};
@@ -23,16 +23,19 @@ pub struct ResumeRequest {
     pub cmux_caller: Option<Value>,
     /// Cancel an attached run when its caller disconnects.
     pub cancel_on_disconnect: bool,
+    /// Where the agent should start, in the user's words (`--start-at`).
+    pub start_at: Option<String>,
 }
 
 impl ResumeRequest {
-    /// `run.resume {id, placement?, cmux_caller?, cancel_on_disconnect?}`
+    /// `run.resume {id, start_at?, placement?, cmux_caller?, cancel_on_disconnect?}`
     pub fn from_json(p: &Value) -> CliResult<ResumeRequest> {
         Ok(ResumeRequest {
             id: api::req_id(p)?,
             placement: api::opt_placement(p)?,
             cmux_caller: api::opt_object(p, "cmux_caller")?.map(|o| Value::Object(o.clone())),
             cancel_on_disconnect: api::opt_flag(p, "cancel_on_disconnect", true)?,
+            start_at: api::opt_string(p, "start_at")?.filter(|s| !s.trim().is_empty()),
         })
     }
 }
@@ -120,18 +123,20 @@ pub fn render_template(run: &Run, template: &str) -> Result<String, Invalid> {
 }
 
 /// Record the run that resumes `old`, with `snapshot` and `old`'s params,
-/// project and mode. `flags` are its placement flags.
+/// project and mode. `flags` are its placement flags; `start_at` is where
+/// its agent should start, if the user said.
 pub fn create(
     store: &mut Store,
     old: &Run,
     snapshot: &str,
+    start_at: Option<&str>,
     flags: Option<&Settings>,
     origin: &Origin,
     status: RunStatus,
 ) -> CliResult<Run> {
     let params: Map<String, Value> = old.params.as_object().cloned().unwrap_or_default();
     let placement = api::placement_state(flags, Some(origin));
-    store
+    let run = store
         .create_run(
             NewRun {
                 workflow_name: &old.workflow_name,
@@ -146,7 +151,223 @@ pub fn create(
             },
             |_| snapshot.to_string(),
         )
-        .map_err(internal)
+        .map_err(internal)?;
+    if let Some(start) = start_at {
+        store.set_resume_start(run.id, start).map_err(internal)?;
+    }
+    Ok(run)
+}
+
+/// What a resumed run's agent is told about the runs before it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Context {
+    /// The run it resumes and the ones that one resumed, oldest first.
+    pub earlier: Vec<Earlier>,
+    /// Every step reported in the chain, in the order first reported.
+    pub steps: Vec<StepSoFar>,
+    pub start: Start,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Earlier {
+    pub id: RunId,
+    pub status: RunStatus,
+    pub reason: Option<String>,
+    pub summary: Option<String>,
+}
+
+/// A step's latest outcome across the chain.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepSoFar {
+    pub name: String,
+    pub status: StepStatus,
+    /// Its done or fail message.
+    pub message: Option<String>,
+    /// The run that reported it.
+    pub run: RunId,
+    /// The failures before the latest outcome: the run and its message.
+    pub failed_before: Vec<(RunId, Option<String>)>,
+}
+
+/// Where the resumed agent should start.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Start {
+    /// The user's words (`--start-at`), passed on unchecked.
+    Given(String),
+    /// A step that failed or was still running.
+    Redo(String),
+    /// The step after this one, the last that finished.
+    After(String),
+    /// No step was reported.
+    Beginning,
+}
+
+/// The resume context of `run`, if it resumes another.
+pub fn context(store: &Store, run: &Run) -> anyhow::Result<Option<Context>> {
+    let mut chain = Vec::new();
+    let mut next = run.resumed_from;
+    while let Some(id) = next {
+        let Some(old) = store.get_run(id, false)? else {
+            break;
+        };
+        next = old.resumed_from;
+        chain.push(old);
+    }
+    if chain.is_empty() {
+        return Ok(None);
+    }
+    chain.reverse();
+    let mut steps: Vec<StepSoFar> = Vec::new();
+    for old in &chain {
+        let mut failures: Vec<(String, Option<String>)> = store
+            .step_history(old.id)?
+            .into_iter()
+            .filter(|h| h.event == StepEvent::Fail)
+            .map(|h| (h.step, h.message))
+            .collect();
+        for step in store.steps(old.id)? {
+            // The step's own failures in this run, but not the one that's
+            // its latest outcome.
+            let mut mine: Vec<(RunId, Option<String>)> = Vec::new();
+            failures.retain(|(name, msg)| {
+                let hit = *name == step.name;
+                if hit {
+                    mine.push((old.id, msg.clone()));
+                }
+                !hit
+            });
+            if step.status == StepStatus::Failed {
+                mine.pop();
+            }
+            let latest = StepSoFar {
+                name: step.name.clone(),
+                status: step.status,
+                message: step.message,
+                run: old.id,
+                failed_before: Vec::new(),
+            };
+            match steps.iter_mut().find(|s| s.name == step.name) {
+                Some(seen) => {
+                    let mut before = std::mem::take(&mut seen.failed_before);
+                    if seen.status != StepStatus::Done {
+                        before.push((seen.run, seen.message.clone()));
+                    }
+                    before.extend(mine);
+                    *seen = StepSoFar {
+                        failed_before: before,
+                        ..latest
+                    };
+                }
+                None => steps.push(StepSoFar {
+                    failed_before: mine,
+                    ..latest
+                }),
+            }
+        }
+    }
+    let start = match store.resume_start(run.id)? {
+        Some(text) => Start::Given(text),
+        None => start_from(&steps),
+    };
+    let earlier = chain
+        .into_iter()
+        .map(|r| Earlier {
+            id: r.id,
+            status: r.status,
+            reason: r.reason,
+            summary: r.summary,
+        })
+        .collect();
+    Ok(Some(Context {
+        earlier,
+        steps,
+        start,
+    }))
+}
+
+/// The first step that didn't finish, else the one after the last that did.
+fn start_from(steps: &[StepSoFar]) -> Start {
+    if let Some(s) = steps.iter().find(|s| s.status != StepStatus::Done) {
+        return Start::Redo(s.name.clone());
+    }
+    match steps.last() {
+        Some(s) => Start::After(s.name.clone()),
+        None => Start::Beginning,
+    }
+}
+
+/// The "Resuming" section of the agent's prompt.
+pub fn render(ctx: &Context) -> String {
+    let mut out = String::from("## Resuming\n\n");
+    if let Some(last) = ctx.earlier.last() {
+        out.push_str(&format!(
+            "This run picks up run #{}, which {}. Work it and earlier runs did is still in place, so carry on from where they stopped instead of starting over. The workflow below is the one run #{} was given, so where it uses the run id it means #{}, and names made from it (branches, files) are the old run's.\n",
+            last.id,
+            ended(last),
+            ctx.earlier[0].id,
+            ctx.earlier[0].id,
+        ));
+    }
+    if ctx.earlier.len() > 1 {
+        out.push_str("\nEarlier runs:\n");
+        for run in &ctx.earlier {
+            out.push_str(&format!("- run #{}: {}\n", run.id, ended(run)));
+        }
+    } else if let Some(summary) = ctx.earlier.last().and_then(|r| r.summary.as_deref()) {
+        out.push_str(&format!("Its summary: {}\n", one_line(summary)));
+    }
+    if !ctx.steps.is_empty() {
+        out.push_str("\nSteps so far:\n");
+        for step in &ctx.steps {
+            out.push_str(&format!(
+                "- `{}`: {} in run #{}",
+                step.name,
+                step.status.as_str(),
+                step.run
+            ));
+            if let Some(msg) = &step.message {
+                out.push_str(&format!(": {}", one_line(msg)));
+            }
+            out.push('\n');
+            for (run, msg) in &step.failed_before {
+                out.push_str(&format!("  - failed earlier in run #{run}"));
+                if let Some(msg) = msg {
+                    out.push_str(&format!(": {}", one_line(msg)));
+                }
+                out.push('\n');
+            }
+        }
+    }
+    out.push_str("\nWhere to start: ");
+    out.push_str(&match &ctx.start {
+        Start::Given(text) => format!("the user said: {}\n", text.trim()),
+        Start::Redo(step) => format!("step `{step}`, which didn't finish.\n"),
+        Start::After(step) => {
+            format!("the step after `{step}`, the last one that finished.\n")
+        }
+        Start::Beginning => {
+            "the beginning; no step was reported, but check what the earlier run left behind.\n"
+                .to_string()
+        }
+    });
+    out.push_str("\nSkip the steps that are done; don't report them again. Before you redo a step that was interrupted, check the state it left behind (files, commits, branches, half-made changes) and build on it.\n");
+    out
+}
+
+/// How a run ended: its status, reason and summary.
+fn ended(run: &Earlier) -> String {
+    let mut out = run.status.as_str().to_string();
+    if let Some(reason) = &run.reason {
+        out.push_str(&format!(" ({reason})"));
+    }
+    if let Some(summary) = &run.summary {
+        out.push_str(&format!(": {}", one_line(summary)));
+    }
+    out
+}
+
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -211,7 +432,16 @@ mod tests {
     fn a_run_is_resumed_once_and_the_hint_names_the_newest() {
         let (dir, mut store) = store();
         let first = ended(&mut store, RunStatus::Failed, dir.path());
-        let second = create(&mut store, &first, "s", None, &origin(), RunStatus::Running).unwrap();
+        let second = create(
+            &mut store,
+            &first,
+            "s",
+            None,
+            None,
+            &origin(),
+            RunStatus::Running,
+        )
+        .unwrap();
         assert_eq!(second.resumed_from, Some(first.id));
         store
             .finish_run(second.id, RunStatus::Failed, None, None)
@@ -221,6 +451,7 @@ mod tests {
             &mut store,
             &second,
             "s",
+            None,
             None,
             &origin(),
             RunStatus::Running,
@@ -255,7 +486,16 @@ mod tests {
         let old = ended(&mut store, RunStatus::Cancelled, dir.path());
         let snap = snapshot(&old, &[]).unwrap();
         assert_eq!(snap, format!("snapshot for run {}", old.id));
-        let new = create(&mut store, &old, &snap, None, &origin(), RunStatus::Queued).unwrap();
+        let new = create(
+            &mut store,
+            &old,
+            &snap,
+            None,
+            None,
+            &origin(),
+            RunStatus::Queued,
+        )
+        .unwrap();
         assert_eq!(new.workflow_snapshot.as_deref(), Some(snap.as_str()));
         assert_eq!(new.params, old.params);
         assert_eq!(new.mode, old.mode);
@@ -275,5 +515,158 @@ mod tests {
         old.trigger = Some(json!({ "while_running": "queue", "event": {} }));
         let snap = snapshot(&old, &[]).unwrap();
         assert!(snap.contains(&format!("Run {} on main.", old.id)), "{snap}");
+    }
+
+    /// Report `step` for `run`: `events` in order, each with its message.
+    fn steps(store: &mut Store, run: RunId, step: &str, events: &[(StepEvent, &str)]) {
+        for (event, msg) in events {
+            let msg = Some(*msg).filter(|m| !m.is_empty());
+            store.report_step(run, step, *event, msg).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_context_merges_the_chain_and_starts_at_the_unfinished_step() {
+        use StepEvent::{Done, Fail, Start as Begin};
+        let (_dir, mut store) = store();
+        let first = new_run(&mut store, "build");
+        steps(
+            &mut store,
+            first.id,
+            "Setup",
+            &[(Begin, ""), (Done, "made dirs")],
+        );
+        steps(
+            &mut store,
+            first.id,
+            "Build",
+            &[(Begin, ""), (Fail, "linker error")],
+        );
+        store
+            .finish_run(
+                first.id,
+                RunStatus::Failed,
+                Some("step_failed"),
+                Some("build broke"),
+            )
+            .unwrap();
+        let first = store.get_run(first.id, true).unwrap().unwrap();
+        let second = create(
+            &mut store,
+            &first,
+            "s",
+            None,
+            None,
+            &origin(),
+            RunStatus::Running,
+        )
+        .unwrap();
+        steps(
+            &mut store,
+            second.id,
+            "Build",
+            &[(Begin, ""), (Done, "built")],
+        );
+        steps(
+            &mut store,
+            second.id,
+            "Test",
+            &[(Begin, ""), (Fail, "flaky"), (Begin, "")],
+        );
+        store
+            .abort_run(second.id, RunStatus::Cancelled, "user_cancelled", None)
+            .unwrap();
+        let second = store.get_run(second.id, true).unwrap().unwrap();
+        let third = create(
+            &mut store,
+            &second,
+            "s",
+            None,
+            None,
+            &origin(),
+            RunStatus::Running,
+        )
+        .unwrap();
+
+        let ctx = context(&store, &third).unwrap().unwrap();
+        assert_eq!(
+            ctx.earlier.iter().map(|r| r.id).collect::<Vec<_>>(),
+            [first.id, second.id]
+        );
+        let names: Vec<_> = ctx.steps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Setup", "Build", "Test"]);
+        let build = &ctx.steps[1];
+        assert_eq!((build.status, build.run), (StepStatus::Done, second.id));
+        assert_eq!(
+            build.failed_before,
+            [(first.id, Some("linker error".into()))]
+        );
+        let test = &ctx.steps[2];
+        assert_eq!(test.status, StepStatus::Failed);
+        assert_eq!(test.message.as_deref(), Some("user_cancelled"));
+        assert_eq!(test.failed_before, [(second.id, Some("flaky".into()))]);
+        assert_eq!(ctx.start, Start::Redo("Test".into()));
+
+        let text = render(&ctx);
+        assert!(text.starts_with("## Resuming\n"), "{text}");
+        for want in [
+            format!(
+                "picks up run #{}, which cancelled (user_cancelled)",
+                second.id
+            ),
+            format!("run #{}: failed (step_failed): build broke", first.id),
+            format!("- `Build`: done in run #{}: built", second.id),
+            format!("  - failed earlier in run #{}: linker error", first.id),
+            "Where to start: step `Test`".to_string(),
+            "Skip the steps that are done".to_string(),
+        ] {
+            assert!(text.contains(&want), "missing {want:?} in\n{text}");
+        }
+        // A run that resumes nothing has no context.
+        assert!(context(&store, &first).unwrap().is_none());
+    }
+
+    #[test]
+    fn where_to_start() {
+        let step = |name: &str, status| StepSoFar {
+            name: name.into(),
+            status,
+            message: None,
+            run: RunId::new(1),
+            failed_before: Vec::new(),
+        };
+        assert_eq!(start_from(&[]), Start::Beginning);
+        assert_eq!(
+            start_from(&[step("A", StepStatus::Done), step("B", StepStatus::Done)]),
+            Start::After("B".into())
+        );
+        assert_eq!(
+            start_from(&[step("A", StepStatus::Running), step("B", StepStatus::Done)]),
+            Start::Redo("A".into())
+        );
+    }
+
+    #[test]
+    fn the_users_start_is_passed_on_as_is() {
+        let (dir, mut store) = store();
+        let old = ended(&mut store, RunStatus::Failed, dir.path());
+        let new = create(
+            &mut store,
+            &old,
+            "s",
+            Some("redo the migration, then Test"),
+            None,
+            &origin(),
+            RunStatus::Running,
+        )
+        .unwrap();
+        let ctx = context(&store, &new).unwrap().unwrap();
+        assert_eq!(
+            ctx.start,
+            Start::Given("redo the migration, then Test".into())
+        );
+        assert!(
+            render(&ctx).contains("Where to start: the user said: redo the migration, then Test\n")
+        );
     }
 }

@@ -171,8 +171,12 @@ pub fn start_detached(
 
 /// `tome run resume <id> --detach`: resume the run and return the new run's
 /// id right away.
-pub fn resume_detached(id: &str, placement: &Settings) -> CliResult<Report> {
-    let (mut client, p) = prepare_resume(id, placement)?;
+pub fn resume_detached(
+    id: &str,
+    start_at: Option<&str>,
+    placement: &Settings,
+) -> CliResult<Report> {
+    let (mut client, p) = prepare_resume(id, start_at, placement)?;
     detached(&mut client, "run.resume", p)
 }
 
@@ -213,15 +217,27 @@ pub fn start_attached(
 
 /// `tome run resume <id>`: resume the run and stream the new one until it
 /// finishes, as `tome run` does.
-pub fn resume_attached(id: &str, placement: &Settings, mode: Mode) -> CliResult<Report> {
-    let (client, p) = prepare_resume(id, placement)?;
+pub fn resume_attached(
+    id: &str,
+    start_at: Option<&str>,
+    placement: &Settings,
+    mode: Mode,
+) -> CliResult<Report> {
+    let (client, p) = prepare_resume(id, start_at, placement)?;
     attached(client, "run.resume", p, mode)
 }
 
 /// The connection and `run.resume` params for resuming run `id`: here, or
 /// on the node this command goes to.
-fn prepare_resume(id: &str, placement: &Settings) -> CliResult<(rpc::Client, Value)> {
+fn prepare_resume(
+    id: &str,
+    start_at: Option<&str>,
+    placement: &Settings,
+) -> CliResult<(rpc::Client, Value)> {
     let mut p = json!({ "id": id });
+    if let Some(start_at) = start_at {
+        p["start_at"] = json!(start_at);
+    }
     if !placement.is_empty() {
         p["placement"] = json!(placement);
     }

@@ -258,7 +258,15 @@ impl Engine {
         self.admit(&wf, false, |store, status| {
             // Checked again with the store held: another resume may have won.
             resume::check(store, &old)?;
-            resume::create(store, &old, &snapshot, flags.as_ref(), &origin, status)
+            resume::create(
+                store,
+                &old,
+                &snapshot,
+                req.start_at.as_deref(),
+                flags.as_ref(),
+                &origin,
+                status,
+            )
         })
     }
 
@@ -370,28 +378,31 @@ impl Engine {
         let agent: Agent = (run.id, None);
         let mut waited = false;
         let mut backend = None;
-        let result = orchestrator::plan(&run).and_then(|plan| {
-            backend = Some(plan.backend);
-            waited = plan.start_timeout.is_some();
-            self.expect_start(
-                agent.clone(),
-                plan.start_timeout,
-                orchestrator::prompt_file(run.id, plan.role),
-            );
-            let (session, note) =
-                orchestrator::launch(&run, &plan, &self.recorded_sessions(run.id))?;
-            // Recorded before the monitor may look (it skips launching runs).
-            self.with_store(|store| {
-                store.add_session(&session).map_err(internal)?;
-                match &note {
-                    Some(note) => store.add_run_note(run.id, note).map_err(internal),
-                    None => Ok(()),
-                }
-            })
-            .inspect_err(|_| {
-                session::kill(&session);
-            })
-        });
+        let result = self
+            .with_store(|store| resume::context(store, &run).map_err(internal))
+            .and_then(|resuming| orchestrator::plan(&run, resuming.as_ref()))
+            .and_then(|plan| {
+                backend = Some(plan.backend);
+                waited = plan.start_timeout.is_some();
+                self.expect_start(
+                    agent.clone(),
+                    plan.start_timeout,
+                    orchestrator::prompt_file(run.id, plan.role),
+                );
+                let (session, note) =
+                    orchestrator::launch(&run, &plan, &self.recorded_sessions(run.id))?;
+                // Recorded before the monitor may look (it skips launching runs).
+                self.with_store(|store| {
+                    store.add_session(&session).map_err(internal)?;
+                    match &note {
+                        Some(note) => store.add_run_note(run.id, note).map_err(internal),
+                        None => Ok(()),
+                    }
+                })
+                .inspect_err(|_| {
+                    session::kill(&session);
+                })
+            });
         self.launching
             .lock()
             .unwrap_or_else(|p| p.into_inner())

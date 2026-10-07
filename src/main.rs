@@ -259,6 +259,11 @@ enum RunCommand {
         /// session (`tome session view`).
         #[arg(long, conflicts_with = "detach")]
         view: bool,
+        /// Where the agent should pick up, in your words (a step name or
+        /// anything else); passed to it as is. Without it, the agent starts at
+        /// the step that failed or was interrupted.
+        #[arg(long, value_name = "TEXT")]
+        start_at: Option<String>,
         /// Placement flags; without any, the old run's are used.
         #[command(flatten)]
         placement: PlacementArgs,
@@ -960,15 +965,17 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 id,
                 detach,
                 view,
+                start_at,
                 placement,
             } => {
                 let placement = placement.settings()?;
+                let start_at = start_at.as_deref();
                 if view {
-                    nodecmd::resume_and_view(&id, &placement)
+                    nodecmd::resume_and_view(&id, start_at, &placement)
                 } else if detach {
-                    runcmd::resume_detached(&id, &placement)
+                    runcmd::resume_detached(&id, start_at, &placement)
                 } else {
-                    runcmd::resume_attached(&id, &placement, mode)
+                    runcmd::resume_attached(&id, start_at, &placement, mode)
                 }
             }
         },

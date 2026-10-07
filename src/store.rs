@@ -256,6 +256,8 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE sessions ADD COLUMN agent_status VARCHAR; ALTER TABLE sessions ADD COLUMN blocked_at VARCHAR;",
     // 14: the run a run resumes (`tome run resume`)
     "ALTER TABLE runs ADD COLUMN resumed_from BIGINT;",
+    // 15: where a resumed run's agent is told to start (`--start-at`)
+    "ALTER TABLE runs ADD COLUMN resume_start VARCHAR;",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -663,6 +665,28 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// Record where the agent of `id`, a resumed run, should start.
+    pub fn set_resume_start(&self, id: RunId, start: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET resume_start = ? WHERE id = ?",
+            params![start, id],
+        )?;
+        Ok(())
+    }
+
+    /// Where the agent of `id` should start, if `tome run resume` was told.
+    pub fn resume_start(&self, id: RunId) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT resume_start FROM runs WHERE id = ?",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     pub fn require_run(&self, id: RunId) -> CliResult<Run> {

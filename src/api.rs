@@ -425,7 +425,7 @@ pub fn opt_str<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
 
 /// An optional string field: absent and `null` are `None`, anything else
 /// that isn't a string is an error.
-fn opt_string(p: &Value, key: &str) -> CliResult<Option<String>> {
+pub(crate) fn opt_string(p: &Value, key: &str) -> CliResult<Option<String>> {
     match p.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s.clone())),

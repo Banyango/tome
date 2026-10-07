@@ -588,8 +588,12 @@ pub fn run_and_view(
 
 /// `tome run resume <id> --view`: resume detached, wait for the new run's
 /// agent to start, then view its session.
-pub fn resume_and_view(id: &str, placement: &Settings) -> CliResult<Report> {
-    view_started(crate::runcmd::resume_detached(id, placement)?)
+pub fn resume_and_view(
+    id: &str,
+    start_at: Option<&str>,
+    placement: &Settings,
+) -> CliResult<Report> {
+    view_started(crate::runcmd::resume_detached(id, start_at, placement)?)
 }
 
 /// Wait for the agent of the run just started (`started`) to start, then
