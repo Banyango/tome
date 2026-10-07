@@ -6,7 +6,7 @@ use crate::api::{opt_str, req_id_at, req_str};
 use crate::arming::Armed;
 use crate::engine::Engine;
 use crate::output::{CliError, CliResult};
-use crate::store::{delivery_state as state, BusEvent, Delivery};
+use crate::store::{BusEvent, Delivery, DeliveryState};
 use crate::triggers::{outcome, Event, FireRequest, Fired};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -23,7 +23,7 @@ pub fn preview(payload: &str) -> String {
 }
 
 fn settled(d: &Delivery) -> bool {
-    d.state == state::DONE || d.state == state::DROPPED
+    d.state == DeliveryState::Done || d.state == DeliveryState::Dropped
 }
 
 impl Engine {
@@ -50,11 +50,11 @@ impl Engine {
                     matching(&subs, topic).into_iter().map(|a| (a.name, [0; 3])).collect();
                 for d in deliveries.iter().filter(|d| topic_of.get(&d.event_id) == Some(&topic.as_str())) {
                     let c = counts.entry(d.workflow.clone()).or_default();
-                    match d.state.as_str() {
-                        state::PENDING => c[0] += 1,
-                        state::CLAIMED => c[1] += 1,
-                        state::FAILED => c[2] += 1,
-                        _ => {}
+                    match d.state {
+                        DeliveryState::Pending => c[0] += 1,
+                        DeliveryState::Claimed => c[1] += 1,
+                        DeliveryState::Failed => c[2] += 1,
+                        DeliveryState::Done | DeliveryState::Dropped => {}
                     }
                 }
                 let subscribers: Vec<Value> = counts
@@ -111,11 +111,16 @@ impl Engine {
     /// in another state, or several would move and no workflow was named.
     /// Removing an event with no deliveries (no subscribers, or refused)
     /// deletes the event itself, since there's nothing to drop.
-    pub(crate) fn events_move(&self, p: &Value, from: &[&str], to: &str) -> CliResult<Value> {
+    pub(crate) fn events_move(
+        &self,
+        p: &Value,
+        from: &[DeliveryState],
+        to: DeliveryState,
+    ) -> CliResult<Value> {
         let id = req_id_at(p, "event")?;
         let workflow = opt_str(p, "workflow");
         let project = opt_str(p, "project_path");
-        let verb = if to == state::PENDING {
+        let verb = if to == DeliveryState::Pending {
             "retried"
         } else {
             "removed"
@@ -126,7 +131,7 @@ impl Engine {
                 .filter(|e| project.is_none_or(|p| p == e.project_path))
                 .ok_or_else(|| CliError::not_found(format!("no event {id} in this project")))?;
             let mut deliveries = store.deliveries_of(id)?;
-            if deliveries.is_empty() && workflow.is_none() && to == state::DROPPED {
+            if deliveries.is_empty() && workflow.is_none() && to == DeliveryState::Dropped {
                 store.delete_bus_event(id)?;
                 return Ok((event, None));
             }
@@ -141,13 +146,13 @@ impl Engine {
             let states = || {
                 deliveries
                     .iter()
-                    .map(|d| format!("{} ({})", d.workflow, d.state))
+                    .map(|d| format!("{} ({})", d.workflow, d.state.as_str()))
                     .collect::<Vec<_>>()
                     .join(", ")
             };
             let movable: Vec<&Delivery> = deliveries
                 .iter()
-                .filter(|d| from.contains(&d.state.as_str()))
+                .filter(|d| from.contains(&d.state))
                 .collect();
             if movable.is_empty() {
                 let what = if deliveries.is_empty() {
@@ -157,7 +162,13 @@ impl Engine {
                 };
                 return Err(
                     CliError::invalid(format!("event {id} can't be {verb}: {what}")).with_hint(
-                        format!("only {} deliveries can be {verb}", from.join(" or ")),
+                        format!(
+                            "only {} deliveries can be {verb}",
+                            from.iter()
+                                .map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" or ")
+                        ),
                     ),
                 );
             }
@@ -170,8 +181,8 @@ impl Engine {
             }
             let d = movable[0].clone();
             // A retried delivery starts over: no runs yet.
-            let runs: Option<&[i64]> = (to == state::PENDING).then_some(&[]);
-            if !store.move_delivery(d.id, &d.state, to, runs)? {
+            let runs: Option<&[i64]> = (to == DeliveryState::Pending).then_some(&[]);
+            if !store.move_delivery(d.id, d.state, to, runs)? {
                 return Err(CliError::conflict(format!(
                     "event {id}'s delivery to `{}` changed meanwhile; try again",
                     d.workflow
@@ -207,7 +218,10 @@ impl Engine {
             .iter()
             .filter(|d| d.workflow == a.name && d.pattern == pattern)
             .collect();
-        let pending = ours.iter().filter(|d| d.state == state::PENDING).count();
+        let pending = ours
+            .iter()
+            .filter(|d| d.state == DeliveryState::Pending)
+            .count();
         let last = ours
             .iter()
             .rev()

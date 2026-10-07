@@ -8,17 +8,42 @@ use duckdb::{params, OptionalExt, Row};
 use serde::Serialize;
 use serde_json::Value;
 
-/// Delivery states.
-pub mod state {
+/// Where a delivery is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeliveryState {
     /// Waiting for its workflow to take it.
-    pub const PENDING: &str = "pending";
+    Pending,
     /// Taken by a run (started for it, or signalled with it).
-    pub const CLAIMED: &str = "claimed";
-    pub const DONE: &str = "done";
+    Claimed,
+    Done,
     /// The run that claimed it didn't succeed; parked until retried.
-    pub const FAILED: &str = "failed";
+    Failed,
     /// Its subscription went away, or it was removed by hand.
-    pub const DROPPED: &str = "dropped";
+    Dropped,
+}
+
+impl DeliveryState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeliveryState::Pending => "pending",
+            DeliveryState::Claimed => "claimed",
+            DeliveryState::Done => "done",
+            DeliveryState::Failed => "failed",
+            DeliveryState::Dropped => "dropped",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<DeliveryState> {
+        Some(match s {
+            "pending" => DeliveryState::Pending,
+            "claimed" => DeliveryState::Claimed,
+            "done" => DeliveryState::Done,
+            "failed" => DeliveryState::Failed,
+            "dropped" => DeliveryState::Dropped,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,7 +88,7 @@ pub struct Delivery {
     pub workflow: String,
     pub workflow_path: String,
     pub pattern: String,
-    pub state: String,
+    pub state: DeliveryState,
     /// The runs that claimed it.
     pub run_ids: Vec<i64>,
     pub updated_at: String,
@@ -97,7 +122,7 @@ fn delivery_from_row(r: &Row<'_>) -> duckdb::Result<Delivery> {
         workflow: r.get(3)?,
         workflow_path: r.get(4)?,
         pattern: r.get(5)?,
-        state: r.get(6)?,
+        state: super::stored_enum(r, 6, DeliveryState::parse)?,
         run_ids: serde_json::from_str(&ids).unwrap_or_default(),
         updated_at: fmt_ts(r.get(8)?),
     })
@@ -143,7 +168,7 @@ impl Store {
                 tx.execute(
                     "INSERT INTO deliveries (event_id, project_path, workflow_name, workflow_path, pattern, state, run_ids, updated_at)
                      VALUES (?, ?, ?, ?, ?, ?, '[]', ?)",
-                    params![id, e.project_path, s.workflow_name, s.workflow_path, s.pattern, state::PENDING, at],
+                    params![id, e.project_path, s.workflow_name, s.workflow_path, s.pattern, DeliveryState::Pending.as_str(), at],
                 )
                 .map_err(internal)?;
             }
@@ -219,11 +244,11 @@ impl Store {
         project: &str,
         workflow: &str,
         pattern: &str,
-        state: &str,
+        state: DeliveryState,
     ) -> CliResult<Vec<Delivery>> {
         self.deliveries_where(
             "project_path = ? AND workflow_name = ? AND pattern = ? AND state = ?",
-            &[&project, &workflow, &pattern, &state],
+            &[&project, &workflow, &pattern, &state.as_str()],
         )
     }
 
@@ -232,8 +257,8 @@ impl Store {
         self.deliveries_where("project_path = ?", &[&project])
     }
 
-    pub fn deliveries_in(&self, state: &str) -> CliResult<Vec<Delivery>> {
-        self.deliveries_where("state = ?", &[&state])
+    pub fn deliveries_in(&self, state: DeliveryState) -> CliResult<Vec<Delivery>> {
+        self.deliveries_where("state = ?", &[&state.as_str()])
     }
 
     /// Move a delivery from `from` to `to` (recording `runs` if given).
@@ -241,10 +266,11 @@ impl Store {
     pub fn move_delivery(
         &mut self,
         id: i64,
-        from: &str,
-        to: &str,
+        from: DeliveryState,
+        to: DeliveryState,
         runs: Option<&[i64]>,
     ) -> CliResult<bool> {
+        let (from, to) = (from.as_str(), to.as_str());
         let n = match runs {
             Some(runs) => self.conn.execute(
                 "UPDATE deliveries SET state = ?, run_ids = ?, updated_at = ? WHERE id = ? AND state = ?",
@@ -281,7 +307,7 @@ impl Store {
         let gone: Vec<Delivery> = self
             .deliveries_where(
                 "project_path = ? AND state = ?",
-                &[&project, &state::PENDING],
+                &[&project, &DeliveryState::Pending.as_str()],
             )?
             .into_iter()
             // Forward deliveries aren't subscriptions; they stay.
@@ -294,7 +320,7 @@ impl Store {
             })
             .collect();
         for d in &gone {
-            self.move_delivery(d.id, state::PENDING, state::DROPPED, None)?;
+            self.move_delivery(d.id, DeliveryState::Pending, DeliveryState::Dropped, None)?;
         }
         Ok(gone)
     }
@@ -402,7 +428,7 @@ mod tests {
         assert_eq!(ds.len(), 2);
         assert!(ds
             .iter()
-            .all(|d| d.state == state::PENDING && d.run_ids.is_empty()));
+            .all(|d| d.state == DeliveryState::Pending && d.run_ids.is_empty()));
         let (none, ds) = store
             .publish_event(&event("nobody.listens", "b"), &[])
             .unwrap();
@@ -436,6 +462,24 @@ mod tests {
     }
 
     #[test]
+    fn unknown_delivery_state_is_a_decoding_error() {
+        let (_d, mut store) = store();
+        store
+            .publish_event(&event("a", "1"), &[sub("w", "a")])
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE deliveries SET state = 'lost'", [])
+            .unwrap();
+        let err = store.project_deliveries("/p").unwrap_err();
+        assert!(
+            err.message.contains("unknown stored state `lost`"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
     fn deliveries_move_between_states_once() {
         let (_d, mut store) = store();
         store
@@ -445,21 +489,34 @@ mod tests {
             .publish_event(&event("a", "2"), &[sub("w", "a")])
             .unwrap();
         let pending = store
-            .subscription_deliveries("/p", "w", "a", state::PENDING)
+            .subscription_deliveries("/p", "w", "a", DeliveryState::Pending)
             .unwrap();
         assert_eq!(pending.len(), 2);
         let first = pending[0].id;
         assert!(store
-            .move_delivery(first, state::PENDING, state::CLAIMED, Some(&[7]))
+            .move_delivery(
+                first,
+                DeliveryState::Pending,
+                DeliveryState::Claimed,
+                Some(&[7])
+            )
             .unwrap());
         assert!(
             !store
-                .move_delivery(first, state::PENDING, state::CLAIMED, Some(&[8]))
+                .move_delivery(
+                    first,
+                    DeliveryState::Pending,
+                    DeliveryState::Claimed,
+                    Some(&[8])
+                )
                 .unwrap(),
             "claimed once"
         );
         assert_eq!(store.delivery(first).unwrap().unwrap().run_ids, [7]);
-        assert_eq!(store.deliveries_in(state::CLAIMED).unwrap().len(), 1);
+        assert_eq!(
+            store.deliveries_in(DeliveryState::Claimed).unwrap().len(),
+            1
+        );
 
         // The subscription goes away: its pending delivery is dropped.
         let dropped = store
@@ -468,16 +525,16 @@ mod tests {
         assert_eq!(dropped.len(), 1);
         assert_eq!(
             store.delivery(dropped[0].id).unwrap().unwrap().state,
-            state::DROPPED
+            DeliveryState::Dropped
         );
         assert_eq!(
             store.delivery(first).unwrap().unwrap().state,
-            state::CLAIMED,
+            DeliveryState::Claimed,
             "claimed ones stay"
         );
 
         store
-            .move_delivery(first, state::CLAIMED, state::DONE, None)
+            .move_delivery(first, DeliveryState::Claimed, DeliveryState::Done, None)
             .unwrap();
         assert_eq!(store.gc_bus(true).unwrap(), (1, 1));
         assert_eq!(store.gc_bus(false).unwrap(), (1, 1));

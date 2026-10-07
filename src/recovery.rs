@@ -38,7 +38,7 @@ pub fn recover(store: &mut Store, hooks: &dyn RecoveryHooks) -> anyhow::Result<V
         hooks.kill_sessions(&run, &sessions);
         let cut = store.end_active_workers(run.id, WorkerStatus::Failed, REASON)?;
         for step in store.steps(run.id)? {
-            if step.status == "running" {
+            if step.status == crate::store::StepStatus::Running {
                 store.report_step(run.id, &step.name, StepEvent::Fail, Some(REASON))?;
             }
         }
@@ -165,7 +165,10 @@ mod tests {
             WorkerStatus::Done
         );
 
-        assert_eq!(store.steps(live).unwrap()[0].status, "failed");
+        assert_eq!(
+            store.steps(live).unwrap()[0].status,
+            crate::store::StepStatus::Failed
+        );
         assert_eq!(
             store.worktrees(live).unwrap().len(),
             1,

@@ -22,9 +22,7 @@ mod queues;
 mod triggers;
 mod workers;
 
-pub use events::{
-    check_payload, state as delivery_state, BusEvent, Delivery, NewEvent, Subscriber,
-};
+pub use events::{check_payload, BusEvent, Delivery, DeliveryState, NewEvent, Subscriber};
 pub use queues::Pulled;
 pub use triggers::{Fire, NewFire, Project};
 pub use workers::{check_name, NewWorker, Worker, WorkerEnd, WorkerHistory, WorkerStatus};
@@ -301,7 +299,9 @@ impl RunStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A step transition the orchestrator reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum StepEvent {
     Start,
     Done,
@@ -318,7 +318,7 @@ impl StepEvent {
         })
     }
 
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             StepEvent::Start => "start",
             StepEvent::Done => "done",
@@ -326,12 +326,40 @@ impl StepEvent {
         }
     }
 
-    fn resulting_status(self) -> &'static str {
+    fn resulting_status(self) -> StepStatus {
         match self {
-            StepEvent::Start => "running",
-            StepEvent::Done => "done",
-            StepEvent::Fail => "failed",
+            StepEvent::Start => StepStatus::Running,
+            StepEvent::Done => StepStatus::Done,
+            StepEvent::Fail => StepStatus::Failed,
         }
+    }
+}
+
+/// Where a step is, after its latest reported transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StepStatus {
+    Running,
+    Done,
+    Failed,
+}
+
+impl StepStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StepStatus::Running => "running",
+            StepStatus::Done => "done",
+            StepStatus::Failed => "failed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<StepStatus> {
+        Some(match s {
+            "running" => StepStatus::Running,
+            "done" => StepStatus::Done,
+            "failed" => StepStatus::Failed,
+            _ => return None,
+        })
     }
 }
 
@@ -362,7 +390,7 @@ pub struct Run {
 #[derive(Debug, Clone, Serialize)]
 pub struct Step {
     pub name: String,
-    pub status: String,
+    pub status: StepStatus,
     pub attempts: i32,
     pub message: Option<String>,
     pub started_at: Option<String>,
@@ -373,7 +401,7 @@ pub struct Step {
 pub struct StepHistory {
     pub id: i64,
     pub step: String,
-    pub event: String,
+    pub event: StepEvent,
     pub message: Option<String>,
     pub occurred_at: String,
 }
@@ -761,7 +789,7 @@ impl Store {
         }
         self.end_active_workers(id, WorkerStatus::Cancelled, reason)?;
         for step in self.steps(id).map_err(internal_any)? {
-            if step.status == "running" {
+            if step.status == StepStatus::Running {
                 self.report_step(id, &step.name, StepEvent::Fail, Some(reason))?;
             }
         }
@@ -908,7 +936,7 @@ impl Store {
                 let finished = (event != StepEvent::Start).then_some(ts);
                 tx.execute(
                     "INSERT INTO steps (run_id, name, status, attempts, message, started_at, finished_at) VALUES (?, ?, ?, 1, ?, ?, ?)",
-                    params![run_id, step, status, message, ts, finished],
+                    params![run_id, step, status.as_str(), message, ts, finished],
                 )
                 .map_err(internal)?;
             }
@@ -916,14 +944,14 @@ impl Store {
                 tx.execute(
                     "UPDATE steps SET status = ?, attempts = attempts + 1, message = ?, started_at = ?, finished_at = NULL
                      WHERE run_id = ? AND name = ?",
-                    params![status, message, ts, run_id, step],
+                    params![status.as_str(), message, ts, run_id, step],
                 )
                 .map_err(internal)?;
             }
             (true, _) => {
                 tx.execute(
                     "UPDATE steps SET status = ?, message = ?, finished_at = ? WHERE run_id = ? AND name = ?",
-                    params![status, message, ts, run_id, step],
+                    params![status.as_str(), message, ts, run_id, step],
                 )
                 .map_err(internal)?;
             }
@@ -944,7 +972,7 @@ impl Store {
         let rows = stmt.query_map(params![run_id], |r| {
             Ok(Step {
                 name: r.get(0)?,
-                status: r.get(1)?,
+                status: stored_enum(r, 1, StepStatus::parse)?,
                 attempts: r.get(2)?,
                 message: r.get(3)?,
                 started_at: r.get::<_, Option<NaiveDateTime>>(4)?.map(fmt_ts),
@@ -961,7 +989,7 @@ impl Store {
             Ok(StepHistory {
                 id: r.get(0)?,
                 step: r.get(1)?,
-                event: r.get(2)?,
+                event: stored_enum(r, 2, StepEvent::parse)?,
                 message: r.get(3)?,
                 occurred_at: fmt_ts(r.get(4)?),
             })
@@ -1147,6 +1175,23 @@ fn internal_any(e: anyhow::Error) -> CliError {
     CliError::internal(format!("{e:#}"))
 }
 
+/// A built-in state stored as text in column `idx`. One this build doesn't
+/// know is a decoding error rather than a guess.
+pub(crate) fn stored_enum<T>(
+    r: &Row<'_>,
+    idx: usize,
+    parse: fn(&str) -> Option<T>,
+) -> duckdb::Result<T> {
+    let s: String = r.get(idx)?;
+    parse(&s).ok_or_else(|| {
+        duckdb::Error::FromSqlConversionFailure(
+            idx,
+            duckdb::types::Type::Text,
+            format!("unknown stored state `{s}`").into(),
+        )
+    })
+}
+
 fn run_select(with_snapshot: bool) -> String {
     format!(
         "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at, trigger_cause, placement, mode{} FROM runs",
@@ -1156,14 +1201,13 @@ fn run_select(with_snapshot: bool) -> String {
 
 fn run_from_row(r: &Row<'_>, with_snapshot: bool) -> duckdb::Result<Run> {
     let params: String = r.get(4)?;
-    let status: String = r.get(5)?;
     Ok(Run {
         id: r.get(0)?,
         workflow_name: r.get(1)?,
         workflow_path: r.get(2)?,
         project_path: r.get(3)?,
         params: serde_json::from_str(&params).unwrap_or(Value::Null),
-        status: RunStatus::parse(&status).unwrap_or(RunStatus::Failed),
+        status: stored_enum(r, 5, RunStatus::parse)?,
         reason: r.get(6)?,
         summary: r.get(7)?,
         created_at: fmt_ts(r.get(8)?),
@@ -1306,18 +1350,18 @@ mod tests {
             .report_step(run.id, "Implement", StepEvent::Start, None)
             .unwrap();
         assert_eq!(again.attempts, 2);
-        assert_eq!(again.status, "running");
+        assert_eq!(again.status, StepStatus::Running);
         assert!(again.finished_at.is_none());
 
         let steps = store.steps(run.id).unwrap();
         let review = steps.iter().find(|s| s.name == "Review").unwrap();
-        assert_eq!(review.status, "failed");
+        assert_eq!(review.status, StepStatus::Failed);
         assert_eq!(review.message.as_deref(), Some("changes requested"));
 
         let history = store.step_history(run.id).unwrap();
         let events: Vec<_> = history
             .iter()
-            .map(|h| format!("{}:{}", h.step, h.event))
+            .map(|h| format!("{}:{}", h.step, h.event.as_str()))
             .collect();
         assert_eq!(
             events,
@@ -1379,6 +1423,57 @@ mod tests {
         );
         assert!(store.current_step(run.id).unwrap().is_none());
         assert!(store.cancel_run(run.id, "again").is_err());
+    }
+
+    #[test]
+    fn built_in_states_round_trip_their_stored_names() {
+        for s in [StepStatus::Running, StepStatus::Done, StepStatus::Failed] {
+            assert_eq!(StepStatus::parse(s.as_str()), Some(s));
+            assert_eq!(json!(s), json!(s.as_str()));
+        }
+        for e in [StepEvent::Start, StepEvent::Done, StepEvent::Fail] {
+            assert_eq!(StepEvent::parse(e.as_str()), Some(e));
+            assert_eq!(json!(e), json!(e.as_str()));
+        }
+        for d in [
+            DeliveryState::Pending,
+            DeliveryState::Claimed,
+            DeliveryState::Done,
+            DeliveryState::Failed,
+            DeliveryState::Dropped,
+        ] {
+            assert_eq!(DeliveryState::parse(d.as_str()), Some(d));
+            assert_eq!(json!(d), json!(d.as_str()));
+        }
+        assert_eq!(StepStatus::parse("paused"), None);
+    }
+
+    #[test]
+    fn unknown_stored_state_is_a_decoding_error() {
+        let (_d, mut store) = store();
+        let run = new_run(&mut store, "wf");
+        store
+            .report_step(run.id, "Build", StepEvent::Start, None)
+            .unwrap();
+        store
+            .conn
+            .execute("UPDATE steps SET status = 'paused'", [])
+            .unwrap();
+        let err = store.steps(run.id).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("unknown stored state `paused`"),
+            "{err:#}"
+        );
+        store
+            .conn
+            .execute("UPDATE step_events SET event = 'skip'", [])
+            .unwrap();
+        assert!(store.step_history(run.id).is_err());
+        store
+            .conn
+            .execute("UPDATE runs SET status = 'zombie'", [])
+            .unwrap();
+        assert!(store.get_run(run.id, false).is_err());
     }
 
     #[test]

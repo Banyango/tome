@@ -10,9 +10,7 @@ use crate::api::{opt_str, req_id_at, req_str};
 use crate::arming::{self, Armed};
 use crate::engine::Engine;
 use crate::output::{CliError, CliResult};
-use crate::store::{
-    delivery_state as state, BusEvent, Delivery, NewEvent, Run, RunStatus, Subscriber,
-};
+use crate::store::{BusEvent, Delivery, DeliveryState, NewEvent, Run, RunStatus, Subscriber};
 use crate::topic;
 use crate::triggers::{self, outcome, Event, FireRequest, Fired};
 use crate::workflow::{Target, TriggerKind};
@@ -117,10 +115,12 @@ impl Engine {
             "events.publish" => self.publish_rpc(p),
             "events.ls" => self.events_ls(p),
             "events.show" => self.events_show(p),
-            "events.retry" => self.events_move(p, &[state::FAILED], state::PENDING),
-            "events.remove" => {
-                self.events_move(p, &[state::PENDING, state::FAILED], state::DROPPED)
-            }
+            "events.retry" => self.events_move(p, &[DeliveryState::Failed], DeliveryState::Pending),
+            "events.remove" => self.events_move(
+                p,
+                &[DeliveryState::Pending, DeliveryState::Failed],
+                DeliveryState::Dropped,
+            ),
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
     }
@@ -430,7 +430,7 @@ impl Engine {
     pub(crate) fn settle_ended(&self) {
         let settled = self.with_store(|store| {
             let mut failed = Vec::new();
-            for d in store.deliveries_in(state::CLAIMED)? {
+            for d in store.deliveries_in(DeliveryState::Claimed)? {
                 let mut ended = Vec::new();
                 for id in &d.run_ids {
                     if let Some(run) = store.get_run(*id, false).map_err(crate::api::internal)? {
@@ -446,11 +446,13 @@ impl Engine {
                     continue;
                 };
                 let to = if run.status == RunStatus::Succeeded {
-                    state::DONE
+                    DeliveryState::Done
                 } else {
-                    state::FAILED
+                    DeliveryState::Failed
                 };
-                if store.move_delivery(d.id, state::CLAIMED, to, None)? && to == state::FAILED {
+                if store.move_delivery(d.id, DeliveryState::Claimed, to, None)?
+                    && to == DeliveryState::Failed
+                {
                     let event = store.bus_event(d.event_id)?;
                     failed.push((d, event, run));
                 }
@@ -494,7 +496,7 @@ impl Engine {
                 &project.display().to_string(),
                 &a.name,
                 &pattern.to_string(),
-                state::PENDING,
+                DeliveryState::Pending,
             )
         })
         .unwrap_or_default()
@@ -591,7 +593,12 @@ impl Engine {
             .flatten()?;
         if !self
             .with_store(|store| {
-                store.move_delivery(d.id, state::PENDING, state::CLAIMED, Some(&[]))
+                store.move_delivery(
+                    d.id,
+                    DeliveryState::Pending,
+                    DeliveryState::Claimed,
+                    Some(&[]),
+                )
             })
             .unwrap_or(false)
         {
@@ -616,13 +623,14 @@ impl Engine {
         if !held {
             // No run to signal: nothing more to do with it.
             let to = if fired.outcome == outcome::NO_TARGET {
-                state::DONE
+                DeliveryState::Done
             } else {
-                state::PENDING
+                DeliveryState::Pending
             };
-            let _ =
-                self.with_store(|store| store.move_delivery(d.id, state::CLAIMED, to, Some(&[])));
-            return Some((fired, to == state::DONE));
+            let _ = self.with_store(|store| {
+                store.move_delivery(d.id, DeliveryState::Claimed, to, Some(&[]))
+            });
+            return Some((fired, to == DeliveryState::Done));
         }
         Some((fired, held))
     }

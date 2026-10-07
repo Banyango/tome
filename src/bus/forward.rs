@@ -14,7 +14,7 @@ use crate::engine::Engine;
 use crate::node::{self, Node};
 use crate::output::{CliError, CliResult, ErrorKind};
 use crate::rpc;
-use crate::store::{delivery_state as state, BusEvent, Delivery, Subscriber};
+use crate::store::{BusEvent, Delivery, DeliveryState, Subscriber};
 use crate::topic;
 use serde_json::{json, Value};
 use serde_yaml::Value as Yaml;
@@ -229,7 +229,7 @@ impl Engine {
         let moved = self.with_store(|store| {
             let event = store.bus_event(d.event_id)?;
             Ok(store
-                .move_delivery(d.id, state::PENDING, state::FAILED, None)?
+                .move_delivery(d.id, DeliveryState::Pending, DeliveryState::Failed, None)?
                 .then_some(event)
                 .flatten())
         });
@@ -267,7 +267,7 @@ impl Engine {
     /// own thread so a slow node doesn't hold up the trigger loop. Called
     /// every trigger-loop tick.
     pub(crate) fn forward_pending(self: &Arc<Self>) {
-        let pending = match self.with_store(|store| store.deliveries_in(state::PENDING)) {
+        let pending = match self.with_store(|store| store.deliveries_in(DeliveryState::Pending)) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("tome daemon: reading deliveries failed: {}", e.message);
@@ -402,7 +402,7 @@ impl Engine {
         // It came from that machine: never send it back.
         if host.is_some_and(|h| origin(&event.sender) == Some(h)) {
             self.with_store(|store| {
-                store.move_delivery(d.id, state::PENDING, state::DROPPED, None)
+                store.move_delivery(d.id, DeliveryState::Pending, DeliveryState::Dropped, None)
             })?;
             eprintln!(
                 "tome daemon: delivery {} of event {} {}: dropped: the event came from there",
@@ -432,8 +432,9 @@ impl Engine {
                 },
             }),
         )?;
-        let sent =
-            self.with_store(|store| store.move_delivery(d.id, state::PENDING, state::DONE, None))?;
+        let sent = self.with_store(|store| {
+            store.move_delivery(d.id, DeliveryState::Pending, DeliveryState::Done, None)
+        })?;
         if sent {
             eprintln!(
                 "tome daemon: delivery {} of event {} {}: sent as event {} there",
@@ -513,7 +514,7 @@ mod tests {
             workflow: workflow.into(),
             workflow_path: path.into(),
             pattern: "x".into(),
-            state: state::PENDING.into(),
+            state: DeliveryState::Pending.into(),
             run_ids: Vec::new(),
             updated_at: String::new(),
         }
