@@ -64,6 +64,27 @@ fn invalid_workflow_refused_before_run_starts() {
 }
 
 #[test]
+fn malformed_run_request_refused_before_recording() {
+    let env = Env::new();
+    env.start_daemon();
+    let path = env.project().join("build.md");
+    fs::write(&path, WF).unwrap();
+    for bad in [
+        json!({ "workflow_path": path, "params": [1] }),
+        json!({ "workflow_path": path, "params": "base=dev" }),
+        json!({ "workflow_path": path, "project_path": 5 }),
+        json!({ "workflow_path": path, "placement": { "layout": "nope" } }),
+    ] {
+        for method in ["run.create", "run.start"] {
+            let resp = env.rpc(method, bad.clone());
+            assert_eq!(resp["error"]["data"]["kind"], "invalid", "{method} {bad}");
+        }
+    }
+    let runs = env.rpc_ok("runs.list", json!({}));
+    assert_eq!(runs["runs"], json!([]));
+}
+
+#[test]
 fn state_survives_daemon_restart() {
     let env = Env::new();
     env.start_daemon();

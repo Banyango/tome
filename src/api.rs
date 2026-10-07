@@ -3,10 +3,11 @@
 
 use crate::gc;
 use crate::output::{CliError, CliResult};
+use crate::placement;
 use crate::query;
 use crate::store::{self, NewRun, Run, RunFilter, RunStatus, Store};
 use crate::workflow::{self, Invalid, Workflow};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 const METHODS: &[&str] = &[
@@ -48,72 +49,153 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> CliResult<Va
 /// Records a running run without launching anything. `run.start` is what
 /// `tome run` uses.
 fn run_create(store: &mut Store, p: &Value) -> CliResult<Value> {
-    let wf = load_workflow(p)?;
-    let (run, _) = create_run(store, p, &wf, RunStatus::Running)?;
+    let req = StartRequest::from_json(p)?;
+    let wf = req.load_workflow()?;
+    let (run, _) = create_run(store, &req, &wf, RunStatus::Running, None)?;
     Ok(json!(run))
 }
 
-/// The workflow a `run.create`/`run.start` request names: `source` if given
-/// (what the CLI read), otherwise the file at `workflow_path`. Invalid
-/// workflows are `invalid_workflow` errors (exit 2).
-pub fn load_workflow(p: &Value) -> CliResult<Workflow> {
-    let path = PathBuf::from(req_str(p, "workflow_path")?);
-    match p.get("source").and_then(Value::as_str) {
-        Some(source) => workflow::parse(&path, source),
-        None => workflow::load(&path),
-    }
-    .map_err(Invalid::into_cli_error)
+/// A decoded `run.create`/`run.start` request. Everything is checked here,
+/// before anything is recorded or launched.
+#[derive(Debug, Clone, Default)]
+pub struct StartRequest {
+    pub workflow_path: PathBuf,
+    /// The workflow file's text as the caller read it; the file at
+    /// `workflow_path` is read when it's missing.
+    pub source: Option<String>,
+    pub project_path: Option<PathBuf>,
+    /// `--param key=value` overrides.
+    pub params: Vec<(String, String)>,
+    /// `--harness`/`--model`: replace the workflow's defaults for this run.
+    pub harness: Option<String>,
+    pub model: Option<String>,
+    /// `tome run`'s placement flags.
+    pub placement: Option<placement::Settings>,
+    /// The cmux or herdr pane that ran `tome run` (`session::caller_env`).
+    pub cmux_caller: Option<Value>,
+    /// The `{{trigger.*}}` fields of the event that started the run.
+    pub trigger: Map<String, Value>,
+    /// What started the run, if a trigger did; recorded with it.
+    pub cause: Option<Value>,
+    /// The topic-trigger delivery the run holds.
+    pub delivery_id: Option<i64>,
+    /// Cancel an attached run when its caller disconnects.
+    pub cancel_on_disconnect: bool,
 }
 
-/// Resolve the request's `params` against the workflow and record the run
+impl StartRequest {
+    pub fn new(workflow_path: PathBuf) -> StartRequest {
+        StartRequest {
+            workflow_path,
+            cancel_on_disconnect: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn from_json(p: &Value) -> CliResult<StartRequest> {
+        let obj = |key: &str| -> CliResult<Option<&Map<String, Value>>> {
+            match p.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::Object(o)) => Ok(Some(o)),
+                Some(_) => Err(CliError::invalid(format!("`{key}` must be an object"))),
+            }
+        };
+        let flag = |key: &str, default: bool| -> CliResult<bool> {
+            match p.get(key) {
+                None | Some(Value::Null) => Ok(default),
+                Some(Value::Bool(b)) => Ok(*b),
+                Some(_) => Err(CliError::invalid(format!("`{key}` must be a boolean"))),
+            }
+        };
+        let args: Vec<String> = match p.get("params") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| v.as_str().map(str::to_string))
+                .collect::<Option<_>>()
+                .ok_or_else(params_error)?,
+            Some(_) => return Err(params_error()),
+        };
+        let delivery_id = match p.get("delivery_id") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_i64()
+                    .ok_or_else(|| CliError::invalid("`delivery_id` must be an integer"))?,
+            ),
+        };
+        Ok(StartRequest {
+            workflow_path: PathBuf::from(req_str(p, "workflow_path")?),
+            source: opt_string(p, "source")?,
+            project_path: opt_string(p, "project_path")?.map(PathBuf::from),
+            params: workflow::parse_param_args(&args)?,
+            harness: opt_string(p, "harness")?,
+            model: opt_string(p, "model")?,
+            placement: obj("placement")?
+                .filter(|o| !o.is_empty())
+                .map(|o| placement::Settings::from_json(&Value::Object(o.clone())))
+                .transpose()?,
+            cmux_caller: obj("cmux_caller")?.map(|o| Value::Object(o.clone())),
+            trigger: obj("trigger")?.cloned().unwrap_or_default(),
+            cause: obj("cause")?.map(|o| Value::Object(o.clone())),
+            delivery_id,
+            cancel_on_disconnect: flag("cancel_on_disconnect", true)?,
+        })
+    }
+
+    /// The workflow the request names: `source` if given (what the CLI
+    /// read), otherwise the file at `workflow_path`. Invalid workflows are
+    /// `invalid_workflow` errors (exit 2).
+    pub fn load_workflow(&self) -> CliResult<Workflow> {
+        match &self.source {
+            Some(source) => workflow::parse(&self.workflow_path, source),
+            None => workflow::load(&self.workflow_path),
+        }
+        .map_err(Invalid::into_cli_error)
+    }
+
+    /// Started by a trigger rather than by someone running `tome run`.
+    pub fn by_trigger(&self) -> bool {
+        self.cause.is_some()
+    }
+}
+
+fn params_error() -> CliError {
+    CliError::invalid("`params` must be a list of \"key=value\" strings")
+}
+
+/// Where `tome run` was run from, for placement: what was focused and which
+/// pane asked. Recorded with the run for its workers.
+#[derive(Debug, Clone)]
+pub struct Origin {
+    pub focused: Value,
+    pub caller: Value,
+}
+
+/// Resolve the request's params against the workflow and record the run
 /// with its resolved snapshot, so later edits to the file only affect new
 /// runs. Also returns the rendered body.
 pub fn create_run(
     store: &mut Store,
-    p: &Value,
+    req: &StartRequest,
     wf: &Workflow,
     status: RunStatus,
+    origin: Option<&Origin>,
 ) -> CliResult<(Run, String)> {
-    let args: Vec<String> = match p.get("params") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|v| v.as_str().unwrap_or_default().to_string())
-            .collect(),
-        Some(_) => {
-            return Err(CliError::invalid(
-                "`params` must be a list of \"key=value\" strings",
-            ))
-        }
-    };
-    let overrides = workflow::parse_param_args(&args)?;
     let params = wf
-        .resolve_params(&overrides, true)
+        .resolve_params(&req.params, true)
         .map_err(Invalid::into_cli_error)?;
-    let project = opt_str(p, "project_path").map(PathBuf::from);
-    // The `{{trigger.*}}` fields of the event that started this run, if any.
-    let no_trigger = serde_json::Map::new();
-    let trigger = p
-        .get("trigger")
-        .and_then(Value::as_object)
-        .unwrap_or(&no_trigger);
     // A run queued by a `while_running: queue` trigger has more paths merged
     // in while it waits, so its placeholders are filled in when it starts.
-    let deferred = crate::triggers::waits_for_idle(p.get("cause"));
+    let deferred = crate::triggers::waits_for_idle(req.cause.as_ref());
     // `tome run`'s placement flags, kept for the run's workers, and what
     // was focused and which cmux pane asked for it.
-    let mut placement = serde_json::Map::new();
-    if let Some(flags) = p
-        .get("placement")
-        .filter(|v| v.as_object().is_some_and(|o| !o.is_empty()))
-    {
-        placement.insert("flags".into(), flags.clone());
+    let mut placement = Map::new();
+    if let Some(flags) = req.placement.as_ref().filter(|f| !f.is_empty()) {
+        placement.insert("flags".into(), json!(flags));
     }
-    if let Some(focused) = p.get("focused").filter(|v| v.is_object()) {
-        placement.insert("focused".into(), focused.clone());
-    }
-    if let Some(caller) = p.get("caller").filter(|v| v.is_object()) {
-        placement.insert("caller".into(), caller.clone());
+    if let Some(origin) = origin {
+        placement.insert("focused".into(), origin.focused.clone());
+        placement.insert("caller".into(), origin.caller.clone());
     }
     let placement = (!placement.is_empty()).then(|| Value::Object(placement));
 
@@ -123,10 +205,10 @@ pub fn create_run(
             NewRun {
                 workflow_name: wf.name(),
                 workflow_path: Some(&wf.path),
-                project_path: project.as_deref(),
+                project_path: req.project_path.as_deref(),
                 params: &params,
                 status,
-                trigger: p.get("cause").filter(|c| c.is_object()),
+                trigger: req.cause.as_ref(),
                 placement: placement.as_ref(),
                 mode: wf.frontmatter.mode,
             },
@@ -135,8 +217,8 @@ pub fn create_run(
                     body = wf.body.clone();
                     return wf.template_snapshot();
                 }
-                body = wf.render_body(&params, &id.to_string(), trigger);
-                wf.render_snapshot(&params, &id.to_string(), trigger)
+                body = wf.render_body(&params, &id.to_string(), &req.trigger);
+                wf.render_snapshot(&params, &id.to_string(), &req.trigger)
             },
         )
         .map_err(internal)?;
@@ -310,4 +392,91 @@ pub fn req_str<'a>(p: &'a Value, key: &str) -> CliResult<&'a str> {
 
 pub fn opt_str<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
     p.get(key).and_then(Value::as_str)
+}
+
+/// An optional string field: absent and `null` are `None`, anything else
+/// that isn't a string is an error.
+fn opt_string(p: &Value, key: &str) -> CliResult<Option<String>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(CliError::invalid(format!("`{key}` must be a string"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn start_request_decodes_typed_fields() {
+        let req = StartRequest::from_json(&json!({
+            "workflow_path": "/p/build.md",
+            "project_path": "/p",
+            "params": ["base=dev", "n=1"],
+            "harness": "codex",
+            "placement": { "layout": "tab" },
+            "delivery_id": 7,
+            "cancel_on_disconnect": false,
+        }))
+        .unwrap();
+        assert_eq!(req.workflow_path, PathBuf::from("/p/build.md"));
+        assert_eq!(req.project_path.as_deref(), Some(Path::new("/p")));
+        assert_eq!(
+            req.params,
+            vec![("base".into(), "dev".into()), ("n".into(), "1".into())]
+        );
+        assert_eq!(req.harness.as_deref(), Some("codex"));
+        assert!(req.placement.as_ref().is_some_and(|p| p.layout.is_some()));
+        assert_eq!(req.delivery_id, Some(7));
+        assert!(!req.cancel_on_disconnect);
+        assert!(!req.by_trigger());
+    }
+
+    #[test]
+    fn start_request_defaults() {
+        let req =
+            StartRequest::from_json(&json!({ "workflow_path": "w.md", "params": null })).unwrap();
+        assert!(req.params.is_empty());
+        assert!(req.placement.is_none());
+        assert!(req.cancel_on_disconnect);
+        assert!(req.trigger.is_empty());
+    }
+
+    #[test]
+    fn start_request_rejects_malformed_fields() {
+        for (bad, field) in [
+            (json!({}), "workflow_path"),
+            (json!({ "workflow_path": 3 }), "workflow_path"),
+            (json!({ "workflow_path": "w", "params": "a=b" }), "params"),
+            (json!({ "workflow_path": "w", "params": [1] }), "params"),
+            (
+                json!({ "workflow_path": "w", "params": ["nokey"] }),
+                "--param",
+            ),
+            (json!({ "workflow_path": "w", "harness": 1 }), "harness"),
+            (
+                json!({ "workflow_path": "w", "placement": "tab" }),
+                "placement",
+            ),
+            (
+                json!({ "workflow_path": "w", "placement": { "layout": "nope" } }),
+                "--layout",
+            ),
+            (json!({ "workflow_path": "w", "trigger": [] }), "trigger"),
+            (json!({ "workflow_path": "w", "cause": "x" }), "cause"),
+            (
+                json!({ "workflow_path": "w", "delivery_id": "7" }),
+                "delivery_id",
+            ),
+            (
+                json!({ "workflow_path": "w", "cancel_on_disconnect": "no" }),
+                "cancel_on_disconnect",
+            ),
+        ] {
+            let err = StartRequest::from_json(&bad).unwrap_err();
+            assert_eq!(err.kind, crate::output::ErrorKind::Invalid, "{bad}");
+            assert!(err.message.contains(field), "{bad}: {}", err.message);
+        }
+    }
 }

@@ -1179,7 +1179,8 @@ fn from_caller_is_for_the_orchestrator_and_falls_back_off_cmux() {
     );
     let (_, shown) = env.json(&["runs", "show", "2"]);
     assert_eq!(
-        shown["run"]["placement"]["caller"]["unknown"], "`tome run` wasn't run from a cmux or herdr pane",
+        shown["run"]["placement"]["caller"]["unknown"],
+        "`tome run` wasn't run from a cmux or herdr pane",
         "{shown}"
     );
 }

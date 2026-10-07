@@ -214,7 +214,14 @@ fn agent_workers_default_to_the_orchestrators_harness() {
     let w = ok(
         &env,
         &run,
-        &["worker", "spawn", "--name", "p", "--prompt", "Paint the fence."],
+        &[
+            "worker",
+            "spawn",
+            "--name",
+            "p",
+            "--prompt",
+            "Paint the fence.",
+        ],
     );
     assert_eq!(w["harness"], "painter", "{w}");
 }

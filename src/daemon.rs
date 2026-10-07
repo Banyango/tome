@@ -240,7 +240,10 @@ fn stream_run(daemon: &Daemon, req: &Request, writer: &mut UnixStream) -> Option
             Err(e) => Some(Err(e)),
         }
     } else {
-        daemon.engine.start_attached(&req.params, &mut sink)
+        match api::StartRequest::from_json(&req.params) {
+            Ok(start) => daemon.engine.start_attached(&start, &mut sink),
+            Err(e) => Some(Err(e)),
+        }
     };
     result.map(|r| r.map(|run| json!(run)))
 }

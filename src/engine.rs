@@ -8,7 +8,7 @@
 //! (a report, a cancel failing its running step, ...) is streamed the same
 //! way.
 
-use crate::api::{self, internal, opt_str, req_id, req_id_at, req_str};
+use crate::api::{self, internal, opt_str, req_id, req_id_at, req_str, StartRequest};
 use crate::handshake::{self, Agent, Pending};
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
@@ -142,7 +142,9 @@ impl Engine {
 
     pub fn dispatch(&self, method: &str, p: &Value) -> CliResult<Value> {
         match method {
-            "run.start" => self.start(p).map(|run| json!(run)),
+            "run.start" => self
+                .start(&StartRequest::from_json(p)?)
+                .map(|run| json!(run)),
             "run.finish" => self.finish(p).map(|run| json!(run)),
             "run.cancel" => self
                 .cancel(
@@ -167,59 +169,15 @@ impl Engine {
     /// the run is queued instead, or refused (`on_conflict: reject`). A run
     /// for a `while_running: queue` trigger is always queued; it waits for
     /// the workflow to be idle.
-    pub(crate) fn start(&self, p: &Value) -> CliResult<Run> {
-        let mut wf = api::load_workflow(p)?;
-        if p.get("harness").and_then(Value::as_str).is_some()
-            || p.get("model").and_then(Value::as_str).is_some()
-        {
-            let mut fm: serde_yaml::Value = serde_yaml::from_str(&wf.frontmatter_text)
-                .map_err(|e| CliError::invalid(format!("invalid workflow frontmatter: {e}")))?;
-            let root = fm
-                .as_mapping_mut()
-                .ok_or_else(|| CliError::invalid("workflow frontmatter must be a mapping"))?;
-            let defaults_key = serde_yaml::Value::String("defaults".into());
-            if !root.contains_key(&defaults_key) {
-                root.insert(
-                    defaults_key.clone(),
-                    serde_yaml::Value::Mapping(Default::default()),
-                );
-            }
-            let defaults = root
-                .get_mut(&defaults_key)
-                .and_then(serde_yaml::Value::as_mapping_mut)
-                .ok_or_else(|| CliError::invalid("workflow defaults must be a mapping"))?;
-            for (arg, worker_key, orch_key) in [
-                ("harness", "harness", "orchestrator_harness"),
-                ("model", "model", "orchestrator_model"),
-            ] {
-                if let Some(value) = p.get(arg).and_then(Value::as_str) {
-                    defaults.insert(
-                        serde_yaml::Value::String(worker_key.into()),
-                        serde_yaml::Value::String(value.into()),
-                    );
-                    defaults.insert(
-                        serde_yaml::Value::String(orch_key.into()),
-                        serde_yaml::Value::String(value.into()),
-                    );
-                }
-            }
-            let body = wf
-                .source
-                .split_once("---")
-                .and_then(|(_, s)| s.split_once("---").map(|(_, b)| b))
-                .unwrap_or("");
-            let source = format!(
-                "---\n{}\n---{}",
-                serde_yaml::to_string(&fm).map_err(|e| CliError::internal(e.to_string()))?,
-                body
-            );
-            wf = crate::workflow::parse(&wf.path, &source)
-                .map_err(crate::workflow::Invalid::into_cli_error)?;
+    pub(crate) fn start(&self, req: &StartRequest) -> CliResult<Run> {
+        let mut wf = req.load_workflow()?;
+        if req.harness.is_some() || req.model.is_some() {
+            wf = with_agent_defaults(&wf, req.harness.as_deref(), req.model.as_deref())?;
         }
         let fm = &wf.frontmatter;
         // An unknown harness, backend, placement value or preset is a bad
         // request: refuse before recording a run.
-        let project = opt_str(p, "project_path").map(std::path::Path::new);
+        let project = req.project_path.as_deref();
         orchestrator::harness_for(fm, fm.mode, project)?
             .check_model(orchestrator::model_for(fm, fm.mode))?;
         // Workers use `defaults.harness`; `--harness` at spawn time is
@@ -232,24 +190,20 @@ impl Engine {
                 .unwrap_or(crate::harness::DEFAULT);
             crate::harness::resolve(name, project)?.check_model(Some(model))?;
         }
-        let caller_value = p.get("cmux_caller");
         let kind = session::Kind::choose_with_caller(
             fm.defaults.backend.as_deref(),
             project,
-            caller_value.is_some_and(|c| c["herdr_pane"].is_string()),
+            req.cmux_caller
+                .as_ref()
+                .is_some_and(|c| c["herdr_pane"].is_string()),
         )?;
-        let flags = p
-            .get("placement")
-            .filter(|v| !v.is_null())
-            .map(placement::Settings::from_json)
-            .transpose()?;
-        if let Some(flags) = &flags {
+        if let Some(flags) = &req.placement {
             placement::check_flag_preset(flags, "`tome run` flags", project)?;
         }
-        orchestrator::placement(fm, fm.mode, flags.as_ref(), project)?;
+        orchestrator::placement(fm, fm.mode, req.placement.as_ref(), project)?;
         placement::check_presets(fm.defaults.layout.as_ref(), project)?;
         // What's focused now, for `workspace: focused`.
-        let by_trigger = p.get("cause").is_some_and(Value::is_object);
+        let by_trigger = req.by_trigger();
         let focused = match by_trigger {
             true => Err("the run was started by a trigger".to_string()),
             false => session::focused(kind),
@@ -257,7 +211,8 @@ impl Engine {
         // The cmux pane that ran `tome run`, for `from: caller`.
         let caller = match (
             by_trigger,
-            p.get("cmux_caller")
+            req.cmux_caller
+                .as_ref()
                 .filter(|c| c["surface"].is_string() || c["herdr_pane"].is_string()),
         ) {
             (true, _) => json!({ "unknown": "the run was started by a trigger" }),
@@ -280,16 +235,16 @@ impl Engine {
                 c
             }
         };
-        let mut p = p.clone();
-        p["focused"] = match focused {
-            Ok(id) => json!({ "id": id }),
-            Err(why) => json!({ "unknown": why }),
+        let origin = api::Origin {
+            focused: match focused {
+                Ok(id) => json!({ "id": id }),
+                Err(why) => json!({ "unknown": why }),
+            },
+            caller,
         };
-        p["caller"] = caller;
-        let p = &p;
         let run = self.with_store(|store| {
             let status = match fm.concurrency {
-                _ if triggers::waits_for_idle(p.get("cause")) => RunStatus::Queued,
+                _ if triggers::waits_for_idle(req.cause.as_ref()) => RunStatus::Queued,
                 None => RunStatus::Running,
                 Some(limit) => {
                     let running = store.count_runs(&wf.name(), RunStatus::Running).map_err(internal)?;
@@ -308,9 +263,9 @@ impl Engine {
                     }
                 }
             };
-            let (run, _body) = api::create_run(store, p, &wf, status)?;
+            let (run, _body) = api::create_run(store, req, &wf, status, Some(&origin))?;
             // A topic trigger's run holds its delivery from the start.
-            if let Some(delivery) = p["delivery_id"].as_i64() {
+            if let Some(delivery) = req.delivery_id {
                 store.set_delivery_runs(delivery, &[run.id])?;
             }
             Ok(run)
@@ -457,13 +412,17 @@ impl Engine {
     /// `run.start {..., attach: true}`: start the run and stream it on this
     /// connection until it finishes (see [`watch`](Self::watch)). If the
     /// caller goes away the run is cancelled.
-    pub fn start_attached(&self, p: &Value, sink: &mut dyn Sink) -> Option<CliResult<Run>> {
-        let run = match self.start(p) {
+    pub fn start_attached(
+        &self,
+        req: &StartRequest,
+        sink: &mut dyn Sink,
+    ) -> Option<CliResult<Run>> {
+        let run = match self.start(req) {
             Ok(run) => run,
             Err(e) => return Some(Err(e)),
         };
         // A run started from another machine outlives its connection.
-        self.watch(run.id, p["cancel_on_disconnect"] != false, sink)
+        self.watch(run.id, req.cancel_on_disconnect, sink)
     }
 
     /// `run.finish {id, status, reason?, summary?}`
@@ -1061,6 +1020,57 @@ impl Engine {
             watchers.remove(&run_id);
         }
     }
+}
+
+/// `wf` with `--harness`/`--model` replacing its defaults for both the
+/// orchestrator and the workers.
+fn with_agent_defaults(
+    wf: &crate::workflow::Workflow,
+    harness: Option<&str>,
+    model: Option<&str>,
+) -> CliResult<crate::workflow::Workflow> {
+    let mut fm: serde_yaml::Value = serde_yaml::from_str(&wf.frontmatter_text)
+        .map_err(|e| CliError::invalid(format!("invalid workflow frontmatter: {e}")))?;
+    let root = fm
+        .as_mapping_mut()
+        .ok_or_else(|| CliError::invalid("workflow frontmatter must be a mapping"))?;
+    let defaults_key = serde_yaml::Value::String("defaults".into());
+    if !root.contains_key(&defaults_key) {
+        root.insert(
+            defaults_key.clone(),
+            serde_yaml::Value::Mapping(Default::default()),
+        );
+    }
+    let defaults = root
+        .get_mut(&defaults_key)
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .ok_or_else(|| CliError::invalid("workflow defaults must be a mapping"))?;
+    for (value, worker_key, orch_key) in [
+        (harness, "harness", "orchestrator_harness"),
+        (model, "model", "orchestrator_model"),
+    ] {
+        if let Some(value) = value {
+            defaults.insert(
+                serde_yaml::Value::String(worker_key.into()),
+                serde_yaml::Value::String(value.into()),
+            );
+            defaults.insert(
+                serde_yaml::Value::String(orch_key.into()),
+                serde_yaml::Value::String(value.into()),
+            );
+        }
+    }
+    let body = wf
+        .source
+        .split_once("---")
+        .and_then(|(_, s)| s.split_once("---").map(|(_, b)| b))
+        .unwrap_or("");
+    let source = format!(
+        "---\n{}\n---{}",
+        serde_yaml::to_string(&fm).map_err(|e| CliError::internal(e.to_string()))?,
+        body
+    );
+    crate::workflow::parse(&wf.path, &source).map_err(crate::workflow::Invalid::into_cli_error)
 }
 
 /// A run's step and worker events after `after`, in order, with their ids.

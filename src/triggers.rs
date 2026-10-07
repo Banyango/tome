@@ -7,7 +7,7 @@
 //! normal concurrency rules, queues one, or merges into the one it queued
 //! before. Every fire's outcome is recorded.
 
-use crate::api::{opt_str, req_str};
+use crate::api::{opt_str, req_str, StartRequest};
 use crate::arming;
 use crate::engine::Engine;
 use crate::output::{CliError, CliResult, ErrorKind};
@@ -730,16 +730,16 @@ impl Engine {
                 },
             };
         }
-        let p = json!({
-            "workflow_path": wf.path,
-            "source": wf.source,
-            "project_path": req.project,
-            "params": params,
-            "trigger": fields,
-            "cause": cause,
-            "delivery_id": req.event.bus.as_ref().map(|(_, d)| d),
+        let start = workflow::parse_param_args(&params).map(|overrides| StartRequest {
+            source: Some(wf.source.clone()),
+            project_path: req.project.clone(),
+            params: overrides,
+            trigger: fields.clone(),
+            cause: Some(cause),
+            delivery_id: req.event.bus.as_ref().map(|(_, d)| *d),
+            ..StartRequest::new(wf.path.clone())
         });
-        match self.start(&p) {
+        match start.and_then(|start| self.start(&start)) {
             Ok(run) => Fired {
                 outcome: started,
                 message: Some(format!("run {} {}", run.id, run.status.as_str())),
