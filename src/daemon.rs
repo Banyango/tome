@@ -300,9 +300,12 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
 }
 
 /// Requests answered with a stream of `run.event` notifications before
-/// their response: `run.start {attach: true}` and `run.watch`.
+/// their response: `run.start {attach: true}`, `run.resume {attach: true}`
+/// and `run.watch`.
 fn streams(req: &Request) -> bool {
-    req.method == "run.watch" || (req.method == "run.start" && req.params["attach"] == true)
+    req.method == "run.watch"
+        || (matches!(req.method.as_str(), "run.start" | "run.resume")
+            && req.params["attach"] == true)
 }
 
 /// Serve a streaming request. `None` if the caller disconnected first.
@@ -318,6 +321,11 @@ fn stream_run(daemon: &Daemon, req: &Request, writer: &mut UnixStream) -> Option
                     .engine
                     .watch(id, req.params["cancel_on_disconnect"] == true, &mut sink)
             }
+            Err(e) => Some(Err(e)),
+        }
+    } else if req.method == "run.resume" {
+        match crate::resume::ResumeRequest::from_json(&req.params) {
+            Ok(resume) => daemon.engine.resume_attached(&resume, &mut sink),
             Err(e) => Some(Err(e)),
         }
     } else {

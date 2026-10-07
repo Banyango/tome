@@ -1,5 +1,5 @@
-//! `tome run`, `tome run finish|cancel`, `tome step start|done|fail` and
-//! `tome ready`.
+//! `tome run`, `tome run finish|cancel|resume`, `tome step start|done|fail`
+//! and `tome ready`.
 //!
 //! The run-side commands are what an orchestrator calls. They find their run
 //! through `--run <id>` or `TOME_RUN_ID`.
@@ -166,7 +166,19 @@ pub fn start_detached(
     model: Option<&str>,
 ) -> CliResult<Report> {
     let (mut client, p) = prepare(cwd, target, params, placement, harness, model)?;
-    let run = client.call("run.start", p)?;
+    detached(&mut client, "run.start", p)
+}
+
+/// `tome run resume <id> --detach`: resume the run and return the new run's
+/// id right away.
+pub fn resume_detached(id: &str, placement: &Settings) -> CliResult<Report> {
+    let (mut client, p) = prepare_resume(id, placement)?;
+    detached(&mut client, "run.resume", p)
+}
+
+/// Ask for a run (`run.start` or `run.resume`) and report it as started.
+fn detached(client: &mut rpc::Client, method: &str, p: Value) -> CliResult<Report> {
+    let run = client.call(method, p)?;
     let human = format!(
         "run {}{} {} ({})",
         run["id"],
@@ -195,7 +207,52 @@ pub fn start_attached(
     harness: Option<&str>,
     model: Option<&str>,
 ) -> CliResult<Report> {
-    let (mut client, mut start) = prepare(cwd, target, params, placement, harness, model)?;
+    let (client, start) = prepare(cwd, target, params, placement, harness, model)?;
+    attached(client, "run.start", start, mode)
+}
+
+/// `tome run resume <id>`: resume the run and stream the new one until it
+/// finishes, as `tome run` does.
+pub fn resume_attached(id: &str, placement: &Settings, mode: Mode) -> CliResult<Report> {
+    let (client, p) = prepare_resume(id, placement)?;
+    attached(client, "run.resume", p, mode)
+}
+
+/// The connection and `run.resume` params for resuming run `id`: here, or
+/// on the node this command goes to.
+fn prepare_resume(id: &str, placement: &Settings) -> CliResult<(rpc::Client, Value)> {
+    let mut p = json!({ "id": id });
+    if !placement.is_empty() {
+        p["placement"] = json!(placement);
+    }
+    match node::target() {
+        Some(node) => {
+            if matches!(placement.from, Some(placement::From::Caller)) {
+                return Err(CliError::invalid(format!(
+                    "--from caller is the pane running this command, which isn't on {}",
+                    node.name
+                ))
+                .with_hint("use --from orchestrator, last or first"));
+            }
+            Ok((rpc::Client::to_node(node)?, p))
+        }
+        None => {
+            if let Some(caller) = crate::session::caller_env() {
+                p["cmux_caller"] = caller;
+            }
+            Ok((rpc::Client::connect(&paths::socket_path())?, p))
+        }
+    }
+}
+
+/// Ask for a run (`run.start` or `run.resume`) and stream it until it
+/// finishes. See [`start_attached`].
+fn attached(
+    mut client: rpc::Client,
+    method: &str,
+    mut start: Value,
+    mode: Mode,
+) -> CliResult<Report> {
     start["attach"] = json!(true);
     if node::target().is_some() {
         start["cancel_on_disconnect"] = json!(false);
@@ -205,7 +262,7 @@ pub fn start_attached(
     let run_id: Cell<Option<i64>> = Cell::new(None);
     let mut cancel_sent = false;
     let run = client.stream(
-        "run.start",
+        method,
         start,
         |event| {
             run_id.set(run_id.get().or(event["run_id"].as_i64()));

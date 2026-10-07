@@ -142,6 +142,7 @@ mod tests {
             workflow_snapshot: None,
             placement: None,
             mode: crate::workflow::Mode::Orchestrated,
+            resumed_from: None,
         }
     }
 

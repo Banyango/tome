@@ -254,6 +254,8 @@ const MIGRATIONS: &[&str] = &[
     ",
     // 13: Herdr's informational agent status for each session
     "ALTER TABLE sessions ADD COLUMN agent_status VARCHAR; ALTER TABLE sessions ADD COLUMN blocked_at VARCHAR;",
+    // 14: the run a run resumes (`tome run resume`)
+    "ALTER TABLE runs ADD COLUMN resumed_from BIGINT;",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -386,6 +388,9 @@ pub struct Run {
     pub placement: Option<Value>,
     /// How it's run, resolved when it was created.
     pub mode: Mode,
+    /// The run this one resumes (`tome run resume`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumed_from: Option<RunId>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -480,6 +485,8 @@ pub struct NewRun<'a> {
     /// Its placement state (see [`Run::placement`]).
     pub placement: Option<&'a Value>,
     pub mode: Mode,
+    /// The run it resumes.
+    pub resumed_from: Option<RunId>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -616,8 +623,8 @@ impl Store {
         let id: RunId = tx.query_row("SELECT nextval('run_id_seq')", [], |r| r.get(0))?;
         let snapshot = render(id);
         tx.execute(
-            "INSERT INTO runs (id, workflow_name, workflow_path, project_path, params, workflow_snapshot, status, created_at, trigger_cause, placement, mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO runs (id, workflow_name, workflow_path, project_path, params, workflow_snapshot, status, created_at, trigger_cause, placement, mode, resumed_from)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
                 new.workflow_name,
@@ -630,6 +637,7 @@ impl Store {
                 new.trigger.map(Value::to_string),
                 new.placement.map(Value::to_string),
                 new.mode.as_str(),
+                new.resumed_from,
             ],
         )?;
         tx.commit()?;
@@ -642,6 +650,18 @@ impl Store {
         Ok(self
             .conn
             .query_row(&sql, params![id], |r| run_from_row(r, with_snapshot))
+            .optional()?)
+    }
+
+    /// The run that resumes `id`, if one does. A run is resumed at most once.
+    pub fn resumed_as(&self, id: RunId) -> anyhow::Result<Option<RunId>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM runs WHERE resumed_from = ? ORDER BY id LIMIT 1",
+                params![id],
+                |r| r.get(0),
+            )
             .optional()?)
     }
 
@@ -1195,7 +1215,7 @@ pub(crate) fn stored_enum<T>(
 
 fn run_select(with_snapshot: bool) -> String {
     format!(
-        "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at, trigger_cause, placement, mode{} FROM runs",
+        "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at, trigger_cause, placement, mode, resumed_from{} FROM runs",
         if with_snapshot { ", workflow_snapshot" } else { "" }
     )
 }
@@ -1224,7 +1244,8 @@ fn run_from_row(r: &Row<'_>, with_snapshot: bool) -> duckdb::Result<Run> {
             .get::<_, Option<String>>(12)?
             .and_then(|m| Mode::parse(&m))
             .unwrap_or(Mode::Orchestrated),
-        workflow_snapshot: if with_snapshot { r.get(13)? } else { None },
+        resumed_from: r.get(13)?,
+        workflow_snapshot: if with_snapshot { r.get(14)? } else { None },
     })
 }
 
@@ -1279,6 +1300,7 @@ pub(crate) mod tests {
                     trigger: None,
                     placement: None,
                     mode: Mode::Orchestrated,
+                    resumed_from: None,
                 },
                 |id| format!("snapshot for run {id}"),
             )

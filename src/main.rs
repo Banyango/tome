@@ -24,6 +24,7 @@ mod placement;
 mod primitives;
 mod query;
 mod recovery;
+mod resume;
 mod rpc;
 mod runcmd;
 mod scaffold;
@@ -245,6 +246,22 @@ enum RunCommand {
         /// Run id (defaults to TOME_RUN_ID).
         #[arg(env = "TOME_RUN_ID")]
         id: Option<String>,
+    },
+    /// Pick up a failed or cancelled run in a new run, from its workflow
+    /// snapshot.
+    Resume {
+        /// Run id (`<node>:<id>` for a node's run).
+        id: String,
+        /// Return the new run's id right away instead of streaming it.
+        #[arg(long)]
+        detach: bool,
+        /// Start detached, wait for the run's agent to start, then view its
+        /// session (`tome session view`).
+        #[arg(long, conflicts_with = "detach")]
+        view: bool,
+        /// Placement flags; without any, the old run's are used.
+        #[command(flatten)]
+        placement: PlacementArgs,
     },
 }
 
@@ -824,6 +841,10 @@ fn take_ref(command: &mut Command) -> Option<String> {
         Command::Run {
             command: Some(RunCommand::Cancel { id: Some(id) }),
             ..
+        }
+        | Command::Run {
+            command: Some(RunCommand::Resume { id, .. }),
+            ..
         } => id,
         Command::Session {
             command: SessionCommand::View { session, .. },
@@ -935,6 +956,21 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
                 run,
             } => runcmd::finish(run, &status, summary),
             RunCommand::Cancel { id } => runcmd::cancel(id),
+            RunCommand::Resume {
+                id,
+                detach,
+                view,
+                placement,
+            } => {
+                let placement = placement.settings()?;
+                if view {
+                    nodecmd::resume_and_view(&id, &placement)
+                } else if detach {
+                    runcmd::resume_detached(&id, &placement)
+                } else {
+                    runcmd::resume_attached(&id, &placement, mode)
+                }
+            }
         },
         Command::Run {
             command: None,

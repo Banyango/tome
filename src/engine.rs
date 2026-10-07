@@ -14,6 +14,7 @@ use crate::ids::RunId;
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::placement;
+use crate::resume::{self, ResumeRequest};
 use crate::session;
 use crate::stop::Stop;
 use crate::store::{
@@ -80,6 +81,7 @@ struct Watchers {
 
 const METHODS: &[&str] = &[
     "run.start",
+    "run.resume",
     "run.finish",
     "run.cancel",
     "step.report",
@@ -166,6 +168,9 @@ impl Engine {
             "run.start" => self
                 .start(&StartRequest::from_json(p)?)
                 .map(|run| json!(run)),
+            "run.resume" => self
+                .resume(&ResumeRequest::from_json(p)?)
+                .map(|run| json!(run)),
             "run.finish" => self.finish(p).map(|run| json!(run)),
             "run.cancel" => self
                 .cancel(
@@ -197,77 +202,80 @@ impl Engine {
                 .with_agent_defaults(req.harness.as_deref(), req.model.as_deref())
                 .map_err(Invalid::into_cli_error)?;
         }
-        let fm = &wf.frontmatter();
-        // An unknown harness, backend, placement value or preset is a bad
-        // request: refuse before recording a run.
+        let mode = wf.frontmatter().mode;
         let project = req.project_path.as_deref();
-        orchestrator::harness_for(fm, fm.mode, project)?
-            .check_model(orchestrator::model_for(fm, fm.mode))?;
-        // Workers use `defaults.harness`; `--harness` at spawn time is
-        // checked when it happens.
-        if let Some(model) = fm.defaults.model.as_deref() {
-            let name = fm
-                .defaults
-                .harness
-                .as_deref()
-                .unwrap_or(crate::harness::DEFAULT);
-            crate::harness::resolve(name, project)?.check_model(Some(model))?;
-        }
-        let kind = session::Kind::choose_with_caller(
-            fm.defaults.backend.as_deref(),
+        let kind = launch_check(
+            &wf,
+            mode,
             project,
-            req.cmux_caller
-                .as_ref()
-                .is_some_and(|c| c["herdr_pane"].is_string()),
+            req.placement.as_ref(),
+            req.cmux_caller.as_ref(),
         )?;
-        if let Some(flags) = &req.placement {
-            placement::check_flag_preset(flags, "`tome run` flags", project)?;
-        }
-        orchestrator::placement(fm, fm.mode, req.placement.as_ref(), project)?;
-        placement::check_presets(fm.defaults.layout.as_ref(), project)?;
-        // What's focused now, for `workspace: focused`.
-        let by_trigger = req.by_trigger();
-        let focused = match by_trigger {
-            true => Err("the run was started by a trigger".to_string()),
-            false => session::focused(kind),
-        };
-        // The cmux pane that ran `tome run`, for `from: caller`.
-        let caller = match (
-            by_trigger,
-            req.cmux_caller
-                .as_ref()
-                .filter(|c| c["surface"].is_string() || c["herdr_pane"].is_string()),
-        ) {
-            (true, _) => json!({ "unknown": "the run was started by a trigger" }),
-            (false, None) => {
-                json!({ "unknown": "`tome run` wasn't run from a cmux or herdr pane" })
-            }
-            (false, Some(c)) => {
-                let mut c = c.clone();
-                let found = c["surface"]
-                    .as_str()
-                    .map(session::caller_anchor)
-                    .or_else(|| c["herdr_pane"].as_str().map(session::herdr_caller_anchor));
-                if let Some(Ok((anchor, pane))) = found {
-                    c["workspace"] = json!(anchor.handle);
-                    c["pane"] = json!(pane);
-                    if c["herdr_pane"].is_string() {
-                        c["herdr_workspace"] = json!(anchor.handle);
-                    }
+        let origin = origin(kind, req.by_trigger(), req.cmux_caller.as_ref());
+        self.admit(
+            &wf,
+            triggers::waits_for_idle(req.cause.as_ref()),
+            |store, status| {
+                let (run, _body) = api::create_run(store, req, &wf, status, Some(&origin))?;
+                // A topic trigger's run holds its delivery from the start.
+                if let Some(delivery) = req.delivery_id {
+                    store.set_delivery_runs(delivery, &[run.id])?;
                 }
-                c
-            }
-        };
-        let origin = api::Origin {
-            focused: match focused {
-                Ok(id) => json!({ "id": id }),
-                Err(why) => json!({ "unknown": why }),
+                Ok(run)
             },
-            caller,
+        )
+    }
+
+    /// `run.resume {id, placement?}`: start a new run that picks up a failed
+    /// or cancelled one (see [`resume`](crate::resume)). It's checked,
+    /// admitted and launched like a new run of the old run's snapshot.
+    pub(crate) fn resume(&self, req: &ResumeRequest) -> CliResult<Run> {
+        let (old, snapshot) = self.with_store(|store| {
+            let old = store
+                .get_run(req.id, true)
+                .map_err(internal)?
+                .ok_or_else(|| CliError::not_found(format!("no run with id {}", req.id)))?;
+            resume::check(store, &old)?;
+            let snapshot = resume::snapshot(&old, &store.sessions(old.id).map_err(internal)?)?;
+            Ok((old, snapshot))
+        })?;
+        let path = PathBuf::from(old.workflow_path.clone().unwrap_or_default());
+        let wf = workflow::parse_snapshot(&path, &snapshot).map_err(Invalid::into_cli_error)?;
+        // Without placement flags, the ones the old run was given.
+        let flags = match &req.placement {
+            Some(flags) => Some(flags.clone()),
+            None => orchestrator::run_flags(&old)?,
         };
+        let project = orchestrator::run_project(&old);
+        let kind = launch_check(
+            &wf,
+            old.mode,
+            project.as_deref(),
+            flags.as_ref(),
+            req.cmux_caller.as_ref(),
+        )?;
+        let origin = origin(kind, false, req.cmux_caller.as_ref());
+        self.admit(&wf, false, |store, status| {
+            // Checked again with the store held: another resume may have won.
+            resume::check(store, &old)?;
+            resume::create(store, &old, &snapshot, flags.as_ref(), &origin, status)
+        })
+    }
+
+    /// Record a run of `wf` with `create`, as running if the workflow's
+    /// concurrency limit leaves room, else queued, or refused (`on_conflict:
+    /// reject`); then launch it if it's running. `waits` queues it to wait
+    /// for the workflow to be idle (a `while_running: queue` trigger's run).
+    fn admit(
+        &self,
+        wf: &workflow::Workflow,
+        waits: bool,
+        create: impl FnOnce(&mut Store, RunStatus) -> CliResult<Run>,
+    ) -> CliResult<Run> {
+        let fm = wf.frontmatter();
         let run = self.with_store(|store| {
             let status = match fm.concurrency {
-                _ if triggers::waits_for_idle(req.cause.as_ref()) => RunStatus::Queued,
+                _ if waits => RunStatus::Queued,
                 None => RunStatus::Running,
                 Some(limit) => {
                     let running = store.count_runs(&wf.name(), RunStatus::Running).map_err(internal)?;
@@ -286,12 +294,7 @@ impl Engine {
                     }
                 }
             };
-            let (run, _body) = api::create_run(store, req, &wf, status, Some(&origin))?;
-            // A topic trigger's run holds its delivery from the start.
-            if let Some(delivery) = req.delivery_id {
-                store.set_delivery_runs(delivery, &[run.id])?;
-            }
-            Ok(run)
+            create(store, status)
         })?;
         if run.status == RunStatus::Queued {
             eprintln!("tome daemon: run {} ({}) queued", run.id, run.workflow_name);
@@ -445,6 +448,20 @@ impl Engine {
             Err(e) => return Some(Err(e)),
         };
         // A run started from another machine outlives its connection.
+        self.watch(run.id, req.cancel_on_disconnect, sink)
+    }
+
+    /// `run.resume {..., attach: true}`: resume the run and stream the new
+    /// one, as [`start_attached`](Self::start_attached) does.
+    pub fn resume_attached(
+        &self,
+        req: &ResumeRequest,
+        sink: &mut dyn Sink,
+    ) -> Option<CliResult<Run>> {
+        let run = match self.resume(req) {
+            Ok(run) => run,
+            Err(e) => return Some(Err(e)),
+        };
         self.watch(run.id, req.cancel_on_disconnect, sink)
     }
 
@@ -1078,6 +1095,83 @@ impl Engine {
     }
 }
 
+/// Refuse a run of `wf` in `mode` that couldn't be launched: an unknown
+/// harness, model, backend, placement value or preset is a bad request,
+/// refused before a run is recorded. Returns the backend its main session
+/// would use.
+fn launch_check(
+    wf: &workflow::Workflow,
+    mode: workflow::Mode,
+    project: Option<&std::path::Path>,
+    flags: Option<&placement::Settings>,
+    cmux_caller: Option<&Value>,
+) -> CliResult<session::Kind> {
+    let fm = &wf.frontmatter();
+    orchestrator::harness_for(fm, mode, project)?.check_model(orchestrator::model_for(fm, mode))?;
+    // Workers use `defaults.harness`; `--harness` at spawn time is
+    // checked when it happens.
+    if let Some(model) = fm.defaults.model.as_deref() {
+        let name = fm
+            .defaults
+            .harness
+            .as_deref()
+            .unwrap_or(crate::harness::DEFAULT);
+        crate::harness::resolve(name, project)?.check_model(Some(model))?;
+    }
+    let kind = session::Kind::choose_with_caller(
+        fm.defaults.backend.as_deref(),
+        project,
+        cmux_caller.is_some_and(|c| c["herdr_pane"].is_string()),
+    )?;
+    if let Some(flags) = flags {
+        placement::check_flag_preset(flags, "`tome run` flags", project)?;
+    }
+    orchestrator::placement(fm, mode, flags, project)?;
+    placement::check_presets(fm.defaults.layout.as_ref(), project)?;
+    Ok(kind)
+}
+
+/// Where a run was asked for, for placement: what's focused now (for
+/// `workspace: focused`) and the cmux or herdr pane that asked (for `from:
+/// caller`). Neither is known for a run a trigger started.
+fn origin(kind: session::Kind, by_trigger: bool, cmux_caller: Option<&Value>) -> api::Origin {
+    let focused = match by_trigger {
+        true => Err("the run was started by a trigger".to_string()),
+        false => session::focused(kind),
+    };
+    let caller = match (
+        by_trigger,
+        cmux_caller.filter(|c| c["surface"].is_string() || c["herdr_pane"].is_string()),
+    ) {
+        (true, _) => json!({ "unknown": "the run was started by a trigger" }),
+        (false, None) => {
+            json!({ "unknown": "`tome run` wasn't run from a cmux or herdr pane" })
+        }
+        (false, Some(c)) => {
+            let mut c = c.clone();
+            let found = c["surface"]
+                .as_str()
+                .map(session::caller_anchor)
+                .or_else(|| c["herdr_pane"].as_str().map(session::herdr_caller_anchor));
+            if let Some(Ok((anchor, pane))) = found {
+                c["workspace"] = json!(anchor.handle);
+                c["pane"] = json!(pane);
+                if c["herdr_pane"].is_string() {
+                    c["herdr_workspace"] = json!(anchor.handle);
+                }
+            }
+            c
+        }
+    };
+    api::Origin {
+        focused: match focused {
+            Ok(id) => json!({ "id": id }),
+            Err(why) => json!({ "unknown": why }),
+        },
+        caller,
+    }
+}
+
 fn shutting_down() -> CliError {
     CliError::internal("the daemon is shutting down")
 }
@@ -1139,9 +1233,8 @@ fn render_deferred(store: &mut Store, run: &mut Run) {
     let Some(template) = &run.workflow_snapshot else {
         return;
     };
-    let path = PathBuf::from(run.workflow_path.as_deref().unwrap_or_default());
-    let wf = match workflow::parse(&path, template) {
-        Ok(wf) => wf,
+    let snapshot = match resume::render_template(run, template) {
+        Ok(snapshot) => snapshot,
         Err(inv) => {
             eprintln!(
                 "tome daemon: run {}: can't fill in its placeholders: {}",
@@ -1151,14 +1244,6 @@ fn render_deferred(store: &mut Store, run: &mut Run) {
             return;
         }
     };
-    let params = run.params.as_object().cloned().unwrap_or_default();
-    let event = run
-        .trigger
-        .as_ref()
-        .and_then(|c| c["event"].as_object())
-        .cloned()
-        .unwrap_or_default();
-    let snapshot = wf.render_snapshot(&params, &run.id.to_string(), &event);
     match store.set_snapshot(run.id, &snapshot) {
         Ok(()) => run.workflow_snapshot = Some(snapshot),
         Err(e) => eprintln!(
@@ -1168,6 +1253,7 @@ fn render_deferred(store: &mut Store, run: &mut Run) {
     }
 }
 
+/// The concurrency limit in a run's workflow snapshot.
 fn snapshot_limit(run: &Run) -> Option<usize> {
     let snapshot = run.workflow_snapshot.as_deref()?;
     let path = PathBuf::from(run.workflow_path.clone().unwrap_or_default());

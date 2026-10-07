@@ -583,6 +583,18 @@ pub fn run_and_view(
     model: Option<&str>,
 ) -> CliResult<Report> {
     let started = crate::runcmd::start_detached(cwd, workflow, params, placement, harness, model)?;
+    view_started(started)
+}
+
+/// `tome run resume <id> --view`: resume detached, wait for the new run's
+/// agent to start, then view its session.
+pub fn resume_and_view(id: &str, placement: &Settings) -> CliResult<Report> {
+    view_started(crate::runcmd::resume_detached(id, placement)?)
+}
+
+/// Wait for the agent of the run just started (`started`) to start, then
+/// view its session.
+fn view_started(started: Report) -> CliResult<Report> {
     let id = started.data["id"]
         .as_i64()
         .ok_or_else(|| CliError::internal("the daemon didn't say which run it started"))?;

@@ -94,20 +94,6 @@ impl StartRequest {
     }
 
     pub fn from_json(p: &Value) -> CliResult<StartRequest> {
-        let obj = |key: &str| -> CliResult<Option<&Map<String, Value>>> {
-            match p.get(key) {
-                None | Some(Value::Null) => Ok(None),
-                Some(Value::Object(o)) => Ok(Some(o)),
-                Some(_) => Err(CliError::invalid(format!("`{key}` must be an object"))),
-            }
-        };
-        let flag = |key: &str, default: bool| -> CliResult<bool> {
-            match p.get(key) {
-                None | Some(Value::Null) => Ok(default),
-                Some(Value::Bool(b)) => Ok(*b),
-                Some(_) => Err(CliError::invalid(format!("`{key}` must be a boolean"))),
-            }
-        };
         let args: Vec<String> = match p.get("params") {
             None | Some(Value::Null) => Vec::new(),
             Some(Value::Array(items)) => items
@@ -132,15 +118,12 @@ impl StartRequest {
             params: workflow::parse_param_args(&args)?,
             harness: opt_string(p, "harness")?,
             model: opt_string(p, "model")?,
-            placement: obj("placement")?
-                .filter(|o| !o.is_empty())
-                .map(|o| placement::Settings::from_json(&Value::Object(o.clone())))
-                .transpose()?,
-            cmux_caller: obj("cmux_caller")?.map(|o| Value::Object(o.clone())),
-            trigger: obj("trigger")?.cloned().unwrap_or_default(),
-            cause: obj("cause")?.map(|o| Value::Object(o.clone())),
+            placement: opt_placement(p)?,
+            cmux_caller: opt_object(p, "cmux_caller")?.map(|o| Value::Object(o.clone())),
+            trigger: opt_object(p, "trigger")?.cloned().unwrap_or_default(),
+            cause: opt_object(p, "cause")?.map(|o| Value::Object(o.clone())),
             delivery_id,
-            cancel_on_disconnect: flag("cancel_on_disconnect", true)?,
+            cancel_on_disconnect: opt_flag(p, "cancel_on_disconnect", true)?,
         })
     }
 
@@ -159,6 +142,32 @@ impl StartRequest {
     pub fn by_trigger(&self) -> bool {
         self.cause.is_some()
     }
+}
+
+/// An optional object field: absent and `null` are `None`.
+pub(crate) fn opt_object<'a>(p: &'a Value, key: &str) -> CliResult<Option<&'a Map<String, Value>>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(o)) => Ok(Some(o)),
+        Some(_) => Err(CliError::invalid(format!("`{key}` must be an object"))),
+    }
+}
+
+/// An optional boolean field, `default` when absent or `null`.
+pub(crate) fn opt_flag(p: &Value, key: &str, default: bool) -> CliResult<bool> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(CliError::invalid(format!("`{key}` must be a boolean"))),
+    }
+}
+
+/// `placement`: placement flags; an empty object is none given.
+pub(crate) fn opt_placement(p: &Value) -> CliResult<Option<placement::Settings>> {
+    opt_object(p, "placement")?
+        .filter(|o| !o.is_empty())
+        .map(|o| placement::Settings::from_json(&Value::Object(o.clone())))
+        .transpose()
 }
 
 fn params_error() -> CliError {
@@ -189,17 +198,7 @@ pub fn create_run(
     // A run queued by a `while_running: queue` trigger has more paths merged
     // in while it waits, so its placeholders are filled in when it starts.
     let deferred = crate::triggers::waits_for_idle(req.cause.as_ref());
-    // `tome run`'s placement flags, kept for the run's workers, and what
-    // was focused and which cmux pane asked for it.
-    let mut placement = Map::new();
-    if let Some(flags) = req.placement.as_ref().filter(|f| !f.is_empty()) {
-        placement.insert("flags".into(), json!(flags));
-    }
-    if let Some(origin) = origin {
-        placement.insert("focused".into(), origin.focused.clone());
-        placement.insert("caller".into(), origin.caller.clone());
-    }
-    let placement = (!placement.is_empty()).then(|| Value::Object(placement));
+    let placement = placement_state(req.placement.as_ref(), origin);
 
     let mut body = String::new();
     let run = store
@@ -213,6 +212,7 @@ pub fn create_run(
                 trigger: req.cause.as_ref(),
                 placement: placement.as_ref(),
                 mode: wf.frontmatter().mode,
+                resumed_from: None,
             },
             |id| {
                 if deferred {
@@ -225,6 +225,23 @@ pub fn create_run(
         )
         .map_err(internal)?;
     Ok((run, body))
+}
+
+/// A run's recorded placement state: `tome run`'s placement flags, kept for
+/// the run's workers, and what was focused and which cmux pane asked for it.
+pub fn placement_state(
+    flags: Option<&placement::Settings>,
+    origin: Option<&Origin>,
+) -> Option<Value> {
+    let mut placement = Map::new();
+    if let Some(flags) = flags.filter(|f| !f.is_empty()) {
+        placement.insert("flags".into(), json!(flags));
+    }
+    if let Some(origin) = origin {
+        placement.insert("focused".into(), origin.focused.clone());
+        placement.insert("caller".into(), origin.caller.clone());
+    }
+    (!placement.is_empty()).then(|| Value::Object(placement))
 }
 
 /// `run.get {id}`: the run including its workflow snapshot.
