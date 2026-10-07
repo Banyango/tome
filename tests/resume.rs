@@ -3,7 +3,8 @@ mod common;
 use common::{eventually, Env};
 use serde_json::{json, Value};
 use std::fs;
-use std::process::Stdio;
+use std::path::Path;
+use std::process::{Command, Stdio};
 
 const WF: &str = "---\nname: build\nmode: orchestrated\nparams:\n  base: {default: main}\n---\n## Build\nBranch off {{params.base}} as run-{{run.id}}.\n";
 
@@ -308,4 +309,101 @@ fn the_resumed_agent_is_told_where_to_start() {
         text.contains("Where to start: the user said: the Build step"),
         "{text}"
     );
+}
+
+/// A tome command as run `run`'s orchestrator, `--json`.
+fn as_run(env: &Env, run: i64, args: &[&str]) -> (i32, Value) {
+    let mut full = vec!["--json"];
+    full.extend_from_slice(args);
+    let out = env
+        .cmd(&full)
+        .env("TOME_RUN_ID", run.to_string())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let v = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    (out.status.code().unwrap(), v)
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_resumed_run_adopts_the_worktrees_still_there() {
+    let env = Env::new();
+    env.start_daemon();
+    write_wf(&env, "build", WF);
+    let p = env.project();
+    git(&p, &["init", "-q", "-b", "main"]);
+    fs::write(p.join("README"), "hi\n").unwrap();
+    git(&p, &["add", "."]);
+    git(&p, &["commit", "-q", "-m", "init"]);
+
+    let old = start(&env, &["build"]);
+    let (code, kept) = as_run(&env, old, &["worktree", "create", "kept"]);
+    assert_eq!(code, 0, "{kept}");
+    let (_, lost) = as_run(&env, old, &["worktree", "create", "lost"]);
+    let kept_path = kept["path"].as_str().unwrap().to_string();
+    fs::write(Path::new(&kept_path).join("half-done.txt"), "wip").unwrap();
+    git(
+        &p,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            lost["path"].as_str().unwrap(),
+        ],
+    );
+    cancel(&env, old);
+
+    let new = resume(&env, old).1["id"].as_i64().unwrap();
+    let worktrees = env.json(&["runs", "show", &new.to_string()]).1["worktrees"].clone();
+    let paths: Vec<&str> = worktrees
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, [kept_path.as_str()], "{worktrees}");
+
+    let prompt = fs::read_to_string(
+        env.home()
+            .join(format!("runs/{new}/orchestrator-prompt.md")),
+    )
+    .unwrap();
+    assert!(
+        prompt.contains(&format!(
+            "- `kept` at {kept_path}, branch `tome/{old}/kept`"
+        )),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Worktrees that are gone"), "{prompt}");
+    assert!(prompt.contains(&format!("{old}-lost")), "{prompt}");
+
+    // Asking for it again by name gives it back, work and all.
+    let (code, again) = as_run(&env, new, &["worktree", "create", "kept"]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(again["path"], kept_path.as_str());
+    assert_eq!(again["branch"], format!("tome/{old}/kept"));
+    assert_eq!(again["adopted"], true);
+    assert!(Path::new(&kept_path).join("half-done.txt").exists());
+    // A new name still makes a new one.
+    let (code, fresh) = as_run(&env, new, &["worktree", "create", "lost"]);
+    assert_eq!(code, 0, "{fresh}");
+    assert!(fresh["path"]
+        .as_str()
+        .unwrap()
+        .ends_with(&format!("{new}-lost")));
 }

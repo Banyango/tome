@@ -12,6 +12,14 @@ use std::process::Command;
 /// Where worktrees live, relative to the repo root.
 pub const DIR: &str = ".tome/worktrees";
 
+/// The name a worktree at `path` was made under, if its directory is a
+/// run's `<run>-<name>`.
+pub fn name_of(path: &Path) -> Option<&str> {
+    let file = path.file_name()?.to_str()?;
+    let (run, name) = file.split_once('-')?;
+    (!run.is_empty() && run.bytes().all(|b| b.is_ascii_digit()) && !name.is_empty()).then_some(name)
+}
+
 /// What a new worktree branches from.
 #[derive(Debug, Clone)]
 pub struct Base {
@@ -285,5 +293,14 @@ mod tests {
             resolve_base(&outside, None).unwrap_err().kind,
             crate::output::ErrorKind::Invalid
         );
+    }
+
+    #[test]
+    fn names_come_from_the_directory() {
+        assert_eq!(name_of(Path::new("/r/.tome/worktrees/12-api")), Some("api"));
+        assert_eq!(name_of(Path::new("/r/.tome/worktrees/12-a-b")), Some("a-b"));
+        for path in ["/r/x/api", "/r/x/12-", "/r/x/-api", "/r/x/v1-api"] {
+            assert_eq!(name_of(Path::new(path)), None, "{path}");
+        }
     }
 }

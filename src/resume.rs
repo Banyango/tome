@@ -7,9 +7,12 @@ use crate::api::{self, internal, Origin};
 use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use crate::placement::Settings;
-use crate::store::{NewRun, Run, RunStatus, Session, StepEvent, StepStatus, Store};
+use crate::store::{
+    NewRun, NewWorktree, Run, RunStatus, Session, StepEvent, StepStatus, Store, Worktree,
+};
 use crate::triggers;
 use crate::workflow::{self, Invalid};
+use crate::worktree;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -155,7 +158,50 @@ pub fn create(
     if let Some(start) = start_at {
         store.set_resume_start(run.id, start).map_err(internal)?;
     }
+    adopt_worktrees(store, old.id, run.id).map_err(internal)?;
     Ok(run)
+}
+
+/// Record `old`'s worktrees that are still there under `new`, with the same
+/// paths and branches.
+fn adopt_worktrees(store: &mut Store, old: RunId, new: RunId) -> anyhow::Result<()> {
+    for w in store.worktrees(old)? {
+        if !Path::new(&w.path).is_dir() {
+            continue;
+        }
+        store.add_worktree(
+            new,
+            &NewWorktree {
+                path: Path::new(&w.path),
+                repo_path: w.repo_path.as_deref().map(Path::new),
+                branch: w.branch.as_deref(),
+                base: w.base.as_deref(),
+                worker: w.worker.as_deref(),
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// The worktree an earlier run of `run`'s chain made as `name` in `repo`,
+/// adopted by `run`: one made for worker `name` when `for_worker`, else one
+/// made with `tome worktree create`.
+pub fn adopted(
+    store: &Store,
+    run: RunId,
+    repo: &Path,
+    name: &str,
+    for_worker: bool,
+) -> anyhow::Result<Option<Worktree>> {
+    let own = format!("{run}-{name}");
+    Ok(store.worktrees(run)?.into_iter().find(|w| {
+        let path = Path::new(&w.path);
+        worktree::name_of(path) == Some(name)
+            && path.file_name().is_some_and(|f| f != own.as_str())
+            && w.repo_path.as_deref().map(Path::new) == Some(repo)
+            && w.worker.is_some() == for_worker
+            && path.is_dir()
+    }))
 }
 
 /// What a resumed run's agent is told about the runs before it.
@@ -166,6 +212,10 @@ pub struct Context {
     /// Every step reported in the chain, in the order first reported.
     pub steps: Vec<StepSoFar>,
     pub start: Start,
+    /// The worktrees it adopted.
+    pub worktrees: Vec<Worktree>,
+    /// The resumed run's worktrees that were gone, so weren't adopted.
+    pub gone: Vec<Worktree>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -269,6 +319,15 @@ pub fn context(store: &Store, run: &Run) -> anyhow::Result<Option<Context>> {
         Some(text) => Start::Given(text),
         None => start_from(&steps),
     };
+    let worktrees = store.worktrees(run.id)?;
+    let gone = match chain.last() {
+        Some(last) => store
+            .worktrees(last.id)?
+            .into_iter()
+            .filter(|w| !worktrees.iter().any(|a| a.path == w.path))
+            .collect(),
+        None => Vec::new(),
+    };
     let earlier = chain
         .into_iter()
         .map(|r| Earlier {
@@ -282,6 +341,8 @@ pub fn context(store: &Store, run: &Run) -> anyhow::Result<Option<Context>> {
         earlier,
         steps,
         start,
+        worktrees,
+        gone,
     }))
 }
 
@@ -338,6 +399,21 @@ pub fn render(ctx: &Context) -> String {
             }
         }
     }
+    if !ctx.worktrees.is_empty() {
+        out.push_str("\nWorktrees kept from earlier runs, with their work in them:\n");
+        for w in &ctx.worktrees {
+            out.push_str(&format!("- {}\n", describe(w)));
+        }
+        out.push_str("Use them rather than making new ones: `tome worktree create <name>` with the same name returns the same worktree, and a worker spawned with `--worktree` under its old name gets its old one.\n");
+    }
+    if !ctx.gone.is_empty() {
+        out.push_str(
+            "\nWorktrees that are gone (deleted since), so their uncommitted work is lost:\n",
+        );
+        for w in &ctx.gone {
+            out.push_str(&format!("- {}\n", describe(w)));
+        }
+    }
     out.push_str("\nWhere to start: ");
     out.push_str(&match &ctx.start {
         Start::Given(text) => format!("the user said: {}\n", text.trim()),
@@ -351,6 +427,20 @@ pub fn render(ctx: &Context) -> String {
         }
     });
     out.push_str("\nSkip the steps that are done; don't report them again. Before you redo a step that was interrupted, check the state it left behind (files, commits, branches, half-made changes) and build on it.\n");
+    out
+}
+
+/// A worktree's name (and worker), path and branch.
+fn describe(w: &Worktree) -> String {
+    let path = Path::new(&w.path);
+    let mut out = match (worktree::name_of(path), &w.worker) {
+        (Some(name), Some(_)) => format!("`{name}` (worker {name}) at {}", w.path),
+        (Some(name), None) => format!("`{name}` at {}", w.path),
+        (None, _) => w.path.clone(),
+    };
+    if let Some(branch) = &w.branch {
+        out.push_str(&format!(", branch `{branch}`"));
+    }
     out
 }
 
@@ -668,5 +758,64 @@ mod tests {
         assert!(
             render(&ctx).contains("Where to start: the user said: redo the migration, then Test\n")
         );
+    }
+
+    #[test]
+    fn worktrees_still_there_are_adopted_and_found_by_name() {
+        let (dir, mut store) = store();
+        let old = ended(&mut store, RunStatus::Failed, dir.path());
+        let repo = dir.path();
+        let add = |store: &mut Store, name: &str, worker: Option<&str>, make: bool| {
+            let path = repo.join(format!(".tome/worktrees/{}-{name}", old.id));
+            if make {
+                std::fs::create_dir_all(&path).unwrap();
+            }
+            store
+                .add_worktree(
+                    old.id,
+                    &NewWorktree {
+                        path: &path,
+                        repo_path: Some(repo),
+                        branch: Some(&format!("tome/{}/{name}", old.id)),
+                        base: Some("main"),
+                        worker,
+                    },
+                )
+                .unwrap();
+        };
+        add(&mut store, "api", None, true);
+        add(&mut store, "w1", Some("w1"), true);
+        add(&mut store, "gone", None, false);
+        let new = create(
+            &mut store,
+            &old,
+            "s",
+            None,
+            None,
+            &origin(),
+            RunStatus::Running,
+        )
+        .unwrap();
+
+        let ctx = context(&store, &new).unwrap().unwrap();
+        let names = |ws: &[Worktree]| -> Vec<String> {
+            ws.iter()
+                .map(|w| worktree::name_of(Path::new(&w.path)).unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(names(&ctx.worktrees), ["api", "w1"]);
+        assert_eq!(names(&ctx.gone), ["gone"]);
+
+        let found = |name, worker| adopted(&store, new.id, repo, name, worker).unwrap();
+        assert!(found("api", false).is_some());
+        assert!(
+            found("api", true).is_none(),
+            "made by worktree create, not a worker"
+        );
+        assert!(found("w1", true).is_some());
+        assert!(found("gone", false).is_none());
+        assert!(adopted(&store, new.id, &repo.join("other"), "api", false)
+            .unwrap()
+            .is_none());
     }
 }

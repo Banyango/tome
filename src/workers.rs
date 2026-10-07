@@ -16,6 +16,7 @@ use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::placement::{self, Inputs, Role, Settings};
+use crate::resume;
 use crate::session::{self, Backend, Kind, Launch, Split};
 use crate::store::{
     self, NewWorker, NewWorktree, Pulled, Run, RunStatus, Store, Worker, WorkerEnd, WorkerStatus,
@@ -346,36 +347,54 @@ impl Engine {
         })?;
         let name = worker.name.clone();
 
-        let created = match &base {
-            Some(base) => match worktree::create(base, run_id, &name, branch) {
+        // A resumed run's worker gets back the worktree an earlier run made
+        // for a worker of its name.
+        let adopted = match &base {
+            Some(base) => self.with_store(|store| {
+                resume::adopted(store, run_id, &base.repo, &name, true).map_err(internal)
+            })?,
+            None => None,
+        };
+        let created = match (&base, &adopted) {
+            (Some(_), Some(w)) => Some(worktree::Created {
+                path: w.path.clone().into(),
+                branch: w.branch.clone().unwrap_or_default(),
+            }),
+            (Some(base), None) => match worktree::create(base, run_id, &name, branch) {
                 Ok(c) => Some(c),
                 Err(e) => {
                     let _ = self.with_store(|store| store.delete_worker(run_id, &name));
                     return Err(e);
                 }
             },
-            None => None,
+            (None, _) => None,
         };
         self.with_store(|store| {
             if let (Some(base), Some(c)) = (&base, &created) {
-                store
-                    .add_worktree(
-                        run_id,
-                        &NewWorktree {
-                            path: &c.path,
-                            repo_path: Some(&base.repo),
-                            branch: Some(&c.branch),
-                            base: Some(&base.name),
-                            worker: Some(&name),
-                        },
-                    )
-                    .map_err(internal)?;
+                if adopted.is_none() {
+                    store
+                        .add_worktree(
+                            run_id,
+                            &NewWorktree {
+                                path: &c.path,
+                                repo_path: Some(&base.repo),
+                                branch: Some(&c.branch),
+                                base: Some(&base.name),
+                                worker: Some(&name),
+                            },
+                        )
+                        .map_err(internal)?;
+                }
+                let base = adopted
+                    .as_ref()
+                    .and_then(|w| w.base.as_deref())
+                    .unwrap_or(&base.name);
                 store.set_worker_worktree(
                     run_id,
                     &name,
                     &c.path.to_string_lossy(),
                     &c.branch,
-                    &base.name,
+                    base,
                 )?;
             }
             store.worker_event(
@@ -645,6 +664,14 @@ impl Engine {
             )));
         }
         let base = worktree::resolve_base(&repo_dir(&run, p), opt_str(p, "base"))?;
+        // A resumed run gets back the one an earlier run made under this name.
+        if let Some(w) = self.with_store(|store| {
+            resume::adopted(store, run_id, &base.repo, name, false).map_err(internal)
+        })? {
+            return Ok(
+                json!({ "name": name, "path": w.path, "branch": w.branch, "base": w.base, "adopted": true }),
+            );
+        }
         let created = worktree::create(&base, run_id, name, opt_str(p, "branch"))?;
         self.with_store(|store| {
             store

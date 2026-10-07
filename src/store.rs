@@ -423,7 +423,7 @@ pub struct LogEntry {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Worktree {
     pub path: String,
     pub repo_path: Option<String>,
