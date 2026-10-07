@@ -407,3 +407,72 @@ fn a_resumed_run_adopts_the_worktrees_still_there() {
         .unwrap()
         .ends_with(&format!("{new}-lost")));
 }
+
+fn query(env: &Env, sql: &str) -> Vec<Value> {
+    let (code, v) = env.json(&["query", sql]);
+    assert_eq!(code, 0, "{v}");
+    v["rows"].as_array().cloned().unwrap_or_default()
+}
+
+/// Each delivery's state and the runs that claimed it, by id.
+fn deliveries(env: &Env) -> Vec<(String, String)> {
+    query(env, "SELECT state, run_ids FROM deliveries ORDER BY id")
+        .iter()
+        .map(|r| (r[0].as_str().unwrap().into(), r[1].as_str().unwrap().into()))
+        .collect()
+}
+
+#[test]
+fn resuming_a_triggered_run_takes_back_its_parked_delivery() {
+    let env = Env::new();
+    write_wf(
+        &env,
+        "review",
+        "---\nname: review\nmode: orchestrated\ntriggers:\n  - on: review\n---\n## Review\nGo.\n",
+    );
+    let out = env
+        .cmd(&["daemon", "start"])
+        .env("TOME_TRIGGER_TICK_MS", "100")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for payload in ["one", "two"] {
+        assert_eq!(env.json(&["publish", "review", payload]).0, 0);
+    }
+    let runs = || -> Vec<i64> {
+        query(&env, "SELECT id FROM runs ORDER BY id")
+            .iter()
+            .map(|r| r[0].as_i64().unwrap())
+            .collect()
+    };
+    eventually("a run per event", || runs().len() == 2);
+    let (a, b) = (runs()[0], runs()[1]);
+    end(&env, a, "failed");
+    cancel(&env, b);
+    let parked = |id: i64| ("failed".to_string(), format!("[{id}]"));
+    eventually("both parked", || deliveries(&env) == [parked(a), parked(b)]);
+
+    // The second was retried by hand, so its resume leaves it alone.
+    assert_eq!(env.json(&["events", "retry", "2"]).0, 0);
+    eventually("the retry's run", || runs().len() == 3);
+    let retried = deliveries(&env)[1].clone();
+
+    let resumed_a = resume(&env, a).1["id"].as_i64().unwrap();
+    assert_eq!(
+        deliveries(&env)[0],
+        ("claimed".to_string(), format!("[{resumed_a}]"))
+    );
+    let (code, v) = resume(&env, b);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(deliveries(&env)[1], retried);
+
+    // It settles with the run that took it back.
+    end(&env, resumed_a, "succeeded");
+    eventually("the delivery settled", || {
+        deliveries(&env)[0] == ("done".to_string(), format!("[{resumed_a}]"))
+    });
+}

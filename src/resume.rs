@@ -4,12 +4,12 @@
 //! old run's values. Nothing about the old run changes.
 
 use crate::api::{self, internal, Origin};
-use crate::ids::RunId;
+use crate::ids::{DeliveryId, RunId};
 use crate::output::{CliError, CliResult};
 use crate::placement::Settings;
 use crate::store::{
-    Group, NewRun, NewWorktree, Run, RunStatus, Session, StepEvent, StepStatus, Store, Worker,
-    WorkerStatus, Worktree,
+    DeliveryState, Group, NewRun, NewWorktree, Run, RunStatus, Session, StepEvent, StepStatus,
+    Store, Worker, WorkerStatus, Worktree,
 };
 use crate::triggers;
 use crate::workflow::Mode;
@@ -161,7 +161,32 @@ pub fn create(
         store.set_resume_start(run.id, start).map_err(internal)?;
     }
     adopt_worktrees(store, old.id, run.id).map_err(internal)?;
+    reattach_delivery(store, old, run.id)?;
     Ok(run)
+}
+
+/// If `old` was started for a topic event whose delivery it left parked
+/// (`failed`), hand the delivery to `new`: it's claimed again and settles
+/// when `new` ends. One that was retried or removed since is left alone.
+fn reattach_delivery(store: &mut Store, old: &Run, new: RunId) -> CliResult<bool> {
+    let Some(id) = old
+        .trigger
+        .as_ref()
+        .and_then(|c| c["delivery"].as_i64())
+        .map(DeliveryId::new)
+    else {
+        return Ok(false);
+    };
+    let ours = store
+        .delivery(id)?
+        .is_some_and(|d| d.state == DeliveryState::Failed && d.run_ids.contains(&old.id));
+    Ok(ours
+        && store.move_delivery(
+            id,
+            DeliveryState::Failed,
+            DeliveryState::Claimed,
+            Some(&[new]),
+        )?)
 }
 
 /// Record `old`'s worktrees that are still there under `new`, with the same
