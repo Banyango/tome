@@ -101,6 +101,12 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
     field(&mut out, "mode", &run["mode"]);
     field(&mut out, "project", &run["project_path"]);
     field(&mut out, "workflow", &run["workflow_path"]);
+    // The resume chain, both ways.
+    for (label, key) in [("resumes", "resumed_from"), ("resumed as", "resumed_as")] {
+        if !run[key].is_null() {
+            out.push_str(&format!("  {label:<11}run {}\n", s(&run[key])));
+        }
+    }
     if let Some(t) = run["trigger"].as_object() {
         let mut cause = s(&t["trigger"]);
         let paths: Vec<String> = t

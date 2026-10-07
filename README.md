@@ -1,7 +1,7 @@
 <h1 align="center">tome</h1>
 
 <p align="center">
-  Repeatable agentic workflows, written in Markdown.
+  Software Factory primitives for your workflows, written in Markdown.
   <br />
   Go from one agent working on your project to an army of them, coordinating.
 </p>

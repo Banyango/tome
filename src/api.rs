@@ -321,6 +321,10 @@ fn runs_show(store: &mut Store, p: &Value) -> CliResult<Value> {
     store.require_run(id)?;
     let snapshot = p.get("snapshot").and_then(Value::as_bool).unwrap_or(false);
     let run = store.get_run(id, snapshot).map_err(internal)?;
+    let mut run = json!(run);
+    if let Some(next) = store.resumed_as(id).map_err(internal)? {
+        run["resumed_as"] = json!(next);
+    }
     Ok(json!({
         "run": run,
         "steps": store.steps(id).map_err(internal)?,

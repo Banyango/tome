@@ -244,3 +244,32 @@ fn attached_resume_streams_the_new_run() {
     assert_eq!(last["run_id"], new);
     assert_eq!(last["status"], "failed");
 }
+
+#[test]
+fn runs_show_links_the_chain_both_ways() {
+    let env = Env::new();
+    env.start_daemon();
+    write_wf(&env, "build", WF);
+    let old = start(&env, &["build"]);
+    cancel(&env, old);
+    let new = resume(&env, old).1["id"].as_i64().unwrap();
+
+    assert_eq!(show(&env, old)["run"]["resumed_as"], new);
+    assert!(show(&env, old)["run"]["resumed_from"].is_null());
+    assert_eq!(show(&env, new)["run"]["resumed_from"], old);
+    assert!(show(&env, new)["run"]["resumed_as"].is_null());
+
+    let human = |id: i64| {
+        String::from_utf8_lossy(&env.run(&["runs", "show", &id.to_string()]).stdout).into_owned()
+    };
+    assert!(
+        human(old).contains(&format!("resumed as run {new}")),
+        "{}",
+        human(old)
+    );
+    assert!(
+        human(new).contains(&format!("resumes    run {old}")),
+        "{}",
+        human(new)
+    );
+}
