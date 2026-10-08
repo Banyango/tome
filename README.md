@@ -5,7 +5,7 @@
 <h1 align="center">Tome</h1>
 
 <p align="center">
-  <em>Software factory primitives for your workflows written in Markdown</em>
+  <em>All the primitives you need to build your software factories</em>
 </p>
 
 <p align="center">
@@ -15,17 +15,17 @@
 </p>
 
 
-Connect your harnesses together. Build an army of agents. 
+Connect your harnesses together. Build an army of agents. Tome gives you the tools to build it.
 
 
 ## Features
 
-- Triggers start runs when files change, on a cron schedule, when a message arrives, or when another workflow finishes.
-- Workers fan work out to as many agents as you like, each on its own git branch.
-- Queues and an event bus chain workflows together, or let workers pull jobs off a queue.
-- tome is harness agnostic. Run an orchestrator in Claude Code and a worker in something else.
-- Every agent runs in a tmux, cmux or herdr pane, so you can attach, answer a question, or take over.
-- Remote nodes send events and run workflows on other machines over ssh.
+- **Triggers** start runs when files change, on a cron schedule, when a message arrives, or when another workflow finishes.
+- **Workers** fan work out to as many agents as you like, each on its own git branch.
+- **Queues** and an event bus chain workflows together, or let workers pull jobs off a queue.
+- **Harness agnostic** Run an orchestrator in Claude Code and a worker in something else.
+- Every agent runs in a **tmux**, **cmux** or **herdr** panes, so you can attach, answer a question, or take over.
+- **Remote nodes** send events and run workflows on other machines over ssh.
 - State lives in DuckDB, so a run's steps, history and logs are always there when something fails.
 
 You don't have to write workflows by hand. Install the [tome plugin](#installation) and your coding agent writes them for you.
