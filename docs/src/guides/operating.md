@@ -63,11 +63,13 @@ A workflow or script can automate recovery the same way, for example by resuming
 
 ## Looking at runs
 
+A run has its own status (`queued`, `running`, `succeeded`, `failed` or `cancelled`) and, if the workflow sets one, a custom status such as `InReview` that follows the step it is on. `tome runs show` lists the custom status as `custom` on the run and in a `CUSTOM` column for each step. See [Custom statuses](write-a-workflow.md#custom-statuses).
+
 ```sh
 tome runs list                            # newest first
 tome runs list --status running
 tome runs list --workflow my-workflow --limit 50
-tome runs show <id>                       # status, steps, history, workers, worktrees, sessions, resume links
+tome runs show <id>                       # status, custom status, steps, history, workers, worktrees, sessions, resume links
 tome runs show <id> --snapshot            # the workflow as it was when the run started
 tome runs logs <id> --tail 100            # each session's log
 tome runs logs <id> --step Review
