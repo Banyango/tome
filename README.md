@@ -23,7 +23,7 @@ Connect your harnesses together. Build an army of agents. Tome gives you the too
 - **Triggers** start runs when files change, on a cron schedule, when a message arrives, or when another workflow finishes.
 - **Workers** fan work out to as many agents as you like, each on its own git branch.
 - **Queues** and an event bus chain workflows together, or let workers pull jobs off a queue.
-- **Harness agnostic** Run an orchestrator in Claude Code and a worker in something else.
+- **Harness agnostic** Run an orchestrator in Claude Code, or Codex, or whatever.
 - Every agent runs in a **tmux**, **cmux** or **herdr** panes, so you can attach, answer a question, or take over.
 - **Remote nodes** send events and run workflows on other machines over ssh.
 - State lives in DuckDB, so a run's steps, history and logs are always there when something fails.
