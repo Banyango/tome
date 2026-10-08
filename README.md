@@ -2,10 +2,10 @@
   <img src="assets/tome-logo.png" alt="Tome pixel art logo with a glowing rune" width="200">
 </p>
 
-<h1 align="center">tome</h1>
+<h1 align="center">Tome</h1>
 
 <p align="center">
-  <em>Go from one agent working on your project to an army of them, coordinating.</em>
+  <em>Software factory primitives for your workflows written in Markdown</em>
 </p>
 
 <p align="center">
@@ -14,9 +14,9 @@
   <img src="https://img.shields.io/badge/license-MIT-111111?style=flat-square" alt="MIT license">
 </p>
 
-> "Software factory primitives for your workflows, written in Markdown."
 
-tome is a Rust CLI and daemon that runs agent workflows for you. A workflow is a Markdown file written in plain English, plus a few lines of frontmatter that say what starts it. The daemon watches for that trigger, starts an orchestrator agent, and the orchestrator spawns worker agents to do the work.
+Connect your harnesses together. Build an army of agents. 
+
 
 ## Features
 
