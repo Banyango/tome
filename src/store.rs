@@ -258,6 +258,9 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE runs ADD COLUMN resumed_from BIGINT;",
     // 15: where a resumed run's agent is told to start (`--start-at`)
     "ALTER TABLE runs ADD COLUMN resume_start VARCHAR;",
+    // 16: custom statuses set with `tome step status`, on each step and on
+    // the run (following its active step)
+    "ALTER TABLE steps ADD COLUMN custom_status VARCHAR; ALTER TABLE runs ADD COLUMN custom_status VARCHAR;",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -393,6 +396,9 @@ pub struct Run {
     /// The run this one resumes (`tome run resume`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resumed_from: Option<RunId>,
+    /// The active step's custom status, kept apart from `status`. Unset
+    /// when the active step has none; a finished run keeps its last one.
+    pub custom_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -403,6 +409,8 @@ pub struct Step {
     pub message: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    /// Free-form label set with `tome step status`.
+    pub custom_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1002,6 +1010,7 @@ impl Store {
             }
         }
         tx.commit().map_err(internal)?;
+        self.follow_active_step(run_id).map_err(internal_any)?;
         let steps = self.steps(run_id).map_err(internal_any)?;
         Ok(steps
             .into_iter()
@@ -1009,9 +1018,90 @@ impl Store {
             .expect("step just written"))
     }
 
+    /// Set a step's custom status: the named step, or else the running one.
+    /// The label is free-form and kept exactly as given, case included. With
+    /// no step running, it becomes the run's custom status directly.
+    pub fn set_step_status(
+        &mut self,
+        run_id: RunId,
+        step: Option<&str>,
+        label: &str,
+    ) -> CliResult<Step> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(CliError::invalid("status must not be empty"));
+        }
+        let run = self.require_run(run_id)?;
+        if run.status.is_finished() {
+            return Err(CliError::invalid(format!(
+                "run {run_id} has already finished ({})",
+                run.status.as_str()
+            )));
+        }
+        let step = match step.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(step) => step.to_string(),
+            None => self
+                .current_step(run_id)
+                .map_err(internal_any)?
+                .ok_or_else(|| {
+                    CliError::invalid(format!(
+                        "run {run_id} has no running step; name the step with --step"
+                    ))
+                })?,
+        };
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE steps SET custom_status = ? WHERE run_id = ? AND name = ?",
+                params![label, run_id, step],
+            )
+            .map_err(internal)?;
+        if changed == 0 {
+            return Err(CliError::not_found(format!(
+                "run {run_id} has no step \"{step}\"; start it with `tome step start` first"
+            )));
+        }
+        if !self.follow_active_step(run_id).map_err(internal_any)? {
+            self.conn
+                .execute(
+                    "UPDATE runs SET custom_status = ? WHERE id = ?",
+                    params![label, run_id],
+                )
+                .map_err(internal)?;
+        }
+        let steps = self.steps(run_id).map_err(internal_any)?;
+        Ok(steps
+            .into_iter()
+            .find(|s| s.name == step)
+            .expect("step just written"))
+    }
+
+    /// Point the run's custom status at its active step's (cleared if that
+    /// step has none). With parallel steps running, the earliest started one
+    /// is the parent or group, so its status wins. Returns false, changing
+    /// nothing, when no step is running.
+    fn follow_active_step(&self, run_id: RunId) -> anyhow::Result<bool> {
+        let Some(label) = self
+            .conn
+            .query_row(
+                "SELECT custom_status FROM steps WHERE run_id = ? AND status = 'running' ORDER BY started_at, name LIMIT 1",
+                params![run_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        self.conn.execute(
+            "UPDATE runs SET custom_status = ? WHERE id = ?",
+            params![label, run_id],
+        )?;
+        Ok(true)
+    }
+
     pub fn steps(&self, run_id: RunId) -> anyhow::Result<Vec<Step>> {
         let mut stmt = self.conn.prepare(
-            "SELECT name, status, attempts, message, started_at, finished_at FROM steps WHERE run_id = ?
+            "SELECT name, status, attempts, message, started_at, finished_at, custom_status FROM steps WHERE run_id = ?
              ORDER BY started_at NULLS LAST, name",
         )?;
         let rows = stmt.query_map(params![run_id], |r| {
@@ -1022,6 +1112,7 @@ impl Store {
                 message: r.get(3)?,
                 started_at: r.get::<_, Option<NaiveDateTime>>(4)?.map(fmt_ts),
                 finished_at: r.get::<_, Option<NaiveDateTime>>(5)?.map(fmt_ts),
+                custom_status: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -1239,7 +1330,7 @@ pub(crate) fn stored_enum<T>(
 
 fn run_select(with_snapshot: bool) -> String {
     format!(
-        "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at, trigger_cause, placement, mode, resumed_from{} FROM runs",
+        "SELECT id, workflow_name, workflow_path, project_path, params, status, reason, summary, created_at, finished_at, trigger_cause, placement, mode, resumed_from, custom_status{} FROM runs",
         if with_snapshot { ", workflow_snapshot" } else { "" }
     )
 }
@@ -1269,7 +1360,8 @@ fn run_from_row(r: &Row<'_>, with_snapshot: bool) -> duckdb::Result<Run> {
             .and_then(|m| Mode::parse(&m))
             .unwrap_or(Mode::Orchestrated),
         resumed_from: r.get(13)?,
-        workflow_snapshot: if with_snapshot { r.get(14)? } else { None },
+        custom_status: r.get(14)?,
+        workflow_snapshot: if with_snapshot { r.get(15)? } else { None },
     })
 }
 
@@ -1375,6 +1467,69 @@ pub(crate) mod tests {
         assert_eq!(b.params["base"], "main");
         assert_eq!(b.project_path.as_deref(), Some("/proj"));
         assert!(store.run_dir(b.id).is_dir());
+    }
+
+    #[test]
+    fn custom_status_follows_the_active_step() {
+        let (_d, mut store) = store();
+        let run = new_run(&mut store, "wf");
+        let status = |store: &Store| store.require_run(run.id).unwrap().custom_status;
+        assert_eq!(status(&store), None);
+
+        store
+            .report_step(run.id, "Plan", StepEvent::Start, None)
+            .unwrap();
+        let plan = store.set_step_status(run.id, None, "Todo").unwrap();
+        assert_eq!(plan.custom_status.as_deref(), Some("Todo"));
+        assert_eq!(status(&store).as_deref(), Some("Todo"));
+        // Nothing running: the last status stays.
+        store
+            .report_step(run.id, "Plan", StepEvent::Done, None)
+            .unwrap();
+        assert_eq!(status(&store).as_deref(), Some("Todo"));
+
+        // A parent with parallel children: the parent's status wins.
+        store
+            .report_step(run.id, "Build", StepEvent::Start, None)
+            .unwrap();
+        // A step without a status clears the run's.
+        assert_eq!(status(&store), None);
+        store.set_step_status(run.id, None, "InProgress").unwrap();
+        store
+            .report_step(run.id, "Other", StepEvent::Start, None)
+            .unwrap();
+        store
+            .report_step(run.id, "Part", StepEvent::Start, None)
+            .unwrap();
+        store
+            .set_step_status(run.id, Some("Part"), "Elsewhere")
+            .unwrap();
+        assert_eq!(status(&store).as_deref(), Some("InProgress"));
+        store
+            .report_step(run.id, "Build", StepEvent::Done, None)
+            .unwrap();
+        // Now "Other" is the earliest running step and has no status.
+        assert_eq!(status(&store), None);
+        store
+            .report_step(run.id, "Other", StepEvent::Done, None)
+            .unwrap();
+        store
+            .report_step(run.id, "Part", StepEvent::Done, None)
+            .unwrap();
+
+        // With nothing running, a status goes straight to the run.
+        store.set_step_status(run.id, Some("Plan"), "Done").unwrap();
+        assert_eq!(status(&store).as_deref(), Some("Done"));
+        assert!(store.set_step_status(run.id, None, "x").is_err());
+        assert!(store.set_step_status(run.id, Some("Nope"), "x").is_err());
+        assert!(store.set_step_status(run.id, Some("Plan"), " ").is_err());
+
+        store
+            .finish_run(run.id, RunStatus::Failed, Some("x"), None)
+            .unwrap();
+        let run = store.require_run(run.id).unwrap();
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(run.custom_status.as_deref(), Some("Done"));
     }
 
     #[test]

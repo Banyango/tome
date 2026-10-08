@@ -1,4 +1,4 @@
-//! `tome run`, `tome run finish|cancel|resume`, `tome step start|done|fail`
+//! `tome run`, `tome run finish|cancel|resume`, `tome step start|done|fail|status`
 //! and `tome ready`.
 //!
 //! The run-side commands are what an orchestrator calls. They find their run
@@ -503,6 +503,21 @@ pub fn step(
     if let Some(m) = step["message"].as_str().filter(|_| event != "start") {
         human.push_str(&format!(": {m}"));
     }
+    Ok(Report::new(step, human))
+}
+
+/// `tome step status <status> [--step <name>]`
+pub fn step_status(status: String, step: Option<String>, run: Option<String>) -> CliResult<Report> {
+    let id = run_id(run)?;
+    let step = call(
+        "step.status",
+        json!({ "run_id": id, "step": step, "status": status }),
+    )?;
+    let human = format!(
+        "step \"{}\" status set to {}",
+        s(&step["name"]),
+        s(&step["custom_status"])
+    );
     Ok(Report::new(step, human))
 }
 

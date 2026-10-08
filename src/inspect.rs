@@ -99,6 +99,7 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
     field(&mut out, "reason", &run["reason"]);
     field(&mut out, "summary", &run["summary"]);
     field(&mut out, "mode", &run["mode"]);
+    field(&mut out, "custom", &run["custom_status"]);
     field(&mut out, "project", &run["project_path"]);
     field(&mut out, "workflow", &run["workflow_path"]);
     // The resume chain, both ways.
@@ -156,6 +157,7 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
                 vec![
                     s(&st["name"]),
                     s(&st["status"]),
+                    s(&st["custom_status"]),
                     s(&st["attempts"]),
                     ts(&st["started_at"]),
                     ts(&st["finished_at"]),
@@ -165,7 +167,7 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
             .collect();
         out.push_str(&indent(&table(
             &[
-                "STEP", "STATUS", "ATTEMPTS", "STARTED", "FINISHED", "MESSAGE",
+                "STEP", "STATUS", "CUSTOM", "ATTEMPTS", "STARTED", "FINISHED", "MESSAGE",
             ],
             rows,
         )));

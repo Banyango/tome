@@ -85,6 +85,7 @@ const METHODS: &[&str] = &[
     "run.finish",
     "run.cancel",
     "step.report",
+    "step.status",
     "session.move",
     "session.attach_command",
 ];
@@ -179,6 +180,7 @@ impl Engine {
                 )
                 .map(|run| json!(run)),
             "step.report" => self.step(p),
+            "step.status" => self.step_status(p),
             "session.move" => self.move_session(p),
             "session.attach_command" => self.attach_session(p),
             m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
@@ -891,6 +893,18 @@ impl Engine {
             };
             orchestrator::notify_blocked(&run, &who);
         }
+    }
+
+    /// `step.status {run_id, step?, status}`: set a step's custom status
+    /// (the running step's when no step is named).
+    fn step_status(&self, p: &Value) -> CliResult<Value> {
+        let run_id = req_id_at(p, "run_id")?;
+        let status = req_str(p, "status")?;
+        self.with_store(|store| {
+            let step = store.set_step_status(run_id, opt_str(p, "step"), status)?;
+            self.sync(store, run_id);
+            Ok(json!(step))
+        })
     }
 
     /// `step.report {run_id, step?, event: start|done|fail, message?}`.

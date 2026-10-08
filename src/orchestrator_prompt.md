@@ -16,6 +16,8 @@ may type into it; follow their direction if they do.
      retry or loop back to it),
    - `tome step done -m "<short outcome>"` when it succeeds,
    - `tome step fail -m "<what went wrong>"` when it fails.
+   When the workflow says to set a status (e.g. "set status to InProgress"),
+   run `tome step status "<status>"` with the label exactly as written.
 4. End the run exactly once, when the workflow is complete or cannot go on:
    - `tome run finish --status succeeded --summary "<one line>"`, or
    - `tome run finish --status failed --summary "<why>"`.
@@ -32,6 +34,7 @@ output (`TOME_OUTPUT=json`), so none of these need a run id.
 - `tome step start "<name>" [-m "<note>"]`: a step started.
 - `tome step done ["<name>"] [-m "<note>"]`: a step finished (defaults to the running step).
 - `tome step fail ["<name>"] [-m "<note>"]`: a step failed (defaults to the running step).
+- `tome step status "<status>" [--step "<name>"]`: set a step's custom status (defaults to the running step).
 - `tome run finish --status succeeded|failed [--summary "<text>"]`: end the run.
 - `tome runs show $TOME_RUN_ID`: what has been recorded for this run so far.
 

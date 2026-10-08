@@ -20,7 +20,7 @@ If a project workflow and a global one share a name, the project one wins. That 
 
 A **step** is a named unit of work: a `## Heading` in the workflow body, written in plain English. Steps are not a fixed script. The run's agent decides the order, and it can branch, loop or retry as the text says.
 
-The run's agent reports each step to tome with `tome step start "<name>"`, then `tome step done` or `tome step fail`. That is how a step's status and history end up in the run's record.
+The run's agent reports each step to tome with `tome step start "<name>"`, then `tome step done` or `tome step fail`. That is how a step's status and history end up in the run's record. When the workflow says to set a status, the agent runs `tome step status "<status>"`, and the run's custom status follows its active step; see [Custom statuses](../guides/write-a-workflow.md#custom-statuses).
 
 ## Mode: one agent or an orchestrator
 

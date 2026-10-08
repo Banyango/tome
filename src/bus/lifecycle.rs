@@ -143,6 +143,7 @@ mod tests {
             placement: None,
             mode: crate::workflow::Mode::Orchestrated,
             resumed_from: None,
+            custom_status: None,
         }
     }
 

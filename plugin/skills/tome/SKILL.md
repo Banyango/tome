@@ -161,6 +161,9 @@ Rules that matter:
 
 - The body is read by the run's agent, not parsed. `##` headings become
   the steps reported in `tome runs show`.
+- To track a run in the user's own terms, write "Set status to <Label>" in a
+  step's text. The agent runs `tome step status "<Label>"`, and the run's
+  custom status follows its active step (`custom` in `tome runs show`).
 - For each step, say what done looks like and what to do on failure. Without
   that, a failed step fails the run.
 - A workflow that delegates needs `mode: orchestrated`. In the default

@@ -105,6 +105,32 @@ fn runs_show_includes_steps_history_worktrees_logs() {
 }
 
 #[test]
+fn step_status_sets_the_custom_status() {
+    let env = Env::new();
+    let (_, b) = seed(&env);
+    let rid = b.to_string();
+
+    // Nothing to attach it to yet.
+    let (code, _) = env.json(&["step", "status", "InProgress", "--run", &rid]);
+    assert_eq!(code, 2);
+
+    env.json(&["step", "start", "Build", "--run", &rid]);
+    let (code, v) = env.json(&["step", "status", "InProgress", "--run", &rid]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["name"], "Build");
+    assert_eq!(v["custom_status"], "InProgress");
+
+    let (_, v) = env.json(&["runs", "show", &rid]);
+    assert_eq!(v["run"]["custom_status"], "InProgress");
+    assert_eq!(v["run"]["status"], "running");
+    assert_eq!(v["steps"][0]["custom_status"], "InProgress");
+
+    let out = env.run(&["runs", "show", &rid]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("custom    InProgress"), "{text}");
+}
+
+#[test]
 fn runs_logs_prints_content_and_tail() {
     let env = Env::new();
     let (a, b) = seed(&env);

@@ -340,6 +340,19 @@ enum StepCommand {
         #[command(flatten)]
         report: StepReport,
     },
+    /// Set a step's custom status, a free-form label kept exactly as given
+    /// (defaults to the running step). The run's custom status follows its
+    /// active step.
+    Status {
+        /// The status label, e.g. InProgress.
+        status: String,
+        /// Step name (defaults to the running step).
+        #[arg(long)]
+        step: Option<String>,
+        /// Run id (defaults to TOME_RUN_ID).
+        #[arg(long = "run", env = "TOME_RUN_ID", value_name = "ID")]
+        run: Option<String>,
+    },
 }
 
 #[derive(clap::Args)]
@@ -1032,6 +1045,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             StepCommand::Fail { name, report } => {
                 runcmd::step("fail", name, report.message, report.run)
             }
+            StepCommand::Status { status, step, run } => runcmd::step_status(status, step, run),
         },
         Command::Worker { command } => match command {
             WorkerCommand::Spawn {

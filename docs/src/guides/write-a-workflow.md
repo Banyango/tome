@@ -22,6 +22,23 @@ Use `## Headings` to name the steps. The run's agent reports each one to tome as
 
 Say what each step does, what counts as done, and what should happen if it fails. If nothing says otherwise, a failed step fails the run.
 
+### Custom statuses
+
+To track where a run is in your own terms, tell the agent to set a status in the step's text:
+
+```markdown
+## Review
+Set status to InReview.
+Read the diff and leave comments.
+```
+
+The agent runs `tome step status "InReview"`, which labels the running step. The run's custom status follows its active step, separate from the run's own status (`queued`, `running`, ...). Both show in `tome runs show`: `custom` on the run and a `CUSTOM` column for each step, or `custom_status` in JSON.
+
+- Labels are free-form and kept exactly as written, including case. Several steps can share one.
+- Starting a step that has no status clears the run's custom status.
+- When steps run in parallel, the run takes the status of the earliest-started step that is still running, which is the parent or group step.
+- When no step is running, `tome step status --step "<name>" "<status>"` sets the run's custom status directly. After the run finishes or fails, the last one stays.
+
 ## Frontmatter fields
 
 `tome validate` rejects keys it doesn't know, and points to the line.
