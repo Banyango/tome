@@ -67,7 +67,7 @@ You can have an agent write the workflow or write it yourself.
 
 | Command                    | What it does                                        |
 |----------------------------|-----------------------------------------------------|
-| `tome daemon start`        | Start the daemon (`tome start` and `tome stop` work too) |
+| `tome start`        | Start the daemon  |
 | `tome validate <name>`     | Check a workflow                                    |
 | `tome run <name>`          | Start a run                                         |
 | `tome run resume <id>`     | Resume a failed or cancelled run                    |
