@@ -1,6 +1,6 @@
 {
   "name": "tome",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Write, run and debug tome workflows: repeatable agentic workflows triggered by file changes, schedules and messages.",
   "author": {
     "name": "Kyle Reczek",

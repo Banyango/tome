@@ -44,6 +44,8 @@ use std::time::Duration;
 /// How long a launched command waits for its output to be captured before
 /// starting anyway (tmux attaches capture after the session starts).
 const CAPTURE_WAIT: Duration = Duration::from_secs(5);
+/// How long to wait for a new cmux workspace to show up in `tree`.
+const CMUX_TREE_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -905,14 +907,10 @@ impl Cmux {
                     String::from_utf8_lossy(&out.stderr).trim()
                 ))
             })?;
-        let found = self.surfaces().and_then(|all| {
-            all.into_iter()
-                .find(|s| s.workspace_ref == reference && !s.id.is_empty())
-        });
-        match found {
+        match self.wait_for_surface(|s| s.workspace_ref == reference && !s.id.is_empty()) {
             Some(s) => Ok((s.workspace, s.id)),
             None => {
-                let _ = self.run(&["close-workspace", "--workspace", reference]);
+                self.kill(reference);
                 Err(CliError::internal(format!(
                     "cmux opened {reference} but tome couldn't find its id"
                 )))
@@ -1100,6 +1098,25 @@ impl Cmux {
         Some(all)
     }
 
+    /// The first surface in cmux's tree that `matches`. cmux answers
+    /// `new-workspace` before the workspace (and its terminal) show up in
+    /// `tree`, so this polls for a moment.
+    fn wait_for_surface(&self, matches: impl Fn(&Surface) -> bool) -> Option<Surface> {
+        let deadline = std::time::Instant::now() + CMUX_TREE_WAIT;
+        loop {
+            if let Some(found) = self
+                .surfaces()
+                .and_then(|all| all.into_iter().find(&matches))
+            {
+                return Some(found);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Whether the workspace is still open; `None` if cmux didn't answer.
     pub fn is_alive(&self, id: &str) -> Option<bool> {
         Some(self.surfaces()?.iter().any(|s| s.workspace == id))
@@ -1113,22 +1130,29 @@ impl Cmux {
 
     /// Close a workspace. Returns whether it was open.
     pub fn kill(&self, id: &str) -> bool {
-        self.run(&["close-workspace", "--workspace", id])
-            .is_ok_and(|o| o.status.success())
+        self.close_forced(&["close-workspace", "--workspace", id])
     }
 
     /// Close one surface (tab) of a workspace. Returns whether it was open.
     pub fn close_surface(&self, workspace: &str, surface: &str) -> bool {
         self.surface_alive(surface) == Some(true)
-            && self
-                .run(&[
-                    "close-surface",
-                    "--workspace",
-                    workspace,
-                    "--surface",
-                    surface,
-                ])
-                .is_ok_and(|o| o.status.success())
+            && self.close_forced(&[
+                "close-surface",
+                "--workspace",
+                workspace,
+                "--surface",
+                surface,
+            ])
+    }
+
+    /// Run a cmux close command with `--force`, which cmux asks for when a
+    /// live process would be killed; older cmux doesn't know the flag, so
+    /// it's retried without.
+    fn close_forced(&self, args: &[&str]) -> bool {
+        let forced = [args, &["--force"]].concat();
+        [forced.as_slice(), args]
+            .iter()
+            .any(|args| self.run(args).is_ok_and(|o| o.status.success()))
     }
 
     /// Type `text` into a surface of the workspace (its focused one if

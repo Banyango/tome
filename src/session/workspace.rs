@@ -320,13 +320,10 @@ impl Cmux {
                     String::from_utf8_lossy(&out.stderr).trim()
                 ))
             })?;
-        match self
-            .surfaces()
-            .and_then(|all| all.into_iter().find(|s| s.workspace_ref == reference))
-        {
+        match self.wait_for_surface(|s| s.workspace_ref == reference) {
             Some(s) => Ok(s.workspace),
             None => {
-                let _ = self.run(&["close-workspace", "--workspace", reference]);
+                self.kill(reference);
                 Err(CliError::internal(format!(
                     "cmux opened {reference} but tome couldn't find its id"
                 )))

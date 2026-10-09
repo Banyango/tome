@@ -220,7 +220,7 @@ impl Drop for Env {
         // cmux is the user's app: close whatever this env opened there.
         if self.backend != "tmux" {
             for id in self.cmux_workspaces() {
-                cmux(&["close-workspace", "--workspace", &id]);
+                cmux(&["close-workspace", "--workspace", &id, "--force"]);
             }
             // And the tome workspaces the `tab` and `split` layouts opened.
             let places = std::fs::read(self.home().join("workspaces.json")).unwrap_or_default();
@@ -232,7 +232,7 @@ impl Drop for Env {
                 .filter(|p| p["backend"] == "cmux")
             {
                 if let Some(id) = p["id"].as_str() {
-                    cmux(&["close-workspace", "--workspace", id]);
+                    cmux(&["close-workspace", "--workspace", id, "--force"]);
                 }
             }
         }

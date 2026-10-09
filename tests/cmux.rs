@@ -125,7 +125,7 @@ fn closing_the_workspace_fails_the_run_and_notifies_in_cmux() {
     env.json(&["run", "cmuxclosed", "--detach"]);
     let id = workspace(&env);
 
-    assert!(cmux(&["close-workspace", "--workspace", &id])
+    assert!(cmux(&["close-workspace", "--workspace", &id, "--force"])
         .status
         .success());
     eventually("run to fail", || status(&env)["status"] == "failed");
@@ -309,11 +309,16 @@ fn tab_layout_opens_sessions_as_tabs_of_one_split_in_the_tome_workspace() {
     // Closing the tabs by hand ends just those sessions, and the split goes.
     let (_, tabs) = panes_of(&ws)[1].clone();
     for (id, _) in &tabs {
-        assert!(
-            cmux(&["close-surface", "--workspace", &ws, "--surface", id])
-                .status
-                .success()
-        );
+        assert!(cmux(&[
+            "close-surface",
+            "--workspace",
+            &ws,
+            "--surface",
+            id,
+            "--force"
+        ])
+        .status
+        .success());
     }
     eventually("run to fail", || {
         status(&env)["reason"] == "orchestrator_exited"
@@ -608,7 +613,7 @@ fn from_caller_opens_the_orchestrator_next_to_the_pane_that_ran_tome() {
     });
 
     // Once the caller's pane is gone, it falls back with a warning.
-    assert!(cmux(&["close-workspace", "--workspace", &chat])
+    assert!(cmux(&["close-workspace", "--workspace", &chat, "--force"])
         .status
         .success());
     env.json(&["run", "build", "--detach", "--from", "caller"]);
