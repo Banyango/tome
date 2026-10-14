@@ -125,8 +125,8 @@ impl Herdr {
                 .to_owned();
             (ws, pane)
         } else if l.layout == Layout::Tab {
-            let ws = match l.target {
-                Target::Focused(id) | Target::Caller(id) => id.clone(),
+            let (ws, root) = match l.target {
+                Target::Focused(id) | Target::Caller(id) => (id.clone(), None),
                 _ => self.find_or_create_workspace(
                     &workspace_label(l.project, l.target),
                     l.cwd,
@@ -134,22 +134,34 @@ impl Herdr {
                     warnings,
                 )?,
             };
-            let response = self.call("tab.create", json!({"workspace_id":ws,"label":l.title,"cwd":l.cwd,"env":env.clone(),"focus":focus}))?;
-            let pane = response["root_pane"]["pane_id"]
-                .as_str()
-                .or(response["pane"]["pane_id"].as_str())
-                .ok_or_else(|| CliError::internal("herdr didn't return a pane id for the new tab"))?
-                .to_owned();
+            // A workspace just opened has one tab: use it rather than
+            // adding another beside it.
+            let pane = match root {
+                Some(pane) => pane,
+                None => {
+                    let response = self.call("tab.create", json!({"workspace_id":ws,"label":l.title,"cwd":l.cwd,"env":env.clone(),"focus":focus}))?;
+                    response["root_pane"]["pane_id"]
+                        .as_str()
+                        .or(response["pane"]["pane_id"].as_str())
+                        .ok_or_else(|| {
+                            CliError::internal("herdr didn't return a pane id for the new tab")
+                        })?
+                        .to_owned()
+                }
+            };
             (ws, pane)
         } else {
             let ws = match l.target {
                 Target::Focused(id) | Target::Caller(id) => id.clone(),
-                _ => self.find_or_create_workspace(
-                    &workspace_label(l.project, l.target),
-                    l.cwd,
-                    focus,
-                    warnings,
-                )?,
+                _ => {
+                    self.find_or_create_workspace(
+                        &workspace_label(l.project, l.target),
+                        l.cwd,
+                        focus,
+                        warnings,
+                    )?
+                    .0
+                }
             };
             let snapshot = self.snapshot()?;
             let panes = snapshot["panes"].as_array().cloned().unwrap_or_default();
@@ -237,13 +249,15 @@ impl Herdr {
         Ok((workspace, pane))
     }
 
+    /// The workspace labelled `label`, made if it's gone; and, when made,
+    /// the root pane of its first tab.
     fn find_or_create_workspace(
         &self,
         label: &str,
         cwd: &Path,
         _focus: bool,
         warnings: &mut Vec<String>,
-    ) -> CliResult<String> {
+    ) -> CliResult<(String, Option<String>)> {
         let result = self.call("workspace.list", json!({}))?;
         let matches: Vec<&Value> = result["workspaces"]
             .as_array()
@@ -258,18 +272,20 @@ impl Herdr {
         }
         if let Some(ws) = matches.first().copied() {
             if let Some(id) = ws["workspace_id"].as_str().or(ws["id"].as_str()) {
-                return Ok(id.to_owned());
+                return Ok((id.to_owned(), None));
             }
         }
         let created = self.call(
             "workspace.create",
             json!({"label":label,"cwd":cwd,"focus":false}),
         )?;
-        created["workspace"]["workspace_id"]
+        let id = created["workspace"]["workspace_id"]
             .as_str()
             .or(created["workspace"]["id"].as_str())
             .map(str::to_owned)
-            .ok_or_else(|| CliError::internal("herdr didn't return a workspace id"))
+            .ok_or_else(|| CliError::internal("herdr didn't return a workspace id"))?;
+        let root = created["root_pane"]["pane_id"].as_str().map(str::to_owned);
+        Ok((id, root))
     }
 
     pub fn move_pane(
@@ -284,14 +300,17 @@ impl Herdr {
         } else {
             let ws = match m.target {
                 Target::Focused(id) | Target::Caller(id) => id.clone(),
-                _ => self.find_or_create_workspace(
-                    &workspace_label(m.project, m.target),
-                    &m.project
-                        .map(Path::to_path_buf)
-                        .unwrap_or_else(crate::paths::user_home),
-                    false,
-                    warnings,
-                )?,
+                _ => {
+                    self.find_or_create_workspace(
+                        &workspace_label(m.project, m.target),
+                        &m.project
+                            .map(Path::to_path_buf)
+                            .unwrap_or_else(crate::paths::user_home),
+                        false,
+                        warnings,
+                    )?
+                    .0
+                }
             };
             if m.layout == Layout::Tab {
                 json!({"type":"new_tab","workspace_id":ws,"label":m.title})
@@ -496,13 +515,16 @@ mod tests {
     }
 
     fn launch_with(layout: Layout) -> (Vec<Value>, Vec<String>, String) {
+        launch_to(layout, Target::Focused("w1".into()))
+    }
+
+    fn launch_to(layout: Layout, target: Target) -> (Vec<Value>, Vec<String>, String) {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("herdr.sock");
         let seen = fake(&socket);
         let script = dir.path().join("agent.sh");
         let log = dir.path().join("agent.log");
         let split = Split::default();
-        let target = Target::Focused("w1".into());
         let argv = vec!["agent".to_string()];
         let launch = Launch {
             name: "tome-1-build",
@@ -516,6 +538,7 @@ mod tests {
             split: &split,
             target: &target,
             project: None,
+            workspace_label: None,
         };
         let mut warnings = Vec::new();
         let (_, pane) = Herdr {
@@ -552,6 +575,16 @@ mod tests {
         assert!(sent < keys, "{requests:?}");
         // Herdr takes no command: it would be ignored.
         assert!(requests.iter().all(|r| r["params"]["command"].is_null()));
+    }
+
+    #[test]
+    fn a_new_workspace_runs_the_first_session_in_its_own_tab() {
+        let (requests, pane, _) = launch_to(Layout::Tab, Target::Project);
+        assert_eq!(pane, ["w1:p9"]);
+        let methods: Vec<_> = requests.iter().map(|r| r["method"].as_str()).collect();
+        assert!(methods.contains(&Some("workspace.create")), "{methods:?}");
+        assert!(!methods.contains(&Some("tab.create")), "{methods:?}");
+        assert!(typed(&requests).contains("exec sh "), "{requests:?}");
     }
 
     #[test]

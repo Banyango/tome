@@ -888,6 +888,9 @@ pub struct Inputs<'a> {
     pub run_flags: Option<&'a Settings>,
     /// The workflow's `defaults.layout`.
     pub spec: Option<&'a Spec>,
+    /// Whether a worker nothing placed splits below the run's last pane
+    /// (tmux) rather than getting a tab (cmux, herdr).
+    pub split_workers: bool,
 }
 
 /// A resolved placement.
@@ -1130,8 +1133,10 @@ pub fn resolve_in(
     let direction = pick!(direction, "split.direction");
     let size = pick!(size, "split.size");
     let from = pick!(from, "from");
-    // Nothing chose a worker's place: it splits below the run's last pane.
-    let split_by_default = worker && layout.is_none() && workspace.is_none();
+    // Nothing chose a worker's place: on some backends it splits below the
+    // run's last pane.
+    let split_by_default =
+        worker && inputs.split_workers && layout.is_none() && workspace.is_none();
 
     // `layout: workspace` is `workspace: own`, unless a higher level chose
     // the workspace itself.
@@ -1146,10 +1151,10 @@ pub fn resolve_in(
             (Layout::Workspace, Workspace::Own)
         }
         (layout, workspace) => {
-            // Unless configured, the orchestrator gets a tab and its workers
-            // split off below it, so a run reads as one tab.
-            // A worker sent to another workspace has no orchestrator there to
-            // split from, so it keeps a tab.
+            // Unless configured, the orchestrator gets a tab, and so do its
+            // workers, except where they split off below it so a run reads as
+            // one tab (tmux). A worker sent to another workspace has no
+            // orchestrator there to split from, so it keeps a tab.
             let default_layout = if split_by_default {
                 Layout::Split
             } else {
@@ -1482,11 +1487,38 @@ mod tests {
                 flags,
                 run_flags,
                 spec: s.as_ref(),
+                split_workers: true,
             },
             &Config::default(),
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn workers_get_a_tab_unless_the_backend_splits_them() {
+        let worker = |split_workers| {
+            resolve_in(
+                &Inputs {
+                    role: Role::Worker("w"),
+                    flags: None,
+                    run_flags: None,
+                    spec: None,
+                    split_workers,
+                },
+                &Config::default(),
+                None,
+            )
+            .unwrap()
+        };
+        let tab = worker(false);
+        assert_eq!((tab.layout, tab.from), (Layout::Tab, None));
+        assert_eq!(tab.sources["layout"], "the default");
+        let split = worker(true);
+        assert_eq!(
+            (split.layout, split.direction, split.from),
+            (Layout::Split, Direction::Down, Some(From::Last))
+        );
     }
 
     #[test]
@@ -1568,6 +1600,7 @@ mod tests {
             flags: None,
             run_flags: None,
             spec: None,
+            split_workers: true,
         };
         let p = resolve_in(&inputs, &cfg, Some("tab".into())).unwrap();
         // TOME_LAYOUT is above the config.
@@ -1634,6 +1667,7 @@ mod tests {
             flags: None,
             run_flags: None,
             spec: s.as_ref(),
+            split_workers: true,
         };
         let o = resolve_in(&inputs, &cfg, None).unwrap();
         assert_eq!(
@@ -1645,6 +1679,7 @@ mod tests {
             flags: None,
             run_flags: Some(&run),
             spec: s.as_ref(),
+            split_workers: true,
         };
         let w = resolve_in(&inputs, &cfg, None).unwrap();
         assert_eq!(
@@ -1667,6 +1702,7 @@ mod tests {
             flags: Some(&flags),
             run_flags: None,
             spec: None,
+            split_workers: true,
         };
         let err = resolve_in(&inputs, &cfg, None).unwrap_err();
         assert!(
@@ -1704,6 +1740,7 @@ mod tests {
             flags: None,
             run_flags: None,
             spec: s.as_ref(),
+            split_workers: true,
         };
         let err = resolve_in(&inputs, &Config::default(), None).unwrap_err();
         assert!(

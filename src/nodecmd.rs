@@ -565,6 +565,7 @@ fn open_tab(argv: &[String], title: &str, caller: Value, flags: &Settings) -> Cl
         split: &split,
         target: &target,
         project: project.as_deref(),
+        workspace_label: None,
     })?;
     Ok(())
 }

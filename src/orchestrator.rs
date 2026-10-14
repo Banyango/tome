@@ -87,6 +87,11 @@ pub fn model_for(fm: &Frontmatter, mode: Mode) -> Option<&str> {
     own.or(d.model.as_deref())
 }
 
+/// What a run calls the project workspace it opens: `<project>-<workflow>-<id>`.
+pub fn workspace_label(run: &Run) -> String {
+    crate::session::run_workspace_name(run_project(run).as_deref(), &run.workflow_name, run.id)
+}
+
 /// Where a run's main session goes.
 pub fn placement(
     fm: &Frontmatter,
@@ -102,6 +107,7 @@ pub fn placement(
         flags,
         run_flags: None,
         spec: fm.defaults.layout.as_ref(),
+        split_workers: false,
     };
     placement::resolve(&inputs, project)
 }
@@ -393,6 +399,7 @@ pub fn launch(
         split: &split,
         target: &target,
         project: run_project(run).as_deref(),
+        workspace_label: Some(&workspace_label(run)),
     })?;
     warnings.extend(more);
     placement.warnings = warnings;

@@ -2,16 +2,21 @@
 //! the `tab` and `split` layouts put sessions in. Each project has its own
 //! `<project>-orchestrator` (`global-orchestrator` for runs outside a
 //! project), for `workspace: project`, and `<project>-<name>` for each
-//! `workspace: <name>` it uses.
+//! `workspace: <name>` it uses. In cmux the project's is titled for the run
+//! that opens it, `<project>-<workflow>-<run id>`; later runs share it and
+//! leave the title alone.
 //!
-//! It's created on first use with a plain shell in the project directory,
-//! which keeps it open, and in its place in the sidebar, when no sessions
-//! are left. tome records its id in `~/.tome/workspaces.json` and finds it
+//! It's created on first use with a plain shell in the project directory.
+//! In tmux that shell keeps the session open, and in its place in the
+//! sidebar, when no sessions are left. In cmux the first session takes over
+//! that shell's tab (so there's no empty tab beside it), and the workspace
+//! closes with its last tab. tome records its id in `~/.tome/workspaces.json` and finds it
 //! again by that, not by its title, so a rename doesn't lose it; if that id
 //! is gone (the user closed it) a new one is created. Crash recovery kills
 //! sessions by their own pane or tab, never the workspace.
 
 use super::{Cmux, Tmux};
+use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use serde::{Deserialize, Serialize};
@@ -51,6 +56,10 @@ pub struct Record {
     /// cmux: the pane that holds the `tab` layout's tabs, once there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tabs: Option<String>,
+    /// Just opened, with its initial shell still unused (not recorded): the
+    /// first session starts in that shell's tab rather than a new one.
+    #[serde(skip)]
+    pub fresh: bool,
 }
 
 impl Record {
@@ -64,6 +73,7 @@ impl Record {
             name: None,
             id: id.into(),
             tabs: None,
+            fresh: false,
         }
     }
 
@@ -179,6 +189,7 @@ impl Places {
             name: name.map(str::to_string),
             id: id.clone(),
             tabs: None,
+            fresh: false,
         };
         self.put(&record)?;
         Ok(id)
@@ -186,11 +197,13 @@ impl Places {
 
     /// The tome workspace for `project` (`name`d, or its project one) in
     /// cmux, opened (unfocused, with a plain shell in `cwd`) if it's gone.
+    /// The project's one is titled `label` if given (see [`run_name`]).
     pub fn cmux(
         &self,
         cmux: &Cmux,
         project: Option<&Path>,
         name: Option<&str>,
+        label: Option<&str>,
         cwd: &Path,
     ) -> CliResult<Record> {
         if let Some(r) = self.find("cmux", None, project, name) {
@@ -203,8 +216,15 @@ impl Places {
             socket: None,
             project: project.map(|p| p.to_string_lossy().into_owned()),
             name: name.map(str::to_string),
-            id: cmux.new_tome_workspace(&self::name(project, name), cwd)?,
+            id: cmux.new_tome_workspace(
+                &match (name, label) {
+                    (None, Some(label)) => label.to_string(),
+                    _ => self::name(project, name),
+                },
+                cwd,
+            )?,
             tabs: None,
+            fresh: true,
         };
         self.put(&record)?;
         Ok(record)
@@ -215,12 +235,30 @@ impl Places {
 /// project outside one. tmux doesn't allow `.` or `:` in names, so anything
 /// but letters, digits, `_` and `-` becomes `-`.
 pub fn name(project: Option<&Path>, name: Option<&str>) -> String {
-    let base = project
-        .and_then(Path::file_name)
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "global".into());
-    let slug: String = base
-        .chars()
+    format!(
+        "{}-{}",
+        project_slug(project),
+        name.unwrap_or("orchestrator")
+    )
+}
+
+/// `<project>-<workflow>-<run id>`, for the workspace a run opens, e.g.
+/// `tome-cli-build-42`.
+pub fn run_name(project: Option<&Path>, workflow: &str, run: RunId) -> String {
+    format!("{}-{}-{run}", project_slug(project), slug(workflow))
+}
+
+fn project_slug(project: Option<&Path>) -> String {
+    slug(
+        &project
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "global".into()),
+    )
+}
+
+fn slug(s: &str) -> String {
+    s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
                 c
@@ -228,8 +266,7 @@ pub fn name(project: Option<&Path>, name: Option<&str>) -> String {
                 '-'
             }
         })
-        .collect();
-    format!("{slug}-{}", name.unwrap_or("orchestrator"))
+        .collect()
 }
 
 impl Tmux {
@@ -320,7 +357,7 @@ impl Cmux {
                     String::from_utf8_lossy(&out.stderr).trim()
                 ))
             })?;
-        match self.wait_for_surface(|s| s.workspace_ref == reference) {
+        match self.wait_for_surface(|s| s.workspace_ref == reference && !s.id.is_empty()) {
             Some(s) => Ok(s.workspace),
             None => {
                 self.kill(reference);
@@ -352,6 +389,19 @@ mod tests {
             "my-app-reviews"
         );
         assert_eq!(name(None, None), "global-orchestrator");
+    }
+
+    #[test]
+    fn a_run_names_the_workspace_it_opens_after_its_project_workflow_and_id() {
+        assert_eq!(
+            run_name(Some(Path::new("/src/tome-cli")), "build", RunId::new(42)),
+            "tome-cli-build-42"
+        );
+        assert_eq!(
+            run_name(Some(Path::new("/src/my.app")), "review.loop", RunId::new(1)),
+            "my-app-review-loop-1"
+        );
+        assert_eq!(run_name(None, "build", RunId::new(3)), "global-build-3");
     }
 
     #[test]

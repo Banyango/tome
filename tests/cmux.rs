@@ -113,7 +113,7 @@ fn cancel_closes_the_workspace() {
 
     let (code, run) = env.json(&["run", "cancel", "1"]);
     assert_eq!(code, 0, "{run}");
-    assert!(!cmux_has_workspace(&id));
+    eventually("the workspace is gone", || !cmux_has_workspace(&id));
 }
 
 #[test]
@@ -205,6 +205,21 @@ fn layout_env(layout: &str) -> Option<Env> {
     Some(env)
 }
 
+/// A workspace's title.
+fn workspace_title(workspace: &str) -> String {
+    let out = cmux(&["tree", "--all", "--json"]);
+    let tree: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+    tree["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|w| w["workspaces"].as_array().into_iter().flatten())
+        .find(|w| w["id"] == workspace)
+        .and_then(|w| w["title"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// A workspace's panes, left to right: `(pane, [(surface, title)])`.
 fn panes_of(workspace: &str) -> Vec<(String, Vec<(String, String)>)> {
     let out = cmux(&[
@@ -290,58 +305,63 @@ fn tab_layout_opens_sessions_as_tabs_of_one_split_in_the_tome_workspace() {
         serde_json::from_slice(&fs::read(env.home().join("workspaces.json")).unwrap()).unwrap();
     assert_eq!(places[0]["id"], ws.as_str(), "{places}");
 
-    // The shell on the left, the tabs split on its right.
+    // The workspace is named for the run that opened it.
+    assert_eq!(workspace_title(&ws), "p-build-1");
+
+    // The orchestrator runs in the workspace's first tab, and the tabs
+    // join it there.
     eventually("the orchestrator's tab", || {
         titles(&panes_of(&ws))
-            .get(1)
+            .first()
             .is_some_and(|t| t == &["tome: build #1"])
     });
     spawn(&env, "w1", &["sleep", "60"]);
     let panes = panes_of(&ws);
-    assert_eq!(panes.len(), 2, "{panes:?}");
-    assert_eq!(titles(&panes)[1], ["tome: build #1", "tome: build #1 / w1"]);
+    assert_eq!(panes.len(), 1, "{panes:?}");
+    assert_eq!(titles(&panes)[0], ["tome: build #1", "tome: build #1 / w1"]);
 
     // The orchestrator is on a terminal of its own, and nudges reach it.
     spawn(&env, "w2", &["true"]);
     eventually("the nudge", || got(&env).contains("[tome] worker w2 done"));
-    eventually("w2's tab closed", || titles(&panes_of(&ws))[1].len() == 2);
+    eventually("w2's tab closed", || titles(&panes_of(&ws))[0].len() == 2);
 
-    // Closing the tabs by hand ends just those sessions, and the split goes.
-    let (_, tabs) = panes_of(&ws)[1].clone();
+    // Closing the tabs by hand ends those sessions, and the workspace goes
+    // with its last tab.
+    let (_, tabs) = panes_of(&ws)[0].clone();
     for (id, _) in &tabs {
-        assert!(cmux(&[
+        // The last one can't be closed on its own; closing the others
+        // already ended the run.
+        let _ = cmux(&[
             "close-surface",
             "--workspace",
             &ws,
             "--surface",
             id,
-            "--force"
-        ])
-        .status
-        .success());
+            "--force",
+        ]);
     }
     eventually("run to fail", || {
         status(&env)["reason"] == "orchestrator_exited"
     });
-    eventually("the split is gone", || panes_of(&ws).len() == 1);
+    eventually("the workspace is gone", || !cmux_has_workspace(&ws));
 
-    // The next run brings the split back, in the same workspace.
+    // The next run opens the workspace again, with its orchestrator in the
+    // first tab.
     env.json(&["run", "build", "--detach"]);
     let (_, shown) = env.json(&["runs", "show", "2"]);
-    assert_eq!(shown["sessions"][0]["handle"], ws.as_str(), "{shown}");
+    let ws = shown["sessions"][0]["handle"].as_str().unwrap().to_string();
     eventually("run 2's tab", || {
         titles(&panes_of(&ws))
-            .get(1)
+            .first()
             .is_some_and(|t| t == &["tome: build #2"])
     });
 
-    // A restart kills the sessions but leaves the workspace.
+    // A restart kills the sessions, and the workspace goes with them.
     let (_, daemon) = env.json(&["daemon", "status"]);
     unsafe { libc::kill(daemon["pid"].as_i64().unwrap() as i32, libc::SIGKILL) };
     eventually("daemon to die", || env.json(&["daemon", "status"]).0 == 3);
     env.start_daemon();
-    eventually("the split is gone again", || panes_of(&ws).len() == 1);
-    assert!(cmux_has_workspace(&ws));
+    eventually("the workspace is gone again", || !cmux_has_workspace(&ws));
 }
 
 #[test]
@@ -356,7 +376,7 @@ fn split_layout_opens_each_session_in_its_own_split_to_the_right() {
     spawn(&env, "w1", &["sleep", "60"]);
     spawn(&env, "w2", &["sleep", "60"]);
     let panes = panes_of(&ws);
-    let titles: Vec<String> = titles(&panes).into_iter().skip(1).flatten().collect();
+    let titles: Vec<String> = titles(&panes).into_iter().flatten().collect();
     assert_eq!(
         titles,
         [
@@ -370,11 +390,10 @@ fn split_layout_opens_each_session_in_its_own_split_to_the_right() {
     // Nudges reach the orchestrator's pane.
     spawn(&env, "w3", &["true"]);
     eventually("the nudge", || got(&env).contains("[tome] worker w3 done"));
-    eventually("w3's pane closed", || panes_of(&ws).len() == 4);
+    eventually("w3's pane closed", || panes_of(&ws).len() == 3);
 
     assert_eq!(env.json(&["run", "cancel", "1"]).0, 0);
-    eventually("only the shell is left", || panes_of(&ws).len() == 1);
-    assert!(cmux_has_workspace(&ws));
+    eventually("the workspace is gone", || !cmux_has_workspace(&ws));
 }
 
 fn spawn_with(env: &Env, name: &str, flags: &[&str], argv: &[&str]) {
@@ -443,7 +462,7 @@ fn a_tab_with_from_joins_the_anchor_pane_and_size_is_best_effort() {
     );
     let d = worker_session(&env, "d");
     assert_eq!(d["placement"]["direction"], "down", "{d}");
-    assert_eq!(panes_of(&ws).len(), 3, "{:?}", panes_of(&ws));
+    assert_eq!(panes_of(&ws).len(), 2, "{:?}", panes_of(&ws));
     let warnings = d["placement"]["warnings"].to_string();
     assert!(
         d["placement"]["warnings"].is_null() || warnings.contains("split.size 10"),
@@ -464,7 +483,7 @@ fn session_move_moves_a_live_surface_between_tabs_splits_and_its_own_workspace()
         .unwrap()
         .to_string();
     eventually("w1's tab", || {
-        titles(&panes_of(&ws)).get(1).is_some_and(|t| t.len() == 2)
+        titles(&panes_of(&ws)).first().is_some_and(|t| t.len() == 2)
     });
 
     // Out of the tabs split into a split of its own.
@@ -476,7 +495,7 @@ fn session_move_moves_a_live_surface_between_tabs_splits_and_its_own_workspace()
         "{moved}"
     );
     let panes = panes_of(&ws);
-    assert_eq!(panes.len(), 3, "{panes:?}");
+    assert_eq!(panes.len(), 2, "{panes:?}");
     assert!(
         panes.iter().any(|(_, s)| s.len() == 1 && s[0].0 == surface),
         "{panes:?}"
@@ -500,7 +519,7 @@ fn session_move_moves_a_live_surface_between_tabs_splits_and_its_own_workspace()
     assert_eq!(moved["handle"], ws.as_str(), "{moved}");
     eventually("its own workspace closed", || !cmux_has_workspace(&own));
     assert_eq!(
-        titles(&panes_of(&ws))[1],
+        titles(&panes_of(&ws))[0],
         ["tome: build #1", "tome: build #1 / w1"]
     );
     assert_eq!(

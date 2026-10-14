@@ -500,6 +500,7 @@ impl Engine {
             flags,
             run_flags: run_flags.as_ref(),
             spec: wf.frontmatter().defaults.layout.as_ref(),
+            split_workers: kind == Kind::Tmux,
         };
         let mut placement = placement::resolve(&inputs, project.as_deref())?;
         let layout = placement.layout;
@@ -556,6 +557,7 @@ impl Engine {
             split: &split,
             target: &target,
             project: orchestrator::run_project(run).as_deref(),
+            workspace_label: Some(&orchestrator::workspace_label(run)),
         })?;
         placement.warnings = warnings;
         let session = store::Session {

@@ -297,9 +297,9 @@ impl Cmux {
                     "false",
                 ],
             )?;
+            // cmux answers before its tree shows the move.
             return self
-                .surfaces()
-                .and_then(|all| all.into_iter().find(|x| x.id == surface))
+                .wait_for_surface(|x| x.id == surface && x.workspace != old_workspace)
                 .map(|x| x.workspace)
                 .ok_or_else(|| {
                     CliError::internal(
@@ -310,7 +310,7 @@ impl Cmux {
         let _held = workspace::lock();
         let places = workspace::Places::open();
         let (mut record, kept) =
-            self.workspace(&places, m.target, m.project, &home(m), warnings)?;
+            self.workspace(&places, m.target, m.project, None, &home(m), warnings)?;
         let what = format!("to {}", m.target.label(m.project));
         let split = m.split;
         let here: Vec<Surface> = self

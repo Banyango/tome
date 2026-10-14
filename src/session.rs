@@ -24,6 +24,7 @@ mod herdr;
 mod moves;
 mod split;
 mod workspace;
+pub use workspace::run_name as run_workspace_name;
 
 use crate::ids::RunId;
 use herdr::Herdr;
@@ -201,8 +202,14 @@ impl Backend {
             (Backend::Cmux(c), layout) => {
                 let _held = workspace::lock();
                 let places = workspace::Places::open();
-                let (record, kept) =
-                    c.workspace(&places, launch.target, launch.project, &home, &mut warnings)?;
+                let (record, kept) = c.workspace(
+                    &places,
+                    launch.target,
+                    launch.project,
+                    launch.workspace_label,
+                    &home,
+                    &mut warnings,
+                )?;
                 let surface = c.launch_in(
                     kept.then_some(&places),
                     record.clone(),
@@ -525,6 +532,9 @@ pub struct Launch<'a> {
     /// The run's project, whose tome workspaces the `tab` and `split`
     /// layouts use; `None` for runs outside a project.
     pub project: Option<&'a Path>,
+    /// What to call the project's cmux workspace if this launch has to open
+    /// it (it's found by id afterwards, so the name only labels it).
+    pub workspace_label: Option<&'a str>,
 }
 
 // --- tmux ------------------------------------------------------------------
@@ -966,8 +976,22 @@ impl Cmux {
         let join = anchor
             .and_then(|a| a.pane.clone())
             .filter(|_| layout == Layout::Tab);
-        let surface = match (layout, join.or(tabs)) {
-            (Layout::Tab, Some(pane)) => {
+        // A workspace tome just opened has one terminal, a plain shell:
+        // start the first session there instead of beside it.
+        let initial = match (record.fresh, here.as_slice()) {
+            (true, [only]) => Some((only.id.clone(), only.pane.clone())),
+            _ => None,
+        };
+        let reused = initial.is_some();
+        let surface = match (initial, layout, join.or(tabs)) {
+            (Some((id, pane)), layout, _) => {
+                if let (Layout::Tab, Some(places)) = (layout, places) {
+                    record.tabs = pane;
+                    places.put(&record)?;
+                }
+                id
+            }
+            (None, Layout::Tab, Some(pane)) => {
                 let out = self.run(&[
                     "--id-format",
                     "uuids",
@@ -981,7 +1005,7 @@ impl Cmux {
                 ])?;
                 first_id(&out).ok_or_else(|| failed("tab", &out))?
             }
-            _ => {
+            (None, _, _) => {
                 // Off the anchor, else the last pane (cmux lists them left
                 // to right).
                 let mut args = vec![
@@ -1018,7 +1042,9 @@ impl Cmux {
             launch.title,
         ]);
         if !self.send_line(&record.id, Some(&surface), &exec_command(launch)) {
-            self.close_surface(&record.id, &surface);
+            if !reused {
+                self.close_surface(&record.id, &surface);
+            }
             return Err(CliError::internal(format!(
                 "cmux couldn't start `{}` in its new terminal",
                 launch.name
@@ -1035,6 +1061,7 @@ impl Cmux {
         places: &workspace::Places,
         target: &Target,
         project: Option<&Path>,
+        label: Option<&str>,
         home: &Path,
         warnings: &mut Vec<String>,
     ) -> CliResult<(workspace::Record, bool)> {
@@ -1044,7 +1071,10 @@ impl Cmux {
             }
             target => {
                 gone(target, warnings);
-                Ok((places.cmux(self, project, target.name(), home)?, true))
+                Ok((
+                    places.cmux(self, project, target.name(), label, home)?,
+                    true,
+                ))
             }
         }
     }
@@ -1133,16 +1163,30 @@ impl Cmux {
         self.close_forced(&["close-workspace", "--workspace", id])
     }
 
-    /// Close one surface (tab) of a workspace. Returns whether it was open.
+    /// Close one surface (tab) of a workspace; cmux won't close a
+    /// workspace's last one, so that closes the workspace. Returns whether
+    /// it was open.
     pub fn close_surface(&self, workspace: &str, surface: &str) -> bool {
-        self.surface_alive(surface) == Some(true)
-            && self.close_forced(&[
-                "close-surface",
-                "--workspace",
-                workspace,
-                "--surface",
-                surface,
-            ])
+        let Some(all) = self.surfaces() else {
+            return false;
+        };
+        if !all.iter().any(|s| s.id == surface) {
+            return false;
+        }
+        let in_workspace = all
+            .iter()
+            .filter(|s| s.workspace == workspace && !s.id.is_empty())
+            .count();
+        if in_workspace == 1 {
+            return self.kill(workspace);
+        }
+        self.close_forced(&[
+            "close-surface",
+            "--workspace",
+            workspace,
+            "--surface",
+            surface,
+        ])
     }
 
     /// Run a cmux close command with `--force`, which cmux asks for when a
@@ -1327,6 +1371,7 @@ mod tests {
             split: &Split::default(),
             target: &Target::Project,
             project: None,
+            workspace_label: None,
         })
         .unwrap();
     }

@@ -166,7 +166,7 @@ Each setting resolves on its own, from the most specific source down. A source t
 | 3 | the `workers` block | | |
 | 4 | `tome run` flags | | |
 
-After that, all of them use `defaults.layout` and its preset, then `TOME_LAYOUT`, the project's `.tome/config.yaml`, the global config, and the built-in default. By default the orchestrator gets a tab in the project workspace, and each worker splits below the run's last pane (`split`, `direction: down`, `from: last`), so a run reads as one tab. A worker that sets a `workspace` but no layout keeps a tab, since the orchestrator isn't there to split from.
+After that, all of them use `defaults.layout` and its preset, then `TOME_LAYOUT`, the project's `.tome/config.yaml`, the global config, and the built-in default. By default the orchestrator gets a tab in the project workspace, and so does each worker. In cmux and herdr the first session takes the new workspace's first tab, so there's no empty tab beside it; the workspace closes with its last tab. In cmux the project workspace is titled after the run that opens it (`<project>-<workflow>-<run id>`, such as `tome-cli-build-42`); runs that join it later leave the title alone. With tmux, each worker instead splits below the run's last pane (`split`, `direction: down`, `from: last`), so a run reads as one tab, unless it sets a `workspace` without a layout, since the orchestrator isn't there to split from. Ask for splits with `--layout split` or `layout: split`.
 
 `from: caller` is for the run's agent or orchestrator only. A worker's rule can't set it, and `tome worker spawn` refuses it.
 
