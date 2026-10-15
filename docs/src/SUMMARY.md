@@ -22,6 +22,7 @@
 - [Sessions and backends](guides/sessions.md)
 - [Operating tome](guides/operating.md)
 - [Remote nodes](guides/nodes.md)
+- [Plugins](guides/plugins.md)
 
 # How it works
 

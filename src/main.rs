@@ -21,6 +21,8 @@ mod orchestrator;
 mod output;
 mod paths;
 mod placement;
+mod plugin;
+mod plugincmd;
 mod primitives;
 mod query;
 mod recovery;
@@ -198,6 +200,11 @@ enum Command {
         #[command(subcommand)]
         command: NodeCommand,
     },
+    /// Install and manage plugins (this machine only).
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
     /// Relay JSON-RPC between stdin/stdout and the daemon (what a node runs
     /// at the other end of `ssh`).
     #[command(hide = true)]
@@ -205,6 +212,25 @@ enum Command {
         #[arg(long)]
         stdio: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum PluginCommand {
+    /// Install a plugin into ~/.tome/plugins from a folder or a git URL.
+    Install {
+        /// A path, or a git URL with an optional `#ref` (branch, tag or commit).
+        source: String,
+    },
+    /// Pull the latest of a git-installed plugin (all of them by default).
+    Update { name: Option<String> },
+    /// Remove an installed plugin.
+    Rm { name: String },
+    /// Turn an installed plugin on.
+    Enable { name: String },
+    /// Turn an installed plugin off without removing it.
+    Disable { name: String },
+    /// List the installed plugins: state, version, hooks and name conflicts.
+    Ls,
 }
 
 #[derive(Subcommand)]
@@ -795,7 +821,11 @@ fn main() {
         Err(e) => std::process::exit(emit(mode, Err(e))),
     }
 
-    if node::target().is_none() && !matches!(command, Command::Daemon { .. } | Command::Node { .. })
+    if node::target().is_none()
+        && !matches!(
+            command,
+            Command::Daemon { .. } | Command::Node { .. } | Command::Plugin { .. }
+        )
     {
         if let Ok(cwd) = std::env::current_dir() {
             triggerscmd::register(&cwd);
@@ -835,6 +865,7 @@ fn reach(command: &Command) -> Reach {
         | Command::Workflow { .. }
         | Command::Layout { .. }
         | Command::Node { .. }
+        | Command::Plugin { .. }
         | Command::Rpc { .. }
         | Command::Runs {
             command: RunsCommand::List { nodes: true, .. },
@@ -900,6 +931,9 @@ fn route(command: &mut Command, on: Option<String>) -> CliResult<Option<node::No
                 Command::Node { .. } => {
                     "`tome node` manages this machine's node list; leave out --on".to_string()
                 }
+                Command::Plugin { .. } => {
+                    "plugins are installed per machine; run `tome plugin …` on the machine itself (leave out --on)".to_string()
+                }
                 _ => format!("run it on the node instead: `ssh {dest} tome …`"),
             };
             return Err(output::CliError::invalid(
@@ -923,6 +957,19 @@ fn route(command: &mut Command, on: Option<String>) -> CliResult<Option<node::No
         .ok()
         .filter(|o| !o.trim().is_empty() && !in_run);
     node::resolve(on.or(env).as_deref(), from_ref.as_deref())
+}
+
+/// The names tome's own commands answer to, which a plugin can't take.
+fn builtin_commands() -> Vec<String> {
+    use clap::CommandFactory;
+    let cli = Cli::command();
+    let mut names: Vec<String> = cli
+        .get_subcommands()
+        .flat_map(|c| std::iter::once(c.get_name()).chain(c.get_all_aliases()))
+        .map(str::to_string)
+        .collect();
+    names.push("help".to_string());
+    names
 }
 
 fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
@@ -1198,6 +1245,17 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             older_than,
             dry_run,
         } => gc::run(&older_than, dry_run),
+        Command::Plugin { command } => {
+            let builtin = builtin_commands();
+            match command {
+                PluginCommand::Install { source } => plugincmd::install(&source, &builtin),
+                PluginCommand::Update { name } => plugincmd::update(name.as_deref(), &builtin),
+                PluginCommand::Rm { name } => plugincmd::rm(&name),
+                PluginCommand::Enable { name } => plugincmd::set_enabled(&name, true),
+                PluginCommand::Disable { name } => plugincmd::set_enabled(&name, false),
+                PluginCommand::Ls => plugincmd::ls(&builtin),
+            }
+        }
         Command::Node { command } => match command {
             NodeCommand::Add { name, ssh, tome } => nodecmd::add(&name, &ssh, tome.as_deref()),
             NodeCommand::Rm { name } => nodecmd::rm(&name),

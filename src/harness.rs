@@ -116,7 +116,7 @@ pub fn resolve(name: &str, project: Option<&Path>) -> CliResult<Harness> {
 
 /// One `harnesses:` entry: `name: {command: ..., model_flag: ...}` or the
 /// shorthand `name: <command>`.
-fn parse_harness(name: &str, spec: &Yaml) -> Result<Def, String> {
+pub fn parse_harness(name: &str, spec: &Yaml) -> Result<Def, String> {
     let mut model_flag = None;
     let command = match spec {
         Yaml::Mapping(m) => {

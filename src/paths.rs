@@ -37,3 +37,9 @@ pub fn db_path() -> PathBuf {
 pub fn runs_dir() -> PathBuf {
     tome_home().join("runs")
 }
+
+/// Where plugins are installed: one folder per plugin. Plugins load from
+/// here and nowhere else, so a cloned repo can never add code tome runs.
+pub fn plugins_dir() -> PathBuf {
+    tome_home().join("plugins")
+}
