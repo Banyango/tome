@@ -99,12 +99,14 @@ pub fn scan(projects: &[PathBuf]) -> Scan {
         Library {
             global_dir: global_dir.clone(),
             project_dir: None,
+            plugin_dirs: Vec::new(),
         },
     )];
     for root in projects {
         let lib = Library {
             global_dir: global_dir.clone(),
             project_dir: Some(root.join(".tome/workflows")),
+            plugin_dirs: Vec::new(),
         };
         libraries.push((Some(root.clone()), lib));
     }

@@ -110,6 +110,8 @@ pub struct Engine {
     pub(crate) forwarding: Mutex<crate::bus::forward::State>,
     blocked_since: Mutex<HashMap<(RunId, String), Instant>>,
     blocked_notified: Mutex<HashMap<(RunId, String), Instant>>,
+    /// The plugins this daemon runs.
+    pub(crate) plugins: Arc<crate::plugin::host::Host>,
     /// Set when the daemon starts shutting down.
     pub(crate) stop: Stop,
 }
@@ -127,6 +129,7 @@ impl Engine {
             forwarding: Mutex::new(Default::default()),
             blocked_since: Mutex::new(HashMap::new()),
             blocked_notified: Mutex::new(HashMap::new()),
+            plugins: Arc::new(crate::plugin::host::Host::new()),
             stop: Stop::default(),
         }
     }
@@ -213,6 +216,8 @@ impl Engine {
             req.placement.as_ref(),
             req.cmux_caller.as_ref(),
         )?;
+        // Plugins may reject the run, or change its params and env.
+        let req = &self.before_start(&wf, req)?;
         let origin = origin(kind, req.by_trigger(), req.cmux_caller.as_ref());
         self.admit(
             &wf,
@@ -256,6 +261,7 @@ impl Engine {
             flags.as_ref(),
             req.cmux_caller.as_ref(),
         )?;
+        self.before_resume(&old)?;
         let origin = origin(kind, false, req.cmux_caller.as_ref());
         self.admit(&wf, false, |store, status| {
             // Checked again with the store held: another resume may have won.

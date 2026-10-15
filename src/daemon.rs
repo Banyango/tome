@@ -69,6 +69,21 @@ impl Daemon {
             "workflow.resolve" => (crate::node::resolve_workflow_rpc(&req.params), false),
             "daemon.status" => (Ok(self.status()), false),
             "daemon.shutdown" => (Ok(json!({ "stopping": true })), true),
+            "plugin.status" => (
+                Ok(json!({ "plugins": self.engine.plugins.status() })),
+                false,
+            ),
+            "plugin.reload" => {
+                self.engine.plugins.reload();
+                (
+                    Ok(json!({ "plugins": self.engine.plugins.status() })),
+                    false,
+                )
+            }
+            "notify" => (notify(&req.params), false),
+            "provider.release" if !self.engine.stop.is_set() => {
+                (self.engine.release(&req.params), false)
+            }
             _ if self.engine.stop.is_set() => (
                 Err(CliError::internal("the daemon is shutting down")),
                 false,
@@ -113,9 +128,24 @@ impl Daemon {
                 SHUTDOWN_GRACE.as_secs()
             );
         }
+        // Last, so the plugins hear about runs that ended meanwhile.
+        self.engine.plugins.shutdown();
         self.engine.close();
         eprintln!("tome daemon: shut down");
     }
+}
+
+/// `notify {title, message}`: tell the user, as the daemon does for its own
+/// events (a notification in the terminal multiplexer, and on stderr).
+fn notify(p: &Value) -> CliResult<Value> {
+    let text = |key: &str| {
+        p.get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| CliError::invalid(format!("`notify` needs a `{key}`")))
+    };
+    orchestrator::notify_delivery(text("title")?, text("message")?);
+    Ok(json!({ "notified": true }))
 }
 
 /// Counts a streaming request while it's served.
@@ -180,6 +210,7 @@ pub fn run_foreground() -> anyhow::Result<()> {
         std::process::id()
     );
     let engine = &daemon.engine;
+    engine.plugins.reload();
     let background = vec![
         std::thread::spawn({
             let engine = Arc::clone(engine);
@@ -304,6 +335,7 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
 /// and `run.watch`.
 fn streams(req: &Request) -> bool {
     req.method == "run.watch"
+        || req.method == "provider.provide"
         || (matches!(req.method.as_str(), "run.start" | "run.resume")
             && req.params["attach"] == true)
 }
@@ -314,6 +346,9 @@ fn stream_run(daemon: &Daemon, req: &Request, writer: &mut UnixStream) -> Option
         return Some(Err(CliError::internal("the daemon is shutting down")));
     }
     let mut sink = SocketSink { out: writer };
+    if req.method == "provider.provide" {
+        return Some(daemon.engine.provide(&req.params, &mut sink));
+    }
     let result = if req.method == "run.watch" {
         match api::req_id(&req.params) {
             Ok(id) => {

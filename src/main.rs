@@ -23,7 +23,10 @@ mod paths;
 mod placement;
 mod plugin;
 mod plugincmd;
+mod pluginhooks;
 mod primitives;
+mod provider;
+mod providercmd;
 mod query;
 mod recovery;
 mod resume;
@@ -45,6 +48,7 @@ mod worktree;
 
 use clap::{Parser, Subcommand};
 use output::{emit, CliResult, Mode, Report};
+use std::ffi::OsString;
 
 /// Tome: agentic workflow management.
 #[derive(Parser)]
@@ -116,6 +120,14 @@ enum Command {
         /// session (`tome session view`).
         #[arg(long, conflicts_with = "detach")]
         view: bool,
+        /// With `--on <provider>`: an option for the provider's `provide`
+        /// (key=value); repeatable.
+        #[arg(long = "provider-opt", value_name = "KEY=VALUE")]
+        provider_opts: Vec<String>,
+        /// With `--on <provider>`: keep the machine after the run instead
+        /// of releasing it.
+        #[arg(long)]
+        keep: bool,
         #[command(flatten)]
         placement: PlacementArgs,
     },
@@ -171,6 +183,15 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Show a notification on this machine, through the daemon (for plugins and scripts).
+    ///
+    /// To send an event to an orchestrator, use `tome publish`.
+    Notify {
+        /// The notification's title.
+        title: String,
+        /// The message.
+        message: String,
+    },
     /// Inspect and repair the project's message bus.
     Events {
         #[command(subcommand)]
@@ -212,6 +233,9 @@ enum Command {
         #[arg(long)]
         stdio: bool,
     },
+    /// A subcommand an installed plugin provides (`tome plugin ls`).
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
 }
 
 #[derive(Subcommand)]
@@ -231,6 +255,8 @@ enum PluginCommand {
     Disable { name: String },
     /// List the installed plugins: state, version, hooks and name conflicts.
     Ls,
+    /// Check a plugin: its manifest, files and names, and that it starts.
+    Check { name: String },
 }
 
 #[derive(Subcommand)]
@@ -333,6 +359,8 @@ enum WorkflowCommand {
 
 #[derive(Subcommand)]
 enum HarnessCommand {
+    /// List the harnesses tome knows and where each comes from.
+    Ls,
     /// Check harness config, command availability and the expanded command.
     Validate {
         /// Harness name (defaults to every known harness).
@@ -815,7 +843,16 @@ fn main() {
         },
         other => other,
     };
-    match route(&mut command, cli.on) {
+    let provider = match claimed_provider(&command, cli.on.as_deref()) {
+        Ok(provider) => provider,
+        Err(e) => std::process::exit(emit(mode, Err(e))),
+    };
+    let routed = if provider.is_some() {
+        Ok(None)
+    } else {
+        route(&mut command, cli.on)
+    };
+    match routed {
         Ok(Some(node)) => node::set_target(node),
         Ok(None) => {}
         Err(e) => std::process::exit(emit(mode, Err(e))),
@@ -824,15 +861,39 @@ fn main() {
     if node::target().is_none()
         && !matches!(
             command,
-            Command::Daemon { .. } | Command::Node { .. } | Command::Plugin { .. }
+            Command::Daemon { .. }
+                | Command::Node { .. }
+                | Command::Plugin { .. }
+                | Command::External(_)
         )
     {
         if let Ok(cwd) = std::env::current_dir() {
             triggerscmd::register(&cwd);
         }
     }
-    let code = emit(mode, dispatch(command, mode));
+    let code = emit(mode, dispatch(command, mode, provider));
     std::process::exit(code);
+}
+
+/// The provider `--on` names, if it names one: only `tome run <workflow>`
+/// takes a provider, since there is no machine until it makes one.
+fn claimed_provider(command: &Command, on: Option<&str>) -> CliResult<Option<String>> {
+    let Some(name) = on
+        .map(str::trim)
+        .filter(|n| !n.is_empty() && *n != node::LOCAL)
+    else {
+        return Ok(None);
+    };
+    if !providercmd::is_provider(name) {
+        return Ok(None);
+    }
+    match command {
+        Command::Run { command: None, .. } => Ok(Some(name.to_string())),
+        _ => Err(output::CliError::invalid(format!(
+            "`{name}` is a provider: it makes a machine for `tome run <workflow> --on {name}`, and nothing else takes it"
+        ))
+        .with_hint("to use a machine it made with --keep, give its node name (see `tome node ls`)")),
+    }
 }
 
 /// Where a command can go.
@@ -866,6 +927,8 @@ fn reach(command: &Command) -> Reach {
         | Command::Layout { .. }
         | Command::Node { .. }
         | Command::Plugin { .. }
+        | Command::Notify { .. }
+        | Command::External(_)
         | Command::Rpc { .. }
         | Command::Runs {
             command: RunsCommand::List { nodes: true, .. },
@@ -931,6 +994,9 @@ fn route(command: &mut Command, on: Option<String>) -> CliResult<Option<node::No
                 Command::Node { .. } => {
                     "`tome node` manages this machine's node list; leave out --on".to_string()
                 }
+                Command::External(_) => {
+                    "plugin commands run on this machine; run it on the node instead, or call `tome …` from the plugin".to_string()
+                }
                 Command::Plugin { .. } => {
                     "plugins are installed per machine; run `tome plugin …` on the machine itself (leave out --on)".to_string()
                 }
@@ -972,7 +1038,34 @@ fn builtin_commands() -> Vec<String> {
     names
 }
 
-fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
+/// What `tome run <workflow>` starts, here or on a node.
+struct Start<'a> {
+    workflow: &'a str,
+    params: &'a [String],
+    placement: &'a placement::Settings,
+    harness: Option<&'a str>,
+    model: Option<&'a str>,
+    detach: bool,
+    view: bool,
+}
+
+impl Start<'_> {
+    fn run(&self, mode: Mode) -> CliResult<Report> {
+        let cwd = current_dir()?;
+        let (workflow, params, placement) = (self.workflow, self.params, self.placement);
+        let (harness, model) = (self.harness, self.model);
+        if self.view {
+            nodecmd::run_and_view(&cwd, workflow, params, placement, harness, model)
+        } else if self.detach {
+            runcmd::start_detached(&cwd, workflow, params, placement, harness, model)
+        } else {
+            runcmd::start_attached(&cwd, workflow, params, placement, mode, harness, model)
+        }
+    }
+}
+
+/// `provider` is the provider `--on` named, if it named one.
+fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult<Report> {
     match command {
         Command::Start | Command::Stop => unreachable!("rewritten to `daemon` in main"),
         Command::Daemon { command } => match command {
@@ -1004,6 +1097,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             } => scaffold::rm(&current_dir()?, &workflow, global, force),
         },
         Command::Harness { command } => match command {
+            HarnessCommand::Ls => harnesscmd::ls(&current_dir()?),
             HarnessCommand::Validate { name, model } => {
                 harnesscmd::validate(&current_dir()?, name.as_deref(), model.as_deref())
             }
@@ -1047,38 +1141,38 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             model,
             detach,
             view,
+            provider_opts,
+            keep,
             placement,
         } => {
             let workflow = workflow.expect("clap requires a workflow");
             let placement = placement.settings()?;
-            if view {
-                nodecmd::run_and_view(
-                    &current_dir()?,
-                    &workflow,
-                    &params,
-                    &placement,
-                    harness.as_deref(),
-                    model.as_deref(),
+            let start = Start {
+                workflow: &workflow,
+                params: &params,
+                placement: &placement,
+                harness: harness.as_deref(),
+                model: model.as_deref(),
+                detach,
+                view,
+            };
+            match provider {
+                Some(provider) => providercmd::run(
+                    &providercmd::Job {
+                        provider: &provider,
+                        cwd: &current_dir()?,
+                        workflow: &workflow,
+                        opt_args: &provider_opts,
+                        keep,
+                        detached: detach || view,
+                    },
+                    || start.run(mode),
+                ),
+                None if !provider_opts.is_empty() || keep => Err(output::CliError::invalid(
+                    "--provider-opt and --keep only apply with `--on <provider>`",
                 )
-            } else if detach {
-                runcmd::start_detached(
-                    &current_dir()?,
-                    &workflow,
-                    &params,
-                    &placement,
-                    harness.as_deref(),
-                    model.as_deref(),
-                )
-            } else {
-                runcmd::start_attached(
-                    &current_dir()?,
-                    &workflow,
-                    &params,
-                    &placement,
-                    mode,
-                    harness.as_deref(),
-                    model.as_deref(),
-                )
+                .with_hint("list providers with `tome plugin ls`")),
+                None => start.run(mode),
             }
         }
         Command::Ready => runcmd::ready(),
@@ -1227,6 +1321,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             text,
             dry_run,
         } => eventscmd::publish(&current_dir()?, &topic, text, dry_run),
+        Command::Notify { title, message } => plugincmd::notify(&title, &message),
         Command::Events { command } => match command {
             EventsCommand::Ls => eventscmd::ls(&current_dir()?),
             EventsCommand::Show { topic, all } => eventscmd::show(&current_dir()?, &topic, all),
@@ -1248,12 +1343,22 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
         Command::Plugin { command } => {
             let builtin = builtin_commands();
             match command {
-                PluginCommand::Install { source } => plugincmd::install(&source, &builtin),
-                PluginCommand::Update { name } => plugincmd::update(name.as_deref(), &builtin),
-                PluginCommand::Rm { name } => plugincmd::rm(&name),
-                PluginCommand::Enable { name } => plugincmd::set_enabled(&name, true),
-                PluginCommand::Disable { name } => plugincmd::set_enabled(&name, false),
+                PluginCommand::Install { source } => {
+                    plugincmd::install(&source, &builtin).inspect(|_| plugincmd::reload_daemon())
+                }
+                PluginCommand::Update { name } => plugincmd::update(name.as_deref(), &builtin)
+                    .inspect(|_| plugincmd::reload_daemon()),
+                PluginCommand::Rm { name } => {
+                    plugincmd::rm(&name).inspect(|_| plugincmd::reload_daemon())
+                }
+                PluginCommand::Enable { name } => {
+                    plugincmd::set_enabled(&name, true).inspect(|_| plugincmd::reload_daemon())
+                }
+                PluginCommand::Disable { name } => {
+                    plugincmd::set_enabled(&name, false).inspect(|_| plugincmd::reload_daemon())
+                }
                 PluginCommand::Ls => plugincmd::ls(&builtin),
+                PluginCommand::Check { name } => plugincmd::check(&name, &builtin),
             }
         }
         Command::Node { command } => match command {
@@ -1262,6 +1367,7 @@ fn dispatch(command: Command, mode: Mode) -> CliResult<Report> {
             NodeCommand::Ls => nodecmd::ls(),
             NodeCommand::Check { name } => nodecmd::check(&name),
         },
+        Command::External(args) => plugincmd::exec_subcommand(&args, &builtin_commands()),
         Command::Rpc { .. } => unreachable!("handled in main"),
     }
 }

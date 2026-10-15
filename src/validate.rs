@@ -85,9 +85,18 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
         .flatten()
         .map(|root| crate::bus::forward::check(&root));
     let bus_ok = bus.as_ref().is_none_or(|(errors, _)| errors.is_empty());
-    let valid = results.iter().all(|r| r["valid"] == true) && bus_ok;
+    // Names a plugin shares with something else make every use of them an error.
+    let clashes = crate::plugin::store::collisions(cwd)?;
+    let valid = results.iter().all(|r| r["valid"] == true) && bus_ok && clashes.is_empty();
     let mut human = render_human(&results, target.is_none());
+    for c in &clashes {
+        human.push_str(&format!("invalid plugin name clash: {}\n", c.message()));
+    }
     let mut data = json!({ "valid": valid, "workflows": results });
+    data["plugin_conflicts"] = json!(clashes
+        .iter()
+        .map(crate::plugincmd::conflict_json)
+        .collect::<Vec<_>>());
     if let Some((errors, warnings)) = bus {
         for e in &errors {
             human.push_str(&format!("invalid bus.forward: {e}\n"));

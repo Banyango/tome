@@ -76,18 +76,102 @@ fn presets() -> BTreeMap<String, Def> {
     )])
 }
 
-/// Every known harness for a project: the presets, overridden or extended
-/// by the global config and then the project's.
-pub fn all(project: Option<&Path>) -> CliResult<BTreeMap<String, Def>> {
+/// One definition of a harness name and where it came from.
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    /// ``the built-in harness``, ``your harness in <file>`` or
+    /// ``plugin `x` ``.
+    pub source: String,
+    pub plugin: Option<String>,
+    pub def: Def,
+}
+
+/// The presets, overridden or extended by the global config and then the
+/// project's: the user's own harnesses, without any plugin's.
+pub fn user(project: Option<&Path>) -> CliResult<BTreeMap<String, Def>> {
+    Ok(user_candidates(project)?
+        .into_iter()
+        .map(|(name, c)| (name, c.def))
+        .collect())
+}
+
+/// The user's harness names and where each is defined, in words.
+pub fn user_sources(project: Option<&Path>) -> CliResult<BTreeMap<String, String>> {
+    Ok(user_candidates(project)?
+        .into_iter()
+        .map(|(name, c)| (name, c.source))
+        .collect())
+}
+
+fn user_candidates(project: Option<&Path>) -> CliResult<BTreeMap<String, Candidate>> {
     let cfg = Config::load(project)?;
-    let mut out = presets();
+    let mut out: BTreeMap<String, Candidate> = presets()
+        .into_iter()
+        .map(|(name, def)| {
+            (
+                name,
+                Candidate {
+                    source: "the built-in harness".into(),
+                    plugin: None,
+                    def,
+                },
+            )
+        })
+        .collect();
     for (name, (spec, file)) in cfg.entries("harnesses").map_err(hinted)? {
+        let def = parse_harness(&name, &spec).map_err(|e| hinted(file.error(e)))?;
         out.insert(
-            name.clone(),
-            parse_harness(&name, &spec).map_err(|e| hinted(file.error(e)))?,
+            name,
+            Candidate {
+                source: format!("your harness in {}", file.path.display()),
+                plugin: None,
+                def,
+            },
         );
     }
     Ok(out)
+}
+
+/// Every definition of every harness name: the user's, and those of the
+/// enabled plugins. A name with more than one is a clash.
+pub fn candidates(project: Option<&Path>) -> CliResult<BTreeMap<String, Vec<Candidate>>> {
+    let mut out: BTreeMap<String, Vec<Candidate>> = user_candidates(project)?
+        .into_iter()
+        .map(|(name, c)| (name, vec![c]))
+        .collect();
+    for plugin in crate::plugin::store::active() {
+        let Some(m) = plugin.active() else { continue };
+        for (name, def) in &m.harnesses {
+            out.entry(name.clone()).or_default().push(Candidate {
+                source: plugin.source_label(),
+                plugin: Some(plugin.name.clone()),
+                def: def.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The error for a name defined in more than one place.
+pub fn clash_error(name: &str, found: &[Candidate]) -> CliError {
+    CliError::invalid(format!(
+        "harness name `{name}` is defined more than once: {}",
+        found
+            .iter()
+            .map(|c| c.source.as_str())
+            .collect::<Vec<_>>()
+            .join(" and ")
+    ))
+    .with_hint("rename one, or disable the plugin with `tome plugin disable <name>`")
+}
+
+/// Every known harness for a project: the user's and the plugins'. A name
+/// defined twice is left out; [`resolve`] reports it.
+pub fn all(project: Option<&Path>) -> CliResult<BTreeMap<String, Def>> {
+    Ok(candidates(project)?
+        .into_iter()
+        .filter_map(|(name, mut found)| (found.len() == 1).then(|| (name, found.remove(0).def)))
+        .collect())
 }
 
 fn hinted(e: CliError) -> CliError {
@@ -99,16 +183,20 @@ fn hinted(e: CliError) -> CliError {
 
 /// Look a harness up by name, in the config that applies to `project`.
 pub fn resolve(name: &str, project: Option<&Path>) -> CliResult<Harness> {
-    let mut all = all(project)?;
-    match all.remove(name) {
-        Some(def) => Ok(Harness {
-            name: name.to_string(),
-            template: def.template,
-            model_flag: def.model_flag,
-        }),
+    let mut found = candidates(project)?;
+    match found.remove(name) {
+        Some(mut list) if list.len() > 1 => Err(clash_error(name, &list)),
+        Some(mut list) => {
+            let def = list.remove(0).def;
+            Ok(Harness {
+                name: name.to_string(),
+                template: def.template,
+                model_flag: def.model_flag,
+            })
+        }
         None => Err(CliError::invalid(format!("unknown harness `{name}`")).with_hint(format!(
             "known harnesses: {}; define others under `harnesses:` in {} or the project's .tome/config.yaml",
-            all.keys().cloned().collect::<Vec<_>>().join(", "),
+            found.keys().cloned().collect::<Vec<_>>().join(", "),
             config::global_path().display()
         ))),
     }

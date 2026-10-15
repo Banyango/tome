@@ -26,6 +26,7 @@ pub fn ls(cwd: &Path, global_only: bool) -> CliResult<Report> {
         .collect();
     let shadowed = |e: &Entry| {
         e.scope == Scope::Global
+            && e.plugin.is_none()
             && e.name().is_some_and(|n| {
                 entries
                     .iter()
@@ -46,20 +47,45 @@ pub fn ls(cwd: &Path, global_only: bool) -> CliResult<Report> {
             Err(_) => ("invalid; run `tome validate`".to_string(), false),
         };
         let name = e.name().unwrap_or("<unnamed>").to_string();
-        let scope = match e.scope {
-            Scope::Project => "project",
-            Scope::Global if shadowed(e) => "global (shadowed)",
-            Scope::Global => "global",
+        // A plugin's workflow shares its name with nothing else.
+        let clashes: Vec<String> = match (e.name(), &e.plugin) {
+            (Some(n), _)
+                if entries
+                    .iter()
+                    .any(|o| o.plugin.is_some() && o.name() == Some(n))
+                    && entries.iter().filter(|o| o.name() == Some(n)).count() > 1 =>
+            {
+                entries
+                    .iter()
+                    .filter(|o| o.name() == Some(n) && o.path != e.path)
+                    .map(Entry::source_label)
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let scope = match (&e.plugin, e.scope) {
+            (Some(p), _) => format!("plugin {p}"),
+            (None, Scope::Project) => "project".to_string(),
+            (None, Scope::Global) if shadowed(e) => "global (shadowed)".to_string(),
+            (None, Scope::Global) => "global".to_string(),
+        };
+        let description = if clashes.is_empty() {
+            description
+        } else {
+            format!("name clash with {}", clashes.join(" and "))
         };
         data.push(json!({
             "name": e.name(),
             "scope": e.scope,
+            "source": e.plugin.as_ref().map(|p| format!("plugin:{p}")).unwrap_or_else(|| scope_str(e.scope).to_string()),
+            "plugin": e.plugin,
             "description": description,
             "path": e.path,
-            "valid": valid,
+            "valid": valid && clashes.is_empty(),
             "shadowed": shadowed(e),
+            "conflicts": clashes,
         }));
-        rows.push(vec![name, scope.to_string(), description]);
+        rows.push(vec![name, scope, description]);
     }
     let human = if rows.is_empty() {
         match (&library.project_dir, global_only) {
@@ -99,7 +125,11 @@ pub fn new(
     }
     // Another file in the same directory with this name would make
     // `tome run <name>` ambiguous.
-    let entries = library.entries();
+    let entries: Vec<Entry> = library
+        .entries()
+        .into_iter()
+        .filter(|e| e.plugin.is_none())
+        .collect();
     if let Some(other) = entries
         .iter()
         .find(|e| e.scope == scope && e.name() == Some(name) && !same_file(&e.path, &path))
@@ -302,7 +332,12 @@ fn by_name(
     } else {
         (Scope::Project, Scope::Global)
     };
-    let entries = library.entries();
+    // Plugin workflows aren't the user's to remove.
+    let entries: Vec<Entry> = library
+        .entries()
+        .into_iter()
+        .filter(|e| e.plugin.is_none())
+        .collect();
     let matches: Vec<&Entry> = entries
         .iter()
         .filter(|e| e.scope == scope && e.name() == Some(name))

@@ -3,13 +3,13 @@
 use crate::harness::{self, Harness, Template, Vars};
 use crate::ids::RunId;
 use crate::output::{exit, CliError, CliResult, Report};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// `tome harness validate [name]`: check configuration and whether the
 /// configured program can be found, without launching an interactive agent.
 pub fn validate(project: &Path, name: Option<&str>, model: Option<&str>) -> CliResult<Report> {
-    let known = harness::all(Some(project))?;
+    let known = harness::candidates(Some(project))?;
     let names: Vec<String> = match name {
         Some(name) if known.contains_key(name) => vec![name.to_string()],
         Some(name) => {
@@ -27,7 +27,16 @@ pub fn validate(project: &Path, name: Option<&str>, model: Option<&str>) -> CliR
     let mut results = Vec::new();
     let mut ok = true;
     for name in names {
-        let h = harness::resolve(&name, Some(project))?;
+        let h = match harness::resolve(&name, Some(project)) {
+            Ok(h) => h,
+            Err(e) if known.get(&name).is_some_and(|f| f.len() > 1) => {
+                ok = false;
+                results.push(json!({ "name": name, "ok": false, "error": e.message }));
+                human.push_str(&format!("✗ {name}\n  {}\n", e.message));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         let found = match &h.template {
             Template::Argv(args) => args.first().and_then(|program| find_program(program)),
             Template::Shell(_) => find_program("sh"),
@@ -93,6 +102,51 @@ pub fn validate(project: &Path, name: Option<&str>, model: Option<&str>) -> CliR
 
     let data = json!({ "harnesses": results, "ok": ok });
     Ok(Report::new(data, human.trim_end()).with_exit(if ok { exit::OK } else { exit::INVALID }))
+}
+
+/// `tome harness ls`: every harness tome knows, and where each is defined.
+pub fn ls(project: &Path) -> CliResult<Report> {
+    let known = harness::candidates(Some(project))?;
+    let mut rows = Vec::new();
+    let mut data = Vec::new();
+    for (name, found) in &known {
+        for c in found {
+            let command = match &c.def.template {
+                Template::Argv(args) => args.join(" "),
+                Template::Shell(s) => s.clone(),
+            };
+            let clash = found.len() > 1;
+            let source = c.plugin.as_ref().map_or_else(
+                || {
+                    if c.source.starts_with("the built-in") {
+                        "built-in".to_string()
+                    } else {
+                        "config".to_string()
+                    }
+                },
+                |p| format!("plugin {p}"),
+            );
+            data.push(json!({
+                "name": name,
+                "source": c.plugin.as_ref().map(|p| format!("plugin:{p}")).unwrap_or_else(|| source.clone()),
+                "plugin": c.plugin,
+                "origin": c.source,
+                "command": command,
+                "conflict": clash,
+            }));
+            rows.push(vec![
+                name.clone(),
+                if clash {
+                    format!("{source} (name clash)")
+                } else {
+                    source
+                },
+                command,
+            ]);
+        }
+    }
+    let human = crate::output::table(&["NAME", "SOURCE", "COMMAND"], rows);
+    Ok(Report::new(json!({ "harnesses": data }), human))
 }
 
 fn preview(h: &Harness, model: Option<&str>) -> String {

@@ -392,7 +392,7 @@ pub fn launch(
         title: &plan.title,
         cwd: &plan.cwd,
         argv: &argv,
-        env: &session_env(run.id),
+        env: &run_env(run),
         script: &dir.join(format!("{}.sh", plan.role)),
         log: &dir.join(format!("{}.log", plan.role)),
         layout,
@@ -412,6 +412,22 @@ pub fn launch(
         ..session
     };
     Ok((session, note))
+}
+
+/// `session_env` plus the env `run.before_start` plugins set for the run.
+pub fn run_env(run: &Run) -> Vec<(String, String)> {
+    let mut env = session_env(run.id);
+    let extra = run
+        .placement
+        .as_ref()
+        .and_then(|p| p.get("env"))
+        .and_then(serde_json::Value::as_object);
+    for (key, value) in extra.into_iter().flatten() {
+        if let Some(value) = value.as_str() {
+            env.push((key.clone(), value.to_string()));
+        }
+    }
+    env
 }
 
 /// What a run's agents need to call back into tome.

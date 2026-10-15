@@ -118,11 +118,23 @@ An agent can also hand work to another machine directly:
 tome publish --on mini deploy.requested "build 1.4.2 is ready"
 ```
 
+## Machines made on demand
+
+`--on` also takes a **provider**: a [plugin](plugins.md#providers) that makes a machine for the run and releases it afterwards.
+
+```sh
+tome run build --on cloud-vm --provider-opt size=large
+```
+
+tome registers the machine as an ephemeral node named `<provider>-<id>`, runs the node checks on it once, runs the workflow there and releases the machine whatever happens. A machine that fails its check is released and the command exits `3` with the fix for the failing step. `tome runs list` keeps a record of each released machine's run as `<provider>:<id> (released)`.
+
+With `--keep`, the machine stays and shows up as an ephemeral node (`tome node ls`), so `--on cloud-vm-<id>` works until you release it with the provider's tools. `tome node rm` only forgets it. A provider name can't be used for a node: `tome node add` refuses it.
+
 ## Errors
 
 | Exit | Meaning |
 |---|---|
 | `1` | The node runs a different protocol version. The message says which side to upgrade. |
 | `2` | `--on` on a command that only works here, or `--on` and a `<node>:<id>` reference that disagree. |
-| `3` | The node can't be reached, or tome isn't installed on it. Run `tome node check <node>`. |
+| `3` | The node can't be reached, or tome isn't installed on it. Run `tome node check <node>`. For a provider: it had no machine ready in time, or the machine failed its check. |
 | `4` | The project or workflow isn't on the node. |

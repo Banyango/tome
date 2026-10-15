@@ -21,6 +21,7 @@ pub const KEYS: &[&str] = &[
     "layout_presets",
     "nodes",
     "bus",
+    "defaults",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +214,18 @@ fn parse(scope: Scope, path: PathBuf, text: &str) -> CliResult<File> {
             }
             ("bus", Scope::Global) => {
                 return Err(bad("`bus` goes in a project's .tome/config.yaml".into()))
+            }
+            ("defaults", _) => {
+                let map = doc
+                    .get("defaults")
+                    .and_then(Yaml::as_mapping)
+                    .ok_or_else(|| bad("`defaults` must be a mapping".into()))?;
+                for key in map.keys() {
+                    if key.as_str() != Some("provider_opts") {
+                        return Err(bad("unknown defaults setting".into())
+                            .with_hint("known setting: provider_opts"));
+                    }
+                }
             }
             _ => {}
         }

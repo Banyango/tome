@@ -1,8 +1,10 @@
 //! `tome runs list|show|logs` and `tome query`: inspection of current and
 //! past runs. All data comes from the daemon.
 
+use crate::node;
 use crate::output::{table, CliResult, Report};
 use crate::paths;
+use crate::provider;
 use crate::rpc;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use serde_json::{json, Value};
@@ -52,15 +54,24 @@ fn params(v: &Value) -> String {
 }
 
 pub fn list(status: Option<String>, workflow: Option<String>, limit: usize) -> CliResult<Report> {
-    let data = call(
+    let mut data = call(
         "runs.list",
         json!({ "status": status, "workflow": workflow, "limit": limit }),
     )?;
     let runs = data["runs"].as_array().cloned().unwrap_or_default();
-    let human = if runs.is_empty() {
+    // Runs on machines a provider made and released: only their record is left.
+    let released = match node::target() {
+        Some(_) => Vec::new(),
+        None => provider::load_stubs(),
+    };
+    let released = provider::filter(&released, status.as_deref(), workflow.as_deref(), limit);
+    if !released.is_empty() {
+        data["released"] = json!(released);
+    }
+    let human = if runs.is_empty() && released.is_empty() {
         "no runs".to_string()
     } else {
-        let rows = runs
+        let mut rows: Vec<Vec<String>> = runs
             .iter()
             .map(|r| {
                 vec![
@@ -73,6 +84,12 @@ pub fn list(status: Option<String>, workflow: Option<String>, limit: usize) -> C
                 ]
             })
             .collect();
+        rows.extend(released.iter().map(|stub| {
+            let mut row = stub.row();
+            row[3] = ts(&json!(stub.started));
+            row[4] = ts(&json!(stub.finished));
+            row
+        }));
         table(
             &["ID", "WORKFLOW", "STATUS", "STARTED", "FINISHED", "REASON"],
             rows,
@@ -427,10 +444,43 @@ fn placement(run: &Value, sessions: &[Value]) -> String {
         out.push_str(&format!("  caller at start: {at}\n"));
     }
     out.push_str(&notes.concat());
+    out.push_str(&plugin_changes(run));
     if out.is_empty() {
         return out;
     }
     format!("\nplacement:\n{out}")
+}
+
+/// What `run.before_start` plugins changed about the run: params from and
+/// to, and the names of env they set (never the values).
+fn plugin_changes(run: &Value) -> String {
+    let mut out = String::new();
+    for hook in run["hooks"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "  plugin {} changed this run:\n",
+            s(&hook["plugin"])
+        ));
+        for (key, change) in hook["params"].as_object().into_iter().flatten() {
+            let from = match &change["from"] {
+                Value::Null => "(unset)".to_string(),
+                v => s(v),
+            };
+            out.push_str(&format!(
+                "    param {key}: {from} -> {}\n",
+                s(&change["to"])
+            ));
+        }
+        let env: Vec<String> = hook["env"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(s)
+            .collect();
+        if !env.is_empty() {
+            out.push_str(&format!("    env set: {}\n", env.join(", ")));
+        }
+    }
+    out
 }
 
 fn indent(text: &str) -> String {
@@ -460,6 +510,20 @@ mod tests {
             params(&json!({"ticket": "ABC-1", "n": 2, "dry": true})),
             "ticket=ABC-1  n=2  dry=true"
         );
+    }
+
+    #[test]
+    fn plugin_changes_show_who_changed_what_without_env_values() {
+        let run = json!({"hooks": [{
+            "plugin": "budget",
+            "params": {"size": {"from": "small", "to": "large"}, "tag": {"from": null, "to": "x"}},
+            "env": ["REGION"],
+        }]});
+        let out = placement(&run, &[]);
+        assert!(out.contains("plugin budget changed this run:"), "{out}");
+        assert!(out.contains("param size: small -> large"), "{out}");
+        assert!(out.contains("param tag: (unset) -> x"), "{out}");
+        assert!(out.contains("env set: REGION"), "{out}");
     }
 
     #[test]

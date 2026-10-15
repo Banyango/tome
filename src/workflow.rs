@@ -45,6 +45,7 @@ pub const DEFAULTS_KEYS: &[&str] = &[
     "timeout",
     "on_failure",
     "start_timeout",
+    "provider_opts",
 ];
 pub const PARAM_KEYS: &[&str] = &["type", "default", "description"];
 
@@ -177,6 +178,9 @@ pub struct Defaults {
     /// first tome call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_timeout: Option<StartTimeout>,
+    /// Defaults for `--provider-opt` when the run goes `--on <provider>`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_opts: BTreeMap<String, String>,
 }
 
 /// `defaults.start_timeout`: a duration, or `off` for no start check.
@@ -1248,6 +1252,10 @@ fn parse_defaults(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> 
                     Err(e) => errors.push(Diagnostic::new(line, format!("`defaults.start_timeout` {e}"))),
                 }
             }
+            "provider_opts" => match crate::provider::opts_from_yaml(v) {
+                Ok(opts) => d.provider_opts = opts,
+                Err(e) => errors.push(Diagnostic::new(line, e)),
+            },
             other => errors.push(Diagnostic::new(
                 line,
                 format!(
@@ -1727,9 +1735,21 @@ pub struct Entry {
     pub scope: Scope,
     pub path: PathBuf,
     pub result: Result<Workflow, Invalid>,
+    /// The plugin that ships this workflow, if one does. It is listed under
+    /// the global scope.
+    pub plugin: Option<String>,
 }
 
 impl Entry {
+    /// Where the workflow comes from, for messages: ``plugin `x` (path)`` or
+    /// ``your workflow path``.
+    pub fn source_label(&self) -> String {
+        match &self.plugin {
+            Some(p) => format!("plugin `{p}` ({})", self.path.display()),
+            None => format!("your workflow {}", self.path.display()),
+        }
+    }
+
     pub fn name(&self) -> Option<&str> {
         match &self.result {
             Ok(wf) => Some(wf.name()),
@@ -1744,6 +1764,8 @@ impl Entry {
 pub struct Library {
     pub global_dir: PathBuf,
     pub project_dir: Option<PathBuf>,
+    /// The enabled plugins' folders, which hold their own `workflows/`.
+    pub plugin_dirs: Vec<(String, PathBuf)>,
 }
 
 impl Library {
@@ -1755,9 +1777,14 @@ impl Library {
             let candidate = tome.join("workflows");
             (candidate.is_dir() && !same_path(&tome, &home)).then_some(candidate)
         });
+        let plugin_dirs = crate::plugin::store::active()
+            .into_iter()
+            .map(|p| (p.name, p.dir))
+            .collect();
         Library {
             global_dir,
             project_dir,
+            plugin_dirs,
         }
     }
 
@@ -1777,7 +1804,8 @@ impl Library {
             .and_then(|d| d.parent()?.parent().map(Path::to_path_buf))
     }
 
-    /// Every workflow file in both directories, global first.
+    /// Every workflow file in both directories, global first, then the
+    /// enabled plugins' workflows.
     pub fn entries(&self) -> Vec<Entry> {
         let mut out = Vec::new();
         for (scope, dir) in [
@@ -1799,6 +1827,22 @@ impl Library {
                     scope,
                     path,
                     result,
+                    plugin: None,
+                });
+            }
+        }
+        for (plugin, dir) in &self.plugin_dirs {
+            let Some(m) = crate::plugin::store::read_manifest(dir).ok() else {
+                continue;
+            };
+            for name in &m.workflows {
+                let path = dir.join("workflows").join(format!("{name}.md"));
+                let result = load(&path).and_then(|wf| check_scope(wf, Scope::Global));
+                out.push(Entry {
+                    scope: Scope::Global,
+                    path,
+                    result,
+                    plugin: Some(plugin.clone()),
                 });
             }
         }
@@ -1827,6 +1871,25 @@ impl Library {
         }
 
         let entries = self.entries();
+        // A plugin's workflow shares its name with nothing else.
+        let holders: Vec<&Entry> = entries
+            .iter()
+            .filter(|e| e.name() == Some(target))
+            .collect();
+        if holders.len() > 1 && holders.iter().any(|e| e.plugin.is_some()) {
+            return Err(CliError::new(
+                ErrorKind::InvalidWorkflow,
+                format!(
+                    "workflow name `{target}` is defined more than once: {}",
+                    holders
+                        .iter()
+                        .map(|e| e.source_label())
+                        .collect::<Vec<_>>()
+                        .join(" and ")
+                ),
+            )
+            .with_hint("rename one, or disable the plugin with `tome plugin disable <name>`"));
+        }
         for scope in [Scope::Project, Scope::Global] {
             let matches: Vec<&Entry> = entries
                 .iter()

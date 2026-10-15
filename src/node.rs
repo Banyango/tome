@@ -97,6 +97,10 @@ pub fn all() -> CliResult<BTreeMap<String, Node>> {
         let node = parse(&name, &value).map_err(|e| file.error(format!("nodes.{name}: {e}")))?;
         out.insert(name, node);
     }
+    // Machines a provider made and `--keep` left: a configured node wins.
+    for (name, node) in crate::provider::ephemeral_nodes() {
+        out.entry(name).or_insert(node);
+    }
     Ok(out)
 }
 

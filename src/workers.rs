@@ -537,7 +537,7 @@ impl Engine {
             }
             Task::Command(cmd) => (cmd.clone(), None),
         };
-        let mut env = orchestrator::session_env(run.id);
+        let mut env = orchestrator::run_env(run);
         env.push(("TOME_WORKER_ID".to_string(), name.to_string()));
         if let Some(wt) = worktree {
             env.push((

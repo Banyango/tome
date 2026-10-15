@@ -48,3 +48,4 @@
 - [017 - Resume failed runs](features/017-resume-failed-runs/feature.md)
 - [018 - Custom step statuses](features/018-custom-step-statuses/feature.md)
 - [019 - Rust architecture alignment](features/019-rust-architecture-alignment/feature.md)
+- [020 - Plugin system](features/020-plugin-system/feature.md)

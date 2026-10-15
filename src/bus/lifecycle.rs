@@ -55,6 +55,7 @@ impl Engine {
             Ok(Some(run)) => {
                 let payload = json!({ "run_id": run.id, "workflow": run.workflow_name, "params": run.params, "cause": run.trigger });
                 self.publish_lifecycle(&run, STARTED, &payload);
+                self.plugins_started(&run);
             }
             Ok(None) => {}
             Err(e) => eprintln!(
@@ -75,6 +76,7 @@ impl Engine {
             Ok(Some(run)) => {
                 if let Some((what, payload)) = ended(&run) {
                     self.publish_lifecycle(&run, what, &payload);
+                    self.plugins_finished(&run);
                 }
             }
             Ok(None) => {}

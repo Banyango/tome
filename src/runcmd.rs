@@ -330,7 +330,12 @@ extern "C" fn on_signal(_: libc::c_int) {
     SIGNALS.fetch_add(1, Ordering::SeqCst);
 }
 
-fn install_signal_handlers() {
+/// Whether Ctrl-C (or SIGTERM/SIGHUP) arrived since handlers were installed.
+pub fn interrupted() -> bool {
+    SIGNALS.load(Ordering::SeqCst) > 0
+}
+
+pub fn install_signal_handlers() {
     for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         // SAFETY: the handler only touches an atomic.
         unsafe {

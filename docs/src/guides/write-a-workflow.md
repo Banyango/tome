@@ -95,6 +95,7 @@ Workflow-wide settings.
 | `orchestrator_model` | The model the orchestrator runs (`mode: orchestrated` only). Defaults to `model`. |
 | `layout` | Where sessions open. A name (`tab`, `split`, `workspace`) or a block of settings; see [Sessions and backends](sessions.md). |
 | `start_timeout` | How long the run's agent and each agent worker have to make their first `tome` call. A duration like `90s` or `2m`, or `off`. The default is 60s. If it passes, tome nudges the agent once and fails it after a second wait. |
+| `provider_opts` | Options for a [provider](plugins.md#providers) when the run uses `--on <provider>`, a map of names to values. `--provider-opt` overrides them, and they override `defaults.provider_opts` in config. |
 | `timeout` | A duration, like `30m`, or a number of seconds. tome accepts and records it, but doesn't enforce a run timeout today. |
 | `on_failure` | A string, accepted and recorded. tome doesn't act on it today; say in the body what should happen on failure. |
 

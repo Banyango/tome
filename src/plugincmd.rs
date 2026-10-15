@@ -8,10 +8,13 @@
 use crate::node;
 use crate::output::{exit, table, CliError, CliResult, Report};
 use crate::paths;
+use crate::plugin::host;
 use crate::plugin::manifest::{self, Claim, Conflict, Incompatible, Manifest};
 use crate::plugin::store::{self, InstallState, Installed};
+use crate::rpc;
 use crate::workflow::{self, Scope};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -200,9 +203,8 @@ fn check_files(dir: &Path, m: &Manifest) -> Result<(), String> {
         }
         Ok(real)
     };
-    for (cmd, rel) in &m.subcommands {
-        let what = format!("subcommand `{cmd}`");
-        let real = inside(&dir.join(rel), &what)?;
+    let executable = |rel: &Path, what: &str| -> Result<(), String> {
+        let real = inside(&dir.join(rel), what)?;
         let mode = {
             use std::os::unix::fs::PermissionsExt;
             fs::metadata(&real)
@@ -215,6 +217,19 @@ fn check_files(dir: &Path, m: &Manifest) -> Result<(), String> {
                 rel.display()
             ));
         }
+        Ok(())
+    };
+    for (cmd, rel) in &m.subcommands {
+        executable(rel, &format!("subcommand `{cmd}`"))?;
+    }
+    match &m.command {
+        Some(rel) => executable(rel, "`command`")?,
+        None if !m.hooks.is_empty() => {
+            return Err(
+                "hooks need a `command`: the executable the daemon runs to receive them".into(),
+            )
+        }
+        None => {}
     }
     for name in &m.workflows {
         let path = dir.join("workflows").join(format!("{name}.md"));
@@ -246,7 +261,7 @@ fn conflict_error(subject: &str, conflicts: &[Conflict]) -> CliError {
         )
 }
 
-fn conflict_json(c: &Conflict) -> Value {
+pub fn conflict_json(c: &Conflict) -> Value {
     json!({ "kind": c.space.as_str(), "name": c.name, "ours": c.ours, "theirs": c.theirs })
 }
 
@@ -522,6 +537,204 @@ pub fn update(name: Option<&str>, builtin: &[String]) -> CliResult<Report> {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin subcommands
+
+/// Which active plugin provides the subcommand `name`, and where its
+/// executable is. Built-in commands never get here: clap matches them first.
+fn find_subcommand(name: &str, builtin: &[String]) -> Option<(Installed, PathBuf)> {
+    if builtin.iter().any(|b| b == name) {
+        return None;
+    }
+    store::active().into_iter().find_map(|plugin| {
+        let rel = plugin.active()?.subcommands.get(name)?.clone();
+        let path = plugin.dir.join(rel);
+        Some((plugin, path))
+    })
+}
+
+/// `tome <plugin-cmd> …`: replace this process with the plugin's executable,
+/// so the terminal passes straight through and the plugin can be
+/// interactive. It calls back into tome through the ordinary CLI.
+pub fn exec_subcommand(args: &[std::ffi::OsString], builtin: &[String]) -> CliResult<Report> {
+    use std::os::unix::process::CommandExt;
+    let name = args
+        .first()
+        .and_then(|a| a.to_str())
+        .ok_or_else(|| CliError::invalid("missing command"))?;
+    let Some((plugin, path)) = find_subcommand(name, builtin) else {
+        return Err(CliError::invalid(format!("unknown command `{name}`"))
+            .with_hint("`tome --help` lists the commands; `tome plugin ls` lists plugins"));
+    };
+    let data = plugin.data_dir();
+    let _ = fs::create_dir_all(&data);
+    let err = Command::new(&path)
+        .args(&args[1..])
+        .env("TOME_PLUGIN", &plugin.name)
+        .env("TOME_PLUGIN_DIR", &plugin.dir)
+        .env("TOME_PLUGIN_DATA", &data)
+        .exec();
+    Err(CliError::internal(format!(
+        "starting {} for `tome {name}` (plugin `{}`): {err}",
+        path.display(),
+        plugin.name
+    ))
+    .with_hint(format!(
+        "check the file exists and is executable; `tome plugin check {}` tests the plugin",
+        plugin.name
+    )))
+}
+
+// ---------------------------------------------------------------------------
+// notify
+
+/// `tome notify <title> <message>`: through the daemon's notification path,
+/// the same one a plugin's `notify` request takes.
+pub fn notify(title: &str, message: &str) -> CliResult<Report> {
+    // This machine's daemon, even when a provider's node is the run's target.
+    rpc::Client::local(&paths::socket_path())?
+        .call("notify", json!({ "title": title, "message": message }))?;
+    Ok(Report::new(
+        json!({ "notified": true, "title": title, "message": message }),
+        format!("notified: {title}"),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// check
+
+/// One step of `tome plugin check`.
+struct Step {
+    name: &'static str,
+    detail: String,
+    fail: Option<(String, Option<String>)>,
+}
+
+impl Step {
+    fn ok(name: &'static str, detail: impl Into<String>) -> Step {
+        Step {
+            name,
+            detail: detail.into(),
+            fail: None,
+        }
+    }
+
+    fn failed(name: &'static str, message: impl Into<String>, fix: Option<String>) -> Step {
+        let message = message.into();
+        Step {
+            name,
+            detail: message.clone(),
+            fail: Some((message, fix)),
+        }
+    }
+}
+
+/// `tome plugin check <name>`: the manifest, compatibility, files and names,
+/// then that the plugin starts and answers `initialize`. Stops at the first
+/// step that fails, with the fix, and exits `2`.
+pub fn check(name: &str, builtin: &[String]) -> CliResult<Report> {
+    let plugin = locate(name)?;
+    let mut steps = Vec::new();
+    check_steps(&plugin, builtin, &mut steps)?;
+    let failed = steps.iter().find(|s| s.fail.is_some());
+    let mut human = format!("plugin {name}\n");
+    for step in &steps {
+        let mark = if step.fail.is_some() { "✗" } else { "✓" };
+        human.push_str(&format!("  {mark} {:<14}{}\n", step.name, step.detail));
+        if let Some(fix) = step.fail.as_ref().and_then(|(_, fix)| fix.as_deref()) {
+            human.push_str(&format!("    fix: {fix}\n"));
+        }
+    }
+    if failed.is_none() {
+        human.push_str(&format!("{name} is ready"));
+    }
+    let data = json!({
+        "plugin": name,
+        "ok": failed.is_none(),
+        "steps": steps.iter().map(|s| json!({
+            "step": s.name,
+            "ok": s.fail.is_none(),
+            "detail": s.detail,
+            "fix": s.fail.as_ref().and_then(|(_, fix)| fix.clone()),
+        })).collect::<Vec<_>>(),
+    });
+    let code = if failed.is_some() {
+        exit::INVALID
+    } else {
+        exit::OK
+    };
+    Ok(Report::new(data, human.trim_end()).with_exit(code))
+}
+
+fn check_steps(plugin: &Installed, builtin: &[String], steps: &mut Vec<Step>) -> CliResult<()> {
+    let name = &plugin.name;
+    let m = match &plugin.manifest {
+        Ok(m) => m,
+        Err(e) => {
+            steps.push(Step::failed(
+                "manifest",
+                format!("invalid: {e}"),
+                Some(format!("fix plugin.yaml, or `tome plugin update {name}`")),
+            ));
+            return Ok(());
+        }
+    };
+    steps.push(Step::ok(
+        "manifest",
+        format!(
+            "{} {}",
+            m.name,
+            m.version.as_deref().unwrap_or("(no version)")
+        ),
+    ));
+    if let Err(i) = manifest::compatibility(m, &store::tome_version()) {
+        steps.push(Step::failed("compatible", i.message(), Some(i.hint(name))));
+        return Ok(());
+    }
+    steps.push(Step::ok(
+        "compatible",
+        format!("protocol {}, tome {}", m.protocol, store::tome_version()),
+    ));
+    if let Err(e) = check_files(&plugin.dir, m) {
+        steps.push(Step::failed(
+            "files",
+            e,
+            Some("fix the plugin folder, or reinstall it".into()),
+        ));
+        return Ok(());
+    }
+    steps.push(Step::ok("files", "present and usable"));
+
+    let mut others = store::user_claims(builtin)?;
+    for other in store::installed().iter().filter(|p| p.name != *name) {
+        others.extend(other.claims());
+    }
+    let clashes = store::conflicts(&plugin.claims(), &others);
+    if let Some(first) = clashes.first() {
+        steps.push(Step::failed(
+            "names",
+            first.message(),
+            Some("rename it in plugin.yaml, or remove the other one".into()),
+        ));
+        return Ok(());
+    }
+    steps.push(Step::ok("names", "no clashes"));
+
+    if m.command.is_none() || m.hooks.is_empty() {
+        steps.push(Step::ok("start", "nothing to start (no hooks)"));
+        return Ok(());
+    }
+    match host::check_start(plugin, m) {
+        Ok(()) => steps.push(Step::ok("start", "started and answered `initialize`")),
+        Err(e) => steps.push(Step::failed(
+            "start",
+            e,
+            Some(format!("see {}", store::log_path(name).display())),
+        )),
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // ls
 
 /// A plugin's state as `tome plugin ls` shows it.
@@ -534,8 +747,35 @@ fn state_of(plugin: &Installed, incompatible: &Option<Incompatible>) -> &'static
     }
 }
 
+/// What the daemon says about its plugins, by name. Empty when it isn't
+/// running (`ls` then shows what is installed, nothing live).
+fn daemon_states() -> HashMap<String, Value> {
+    let socket = paths::socket_path();
+    if !socket.exists() {
+        return HashMap::new();
+    }
+    let reply = rpc::call(&socket, "plugin.status", json!({})).ok();
+    let list = reply
+        .as_ref()
+        .and_then(|r| r["plugins"].as_array().cloned())
+        .unwrap_or_default();
+    list.into_iter()
+        .filter_map(|p| Some((p["name"].as_str()?.to_string(), p)))
+        .collect()
+}
+
+/// Tell a running daemon to pick up changes to the installed plugins.
+/// Best effort: with no daemon there is nothing to tell.
+pub fn reload_daemon() {
+    let socket = paths::socket_path();
+    if socket.exists() {
+        let _ = rpc::call(&socket, "plugin.reload", json!({}));
+    }
+}
+
 pub fn ls(builtin: &[String]) -> CliResult<Report> {
     let plugins = store::installed();
+    let live = daemon_states();
     let user = store::user_claims(builtin)?;
     let by_plugin: Vec<Vec<Claim>> = plugins.iter().map(Installed::claims).collect();
 
@@ -555,7 +795,25 @@ pub fn ls(builtin: &[String]) -> CliResult<Report> {
             }
         }
         let clashes = store::conflicts(&by_plugin[i], &others);
-        let state = state_of(plugin, &incompatible);
+        let mut state = state_of(plugin, &incompatible);
+        let runtime = live.get(&plugin.name);
+        if state == "enabled" {
+            state = match runtime.and_then(|r| r["state"].as_str()) {
+                Some("running") => "running",
+                Some("starting") => "starting",
+                Some("restarting") => "restarting",
+                Some("failed") => "failed",
+                Some("incompatible") => "incompatible",
+                _ => state,
+            };
+        }
+        if let Some(error) = runtime.and_then(|r| r["error"].as_str()) {
+            notes.push(format!(
+                "{}: {state}: {error} (log: {})",
+                plugin.name,
+                store::log_path(&plugin.name).display()
+            ));
+        }
 
         let m = plugin.manifest.as_ref().ok();
         rows.push(vec![
@@ -595,6 +853,8 @@ pub fn ls(builtin: &[String]) -> CliResult<Report> {
             "git": plugin.state.git,
             "ref": plugin.state.reference,
             "dir": plugin.dir,
+            "log": store::log_path(&plugin.name),
+            "runtime": runtime,
             "error": plugin.manifest.as_ref().err(),
             "incompatible": incompatible.as_ref().map(|i| json!({
                 "message": i.message(),

@@ -82,6 +82,9 @@ pub struct StartRequest {
     pub delivery_id: Option<DeliveryId>,
     /// Cancel an attached run when its caller disconnects.
     pub cancel_on_disconnect: bool,
+    /// Keys added to the run's placement record: what `run.before_start`
+    /// hooks changed, and the env they set. Never read from a request.
+    pub record: Map<String, Value>,
 }
 
 impl StartRequest {
@@ -124,6 +127,7 @@ impl StartRequest {
             cause: opt_object(p, "cause")?.map(|o| Value::Object(o.clone())),
             delivery_id,
             cancel_on_disconnect: opt_flag(p, "cancel_on_disconnect", true)?,
+            record: Map::new(),
         })
     }
 
@@ -198,7 +202,14 @@ pub fn create_run(
     // A run queued by a `while_running: queue` trigger has more paths merged
     // in while it waits, so its placeholders are filled in when it starts.
     let deferred = crate::triggers::waits_for_idle(req.cause.as_ref());
-    let placement = placement_state(req.placement.as_ref(), origin);
+    let mut placement = placement_state(req.placement.as_ref(), origin);
+    if !req.record.is_empty() {
+        let mut merged = placement
+            .and_then(|p| p.as_object().cloned())
+            .unwrap_or_default();
+        merged.extend(req.record.clone());
+        placement = Some(Value::Object(merged));
+    }
 
     let mut body = String::new();
     let run = store

@@ -27,6 +27,12 @@ fn s(v: &Value) -> String {
 /// `tome node add <name> <ssh> [--tome <path>]`: write the entry, then check
 /// it. The entry stays even if the check fails, so it can be fixed in place.
 pub fn add(name: &str, ssh: &str, tome: Option<&str>) -> CliResult<Report> {
+    if let Some(plugin) = crate::providercmd::provider_plugin(name) {
+        return Err(CliError::conflict(format!(
+            "`{name}` is a provider declared by plugin `{plugin}`, so `--on {name}` already means that"
+        ))
+        .with_hint("pick another node name, or disable the plugin with `tome plugin disable`"));
+    }
     let replaced = node::write_entry(name, ssh, tome)?;
     let checked = check(name)?;
     let verb = if replaced { "updated" } else { "added" };
@@ -49,7 +55,10 @@ pub fn add(name: &str, ssh: &str, tome: Option<&str>) -> CliResult<Report> {
 
 /// `tome node rm <name>`
 pub fn rm(name: &str) -> CliResult<Report> {
-    if !node::remove_entry(name)? {
+    // A machine a provider made and `--keep` left is a node too; removing
+    // it forgets the node, not the machine.
+    let kept = crate::provider::unregister(name);
+    if !node::remove_entry(name)? && !kept {
         return Err(CliError::not_found(format!("no node named `{name}`"))
             .with_hint("list them with `tome node ls`"));
     }
@@ -62,11 +71,11 @@ pub fn rm(name: &str) -> CliResult<Report> {
 // --- tome node check ----------------------------------------------------
 
 /// One step of a check.
-struct Step {
-    name: &'static str,
-    detail: String,
+pub struct Step {
+    pub name: &'static str,
+    pub detail: String,
     /// Set on the step that failed.
-    error: Option<CliError>,
+    pub error: Option<CliError>,
 }
 
 /// Run `cmd` on the node over plain ssh: its exit code, stdout and stderr.
@@ -105,7 +114,7 @@ fn ssh_fix(node: &Node, stderr: &str) -> String {
 }
 
 /// The steps of `tome node check`, stopping at the first failure.
-fn check_steps(node: &Node, cwd: Option<&Path>) -> Vec<Step> {
+pub fn check_steps(node: &Node, cwd: Option<&Path>) -> Vec<Step> {
     let mut steps = Vec::new();
     let fail = |steps: &mut Vec<Step>, name, e: CliError| {
         steps.push(Step {

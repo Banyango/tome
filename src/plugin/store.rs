@@ -118,6 +118,43 @@ pub fn installed() -> Vec<Installed> {
     names.iter().map(|n| Installed::load(n)).collect()
 }
 
+impl Installed {
+    /// The manifest, if this plugin is switched on, valid and compatible with
+    /// this tome: the only plugins that contribute subcommands, workflows,
+    /// harnesses, providers or hooks.
+    pub fn active(&self) -> Option<&Manifest> {
+        if !self.state.enabled {
+            return None;
+        }
+        let m = self.manifest.as_ref().ok()?;
+        manifest::compatibility(m, &tome_version()).ok()?;
+        Some(m)
+    }
+
+    /// The folder the plugin may keep its own state in.
+    pub fn data_dir(&self) -> PathBuf {
+        data_dir(&self.name)
+    }
+}
+
+/// `~/.tome/plugins/<name>/data`.
+pub fn data_dir(name: &str) -> PathBuf {
+    paths::plugins_dir().join(name).join("data")
+}
+
+/// `~/.tome/plugins/<name>/plugin.log`.
+pub fn log_path(name: &str) -> PathBuf {
+    paths::plugins_dir().join(name).join("plugin.log")
+}
+
+/// The installed plugins that are switched on, valid and compatible.
+pub fn active() -> Vec<Installed> {
+    installed()
+        .into_iter()
+        .filter(|p| p.active().is_some())
+        .collect()
+}
+
 /// This tome's own version.
 pub fn tome_version() -> Version {
     Version::parse(env!("CARGO_PKG_VERSION")).expect("Cargo version parses")
@@ -150,6 +187,7 @@ pub fn user_claims(builtin_commands: &[String]) -> CliResult<Vec<Claim>> {
     let library = Library {
         global_dir: paths::tome_home().join("workflows"),
         project_dir: None,
+        plugin_dirs: Vec::new(),
     };
     for entry in library.entries() {
         let name = entry.name().map(str::to_string).or_else(|| {
@@ -166,7 +204,7 @@ pub fn user_claims(builtin_commands: &[String]) -> CliResult<Vec<Claim>> {
             });
         }
     }
-    for name in harness::all(None)?.into_keys() {
+    for name in harness::user(None)?.into_keys() {
         let source = if name == harness::DEFAULT {
             "the built-in harness".to_string()
         } else {
@@ -189,6 +227,45 @@ pub fn claims_except(builtin_commands: &[String], except: Option<&str>) -> CliRe
         if Some(plugin.name.as_str()) != except {
             out.extend(plugin.claims());
         }
+    }
+    Ok(out)
+}
+
+/// Workflow and harness names that an enabled plugin shares with the user's
+/// own setup (as seen from `cwd`) or with another enabled plugin. Install
+/// refuses these, but they can appear afterwards: the user adds a workflow, a
+/// plugin updates.
+pub fn collisions(cwd: &Path) -> CliResult<Vec<manifest::Conflict>> {
+    let wanted = |c: &Claim| matches!(c.space, Space::Workflow | Space::Harness);
+    let mut user: Vec<Claim> = Library::discover(cwd)
+        .entries()
+        .into_iter()
+        .filter(|e| e.plugin.is_none())
+        .filter_map(|e| {
+            Some(Claim {
+                space: Space::Workflow,
+                name: e.name()?.to_string(),
+                source: e.source_label(),
+            })
+        })
+        .collect();
+    for (name, c) in harness::user_sources(Some(cwd)).unwrap_or_default() {
+        user.push(Claim {
+            space: Space::Harness,
+            name,
+            source: c,
+        });
+    }
+    let plugins = active();
+    let claims: Vec<Vec<Claim>> = plugins
+        .iter()
+        .map(|p| p.claims().into_iter().filter(wanted).collect())
+        .collect();
+    let mut out = Vec::new();
+    for (i, mine) in claims.iter().enumerate() {
+        let mut others = user.clone();
+        others.extend(claims[i + 1..].iter().flatten().cloned());
+        out.extend(conflicts(mine, &others));
     }
     Ok(out)
 }

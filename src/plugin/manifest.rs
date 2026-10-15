@@ -67,6 +67,9 @@ pub struct Manifest {
     pub description: Option<String>,
     pub protocol: u32,
     pub tome: Option<VersionReq>,
+    /// The persistent process the daemon runs for this plugin's hooks, as a
+    /// path inside the plugin folder.
+    pub command: Option<PathBuf>,
     /// Subcommand name to the command's path inside the plugin folder.
     pub subcommands: BTreeMap<String, PathBuf>,
     pub hooks: Vec<Hook>,
@@ -109,6 +112,12 @@ impl Manifest {
                 Some(VersionReq::parse(s).map_err(|e| format!("`tome`: {e}"))?)
             }
             Some(_) => return Err("`tome` must be a version range string like \">=0.7\"".into()),
+        };
+
+        let command = match get("command") {
+            None => None,
+            Some(Yaml::String(s)) if !s.trim().is_empty() => Some(check_relative(s, "command")?),
+            Some(_) => return Err("`command` is the path of the plugin's hook process".into()),
         };
 
         let mut subcommands = BTreeMap::new();
@@ -167,6 +176,7 @@ impl Manifest {
             description: text_field(get("description"), "description")?,
             protocol,
             tome,
+            command,
             subcommands,
             hooks,
             providers,
@@ -202,6 +212,7 @@ const KEYS: &[&str] = &[
     "description",
     "protocol",
     "tome",
+    "command",
     "subcommands",
     "hooks",
     "providers",
