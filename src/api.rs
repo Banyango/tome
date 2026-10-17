@@ -172,6 +172,7 @@ pub(crate) fn opt_placement(p: &Value) -> CliResult<Option<placement::Settings>>
         .filter(|o| !o.is_empty())
         .map(|o| placement::Settings::from_json(&Value::Object(o.clone())))
         .transpose()
+        .map_err(CliError::from)
 }
 
 fn params_error() -> CliError {

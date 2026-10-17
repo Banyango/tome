@@ -16,6 +16,7 @@ use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::placement::{self, Inputs, Role, Settings};
+use crate::placementcmd;
 use crate::resume;
 use crate::session::{self, Backend, Kind, Launch, Split};
 use crate::store::{
@@ -315,7 +316,7 @@ impl Engine {
                 ))
                 .with_hint("use --from orchestrator, last or first"));
             }
-            placement::check_flag_preset(
+            placementcmd::check_flag_preset(
                 flags,
                 "`tome worker spawn` flags",
                 orchestrator::run_project(&run).as_deref(),
@@ -502,7 +503,7 @@ impl Engine {
             spec: wf.frontmatter().defaults.layout.as_ref(),
             split_workers: kind == Kind::Tmux,
         };
-        let mut placement = placement::resolve(&inputs, project.as_deref())?;
+        let mut placement = placementcmd::resolve(&inputs, project.as_deref())?;
         let layout = placement.layout;
         let split = Split::new(
             placement.direction,

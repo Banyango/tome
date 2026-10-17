@@ -4,7 +4,7 @@
 //! daemon. Exits `2` if anything is invalid.
 
 use crate::output::{exit, CliResult, Report};
-use crate::placement;
+use crate::placementcmd;
 use crate::workflow::{self, Entry, Invalid, Library, Scope, Workflow};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -150,7 +150,9 @@ fn warnings_json(wf: &Workflow, cwd: &Path) -> Value {
         .map(|d| json!({ "line": d.line, "message": d.message }))
         .collect();
     // Presets depend on the environment, so a missing one only warns.
-    for name in placement::undefined_presets(wf.frontmatter().defaults.layout.as_ref(), Some(cwd)) {
+    for name in
+        placementcmd::undefined_presets(wf.frontmatter().defaults.layout.as_ref(), Some(cwd))
+    {
         let line = preset_line(wf, &name);
         all.push(json!({
             "line": line,

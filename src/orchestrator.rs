@@ -13,7 +13,8 @@ use crate::harness::{self, Harness, Vars};
 use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use crate::paths;
-use crate::placement::{self, From, Inputs, Placement, Role, Settings, Workspace};
+use crate::placement::{From, Inputs, Placement, Role, Settings, Workspace};
+use crate::placementcmd;
 use crate::recovery::RecoveryHooks;
 use crate::resume;
 use crate::session::{self, Anchor, Backend, Cmux, Kind, Launch, Layout, Split, Target, Tmux};
@@ -109,7 +110,7 @@ pub fn placement(
         spec: fm.defaults.layout.as_ref(),
         split_workers: false,
     };
-    placement::resolve(&inputs, project)
+    placementcmd::resolve(&inputs, project)
 }
 
 /// Where a session placed as `placement` goes: the workspace it names,
@@ -217,6 +218,7 @@ pub fn run_flags(run: &Run) -> CliResult<Option<Settings>> {
         .and_then(|p| p.get("flags"))
         .map(Settings::from_json)
         .transpose()
+        .map_err(CliError::from)
 }
 
 /// A run's main session, ready to launch.

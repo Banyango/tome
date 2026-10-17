@@ -36,9 +36,10 @@ read or write of run state goes through it.
 These are why a change sometimes spreads wider than its feature:
 
 - `output::{CliError, CliResult}` is used by almost every module, including
-  domain code (`store`, `placement`). Domain code returns presentation errors.
-  `workflow.rs` is already clean: it returns its own errors and
-  `workflowcmd.rs` converts them. Follow that pattern for the others.
+  domain code (`store`). Domain code returns presentation errors.
+  `workflow.rs` and `placement.rs` are already clean: they return their own
+  errors and `workflowcmd.rs` / `placementcmd.rs` convert them. Follow that
+  pattern for the others.
 - Cycles: `engine` ↔ `bus`, `engine` ↔ `workers`, `engine` ↔ `handshake`,
   `placement` ↔ `session`, `arming` → `engine` → `triggers` → `arming`.
 - `engine.rs` is the daemon's hub: it dispatches RPCs for runs, workers,

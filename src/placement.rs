@@ -23,16 +23,13 @@
 //! orchestrator or agent only: a worker's own levels can't set it, and workers skip
 //! it at the levels both roles share.
 
-use crate::config::{self, Config};
 use crate::glob::Glob;
-use crate::output::{table, CliError, CliResult, Report};
 use crate::session::Layout;
 use serde::{Serialize, Serializer};
 use serde_json::{json, Value};
 use serde_yaml::Value as Yaml;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
 
 /// The words `workspace` reads as keywords rather than names.
 pub const RESERVED: &[&str] = &["project", "focused", "own"];
@@ -669,62 +666,85 @@ pub fn built_in(name: &str) -> Option<Settings> {
     }
 }
 
-fn config_hint() -> String {
-    format!("see `layout:` and `layout_presets:` in the tome docs; placement values: layout {}, workspace {} or a name, split.direction {}, from {}",
-        LAYOUTS.join("|"), RESERVED.join("|"), DIRECTIONS.join("|"), FROMS.join("|"))
+/// A flag value that isn't one of its setting's values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlagError {
+    pub flag: &'static str,
+    pub message: String,
 }
 
-fn config_problem(file: &config::File, p: &Problem) -> CliError {
-    file.error(&p.message).with_hint(config_hint())
-}
-
-/// Every preset: the built-in ones, then the config's (the project's
-/// replacing the global ones, and either replacing a built-in one).
-pub fn presets(cfg: &Config) -> CliResult<BTreeMap<String, Preset>> {
-    let mut out: BTreeMap<String, Preset> = BUILT_IN
-        .iter()
-        .map(|n| {
-            (
-                n.to_string(),
-                Preset {
-                    name: n.to_string(),
-                    scope: "built-in",
-                    settings: built_in(n).unwrap(),
-                },
-            )
-        })
-        .collect();
-    for (name, (value, file)) in cfg.entries("layout_presets")? {
-        let what = format!("preset `{name}`");
-        let mut problems = Vec::new();
-        let settings = match &value {
-            Yaml::Mapping(m) => parse_settings(
-                m,
-                &["layout_presets", &name],
-                &what,
-                &[],
-                false,
-                &mut problems,
-            ),
-            _ => {
-                return Err(file
-                    .error(format!("{what} must be a mapping of placement settings"))
-                    .with_hint(config_hint()))
-            }
-        };
-        if let Some(p) = problems.first() {
-            return Err(config_problem(file, p));
-        }
-        out.insert(
-            name.clone(),
-            Preset {
-                name,
-                scope: file.scope.as_str(),
-                settings,
-            },
-        );
+impl fmt::Display for FlagError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "--{}: {}", self.flag, self.message)
     }
-    Ok(out)
+}
+
+/// Why a placement couldn't be built from its levels.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlacementError {
+    /// A level names a preset that isn't defined.
+    UnknownPreset {
+        name: String,
+        known: Vec<String>,
+        source: String,
+    },
+    /// `TOME_LAYOUT` isn't a layout.
+    UnknownEnvLayout { value: String },
+    /// A worker's own level gives `from: caller`.
+    CallerForWorker { source: String },
+}
+
+impl PlacementError {
+    pub fn unknown_preset(name: &str, known: &BTreeMap<String, Preset>, source: &str) -> Self {
+        PlacementError::UnknownPreset {
+            name: name.to_string(),
+            known: known.keys().cloned().collect(),
+            source: source.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for PlacementError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlacementError::UnknownPreset { name, source, .. } => {
+                write!(f, "unknown layout preset `{name}` (from {source})")
+            }
+            PlacementError::UnknownEnvLayout { value } => {
+                write!(f, "unknown session layout `{value}` (from TOME_LAYOUT)")
+            }
+            PlacementError::CallerForWorker { source } => {
+                write!(f, "{CALLER_IS_FOR_THE_ORCHESTRATOR} (from {source})")
+            }
+        }
+    }
+}
+
+/// `TOME_LAYOUT`'s value as a layout.
+pub fn parse_env_layout(value: &str) -> Result<Layout, PlacementError> {
+    Layout::parse(value).ok_or_else(|| PlacementError::UnknownEnvLayout {
+        value: value.to_string(),
+    })
+}
+
+/// The built-in presets, in the order they are listed.
+pub fn built_in_list() -> Vec<Preset> {
+    BUILT_IN
+        .iter()
+        .map(|n| Preset {
+            name: n.to_string(),
+            scope: "built-in",
+            settings: built_in(n).unwrap(),
+        })
+        .collect()
+}
+
+/// The built-in presets by name.
+pub fn built_in_presets() -> BTreeMap<String, Preset> {
+    built_in_list()
+        .into_iter()
+        .map(|p| (p.name.clone(), p))
+        .collect()
 }
 
 /// Placement settings from a command's flags. On the command line a
@@ -736,8 +756,8 @@ pub fn from_flags(
     direction: Option<&str>,
     size: Option<&str>,
     from: Option<&str>,
-) -> CliResult<Settings> {
-    let bad = |flag: &str, e: String| CliError::invalid(format!("--{flag}: {e}"));
+) -> Result<Settings, FlagError> {
+    let bad = |flag: &'static str, message: String| FlagError { flag, message };
     Ok(Settings {
         preset: preset.map(str::to_string),
         layout: layout
@@ -765,7 +785,7 @@ pub fn from_flags(
 
 impl Settings {
     /// Settings sent over RPC or stored on a run (as serialized above).
-    pub fn from_json(v: &Value) -> CliResult<Settings> {
+    pub fn from_json(v: &Value) -> Result<Settings, FlagError> {
         let get = |k: &str| v.get(k).and_then(Value::as_str);
         from_flags(
             get("preset"),
@@ -776,95 +796,6 @@ impl Settings {
             get("from"),
         )
     }
-}
-
-/// Fail on a flag's preset that isn't defined, before anything is recorded.
-pub fn check_flag_preset(flags: &Settings, source: &str, project: Option<&Path>) -> CliResult<()> {
-    let Some(name) = &flags.preset else {
-        return Ok(());
-    };
-    let known = presets(&Config::load(project)?)?;
-    if known.contains_key(name) {
-        Ok(())
-    } else {
-        Err(unknown_preset(name, &known, source))
-    }
-}
-
-/// Every preset definition, built-in first, each marked with whether a
-/// later one of the same name replaces it.
-pub fn list(cfg: &Config) -> CliResult<Vec<(Preset, bool)>> {
-    let effective = presets(cfg)?;
-    let mut out: Vec<Preset> = BUILT_IN
-        .iter()
-        .map(|n| Preset {
-            name: n.to_string(),
-            scope: "built-in",
-            settings: built_in(n).unwrap(),
-        })
-        .collect();
-    for file in cfg.files() {
-        let Some(Yaml::Mapping(map)) = file.get("layout_presets") else {
-            continue;
-        };
-        for name in map.keys().filter_map(Yaml::as_str) {
-            let mut problems = Vec::new();
-            let settings = match map.get(name) {
-                Some(Yaml::Mapping(m)) => parse_settings(m, &[], "", &[], false, &mut problems),
-                _ => Settings::default(),
-            };
-            out.push(Preset {
-                name: name.to_string(),
-                scope: file.scope.as_str(),
-                settings,
-            });
-        }
-    }
-    Ok(out
-        .into_iter()
-        .map(|p| {
-            let shadowed = effective.get(&p.name).is_some_and(|e| e.scope != p.scope);
-            (p, shadowed)
-        })
-        .collect())
-}
-
-/// `tome layout presets`
-pub fn presets_report(cwd: &Path) -> CliResult<Report> {
-    let listed = list(&Config::load(Some(cwd))?)?;
-    let data: Vec<Value> = listed
-        .iter()
-        .map(|(p, shadowed)| {
-            let mut v = json!({ "name": p.name, "scope": p.scope, "settings": p.settings });
-            if *shadowed {
-                v["overridden"] = json!(true);
-            }
-            v
-        })
-        .collect();
-    let rows = listed
-        .iter()
-        .map(|(p, shadowed)| {
-            let scope = if *shadowed {
-                format!("{} (overridden)", p.scope)
-            } else {
-                p.scope.to_string()
-            };
-            vec![p.name.clone(), scope, p.settings.describe()]
-        })
-        .collect();
-    Ok(Report::new(
-        json!({ "presets": data }),
-        table(&["PRESET", "SCOPE", "SETTINGS"], rows),
-    ))
-}
-
-fn unknown_preset(name: &str, known: &BTreeMap<String, Preset>, source: &str) -> CliError {
-    CliError::invalid(format!("unknown layout preset `{name}` (from {source})")).with_hint(format!(
-        "known presets: {}; define others under `layout_presets:` in {} or the project's .tome/config.yaml",
-        known.keys().cloned().collect::<Vec<_>>().join(", "),
-        config::global_path().display()
-    ))
 }
 
 // --- resolution ----------------------------------------------------------
@@ -974,21 +905,16 @@ struct Level {
     shared: bool,
 }
 
-/// Resolve a placement for `inputs` in the config that applies to
-/// `project`. Unknown values in `TOME_LAYOUT` or the config, and presets
-/// that aren't defined, are errors.
-pub fn resolve(inputs: &Inputs, project: Option<&Path>) -> CliResult<Placement> {
-    let env = std::env::var("TOME_LAYOUT").ok().filter(|s| !s.is_empty());
-    resolve_in(inputs, &Config::load(project)?, env)
-}
-
-/// [`resolve`] with the config and `TOME_LAYOUT` given.
-pub fn resolve_in(
+/// Resolve a placement for `inputs` from the levels the environment and
+/// config contribute: the parsed `TOME_LAYOUT`, the config's `layout` (with
+/// where it came from), and every defined preset. A preset a level names
+/// that isn't defined is an error.
+pub fn resolve(
     inputs: &Inputs,
-    cfg: &Config,
-    env_layout: Option<String>,
-) -> CliResult<Placement> {
-    let presets = presets(cfg)?;
+    presets: &BTreeMap<String, Preset>,
+    env_layout: Option<Layout>,
+    config_layout: Option<(Settings, String)>,
+) -> Result<Placement, PlacementError> {
     let mut levels = Vec::new();
     let worker = matches!(inputs.role, Role::Worker(_));
     let own = |levels: &mut Vec<Level>, source: String, s: Option<&Settings>| {
@@ -1053,35 +979,15 @@ pub fn resolve_in(
         "`defaults.layout`".into(),
         spec.map(|s| &s.base),
     );
-    if let Some(env) = env_layout {
-        let layout = Layout::parse(&env).ok_or_else(|| {
-            CliError::invalid(format!("unknown session layout `{env}` (from TOME_LAYOUT)"))
-                .with_hint(format!("use {}", LAYOUTS.join(", ")))
-        })?;
+    if let Some(layout) = env_layout {
         push(
             &mut levels,
             "TOME_LAYOUT".into(),
             Some(&Settings::layout(layout)),
         );
     }
-    if let Some((value, file)) = cfg.get("layout") {
-        let mut problems = Vec::new();
-        let source = format!("{} config", file.scope.as_str());
-        match parse_value(value, &["layout"], "`layout`", &[], &mut problems) {
-            _ if !problems.is_empty() => {
-                // Keep 008's message for an unknown layout name.
-                if let Yaml::String(name) = value {
-                    return Err(CliError::invalid(format!(
-                        "unknown session layout `{name}` (from `layout` in {})",
-                        file.label()
-                    ))
-                    .with_hint(format!("use {}", LAYOUTS.join(", "))));
-                }
-                return Err(config_problem(file, &problems[0]));
-            }
-            Some((s, _)) => push(&mut levels, source, Some(&s)),
-            None => {}
-        }
+    if let Some((settings, source)) = config_layout {
+        push(&mut levels, source, Some(&settings));
     }
 
     // Expand presets: a level's own settings, then its preset's.
@@ -1093,7 +999,7 @@ pub fn resolve_in(
         if let Some(name) = preset {
             let p = presets
                 .get(&name)
-                .ok_or_else(|| unknown_preset(&name, &presets, &source))?;
+                .ok_or_else(|| PlacementError::unknown_preset(&name, presets, &source))?;
             expanded.push(Level {
                 source: format!("preset `{name}` (from {source})"),
                 settings: p.settings.clone(),
@@ -1106,10 +1012,9 @@ pub fn resolve_in(
     for level in expanded.iter_mut().filter(|_| worker) {
         if level.settings.from == Some(From::Caller) {
             if !level.shared {
-                return Err(CliError::invalid(format!(
-                    "{CALLER_IS_FOR_THE_ORCHESTRATOR} (from {})",
-                    level.source
-                )));
+                return Err(PlacementError::CallerForWorker {
+                    source: level.source.clone(),
+                });
             }
             level.settings.from = None;
         }
@@ -1204,9 +1109,8 @@ pub fn resolve_in(
 pub fn moved(
     current: &Placement,
     flags: &Settings,
-    project: Option<&Path>,
-) -> CliResult<Placement> {
-    let presets = presets(&Config::load(project)?)?;
+    presets: &BTreeMap<String, Preset>,
+) -> Result<Placement, PlacementError> {
     let source = "`tome session move` flags";
     let mut levels = vec![Level {
         source: source.into(),
@@ -1216,7 +1120,7 @@ pub fn moved(
     if let Some(name) = &flags.preset {
         let p = presets
             .get(name)
-            .ok_or_else(|| unknown_preset(name, &presets, source))?;
+            .ok_or_else(|| PlacementError::unknown_preset(name, presets, source))?;
         levels.push(Level {
             source: format!("preset `{name}` (from {source})"),
             settings: p.settings.clone(),
@@ -1302,39 +1206,6 @@ pub fn moved(
     Ok(out)
 }
 
-/// Check every preset a workflow names against `presets`, for commands that
-/// fail on an undefined one.
-pub fn check_presets(spec: Option<&Spec>, project: Option<&Path>) -> CliResult<()> {
-    let Some(spec) = spec else { return Ok(()) };
-    let names = spec.presets();
-    if names.is_empty() {
-        return Ok(());
-    }
-    let known = presets(&Config::load(project)?)?;
-    match names.into_iter().find(|n| !known.contains_key(*n)) {
-        Some(n) => Err(unknown_preset(
-            n,
-            &known,
-            "the workflow's `defaults.layout`",
-        )),
-        None => Ok(()),
-    }
-}
-
-/// The presets a workflow names that aren't defined, for `tome validate`
-/// (a warning: presets depend on the environment).
-pub fn undefined_presets(spec: Option<&Spec>, project: Option<&Path>) -> Vec<String> {
-    let Some(spec) = spec else { return Vec::new() };
-    let Ok(known) = Config::load(project).and_then(|c| presets(&c)) else {
-        return Vec::new();
-    };
-    spec.presets()
-        .into_iter()
-        .filter(|n| !known.contains_key(*n))
-        .map(str::to_string)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1355,24 +1226,29 @@ mod tests {
             }
             f
         };
-        let m = moved(&tab, &flags("layout=split direction=down"), None).unwrap();
+        let m = moved(
+            &tab,
+            &flags("layout=split direction=down"),
+            &built_in_presets(),
+        )
+        .unwrap();
         assert_eq!(
             (m.layout, &m.workspace, m.direction),
             (Layout::Split, &Workspace::Project, Direction::Down)
         );
         assert_eq!(m.sources["split.direction"], "`tome session move` flags");
-        let own = moved(&m, &flags("workspace=own"), None).unwrap();
+        let own = moved(&m, &flags("workspace=own"), &built_in_presets()).unwrap();
         assert_eq!(
             (own.layout, &own.workspace, own.direction),
             (Layout::Workspace, &Workspace::Own, Direction::Down)
         );
-        let back = moved(&own, &flags("layout=tab"), None).unwrap();
+        let back = moved(&own, &flags("layout=tab"), &built_in_presets()).unwrap();
         assert_eq!(
             (back.layout, &back.workspace),
             (Layout::Tab, &Workspace::Project)
         );
         assert_eq!(back.sources["workspace"], "the default");
-        let named = moved(&own, &flags("workspace=reviews"), None).unwrap();
+        let named = moved(&own, &flags("workspace=reviews"), &built_in_presets()).unwrap();
         assert_eq!(
             (named.layout, &named.workspace),
             (Layout::Tab, &Workspace::Named("reviews".into()))
@@ -1381,12 +1257,12 @@ mod tests {
             preset: Some("nope".into()),
             ..Settings::default()
         };
-        let err = moved(&tab, &f, None).unwrap_err();
+        let err = moved(&tab, &f, &built_in_presets()).unwrap_err();
         assert!(
-            err.message
+            err.to_string()
                 .contains("unknown layout preset `nope` (from `tome session move` flags)"),
             "{}",
-            err.message
+            err
         );
         assert_eq!(Placement::from_json(&m.to_json()), Some(m));
     }
@@ -1481,7 +1357,7 @@ mod tests {
     ) -> Placement {
         let (s, problems) = spec(spec_yaml);
         assert!(problems.is_empty(), "{problems:?}");
-        resolve_in(
+        resolve(
             &Inputs {
                 role,
                 flags,
@@ -1489,7 +1365,8 @@ mod tests {
                 spec: s.as_ref(),
                 split_workers: true,
             },
-            &Config::default(),
+            &built_in_presets(),
+            None,
             None,
         )
         .unwrap()
@@ -1498,7 +1375,7 @@ mod tests {
     #[test]
     fn workers_get_a_tab_unless_the_backend_splits_them() {
         let worker = |split_workers| {
-            resolve_in(
+            resolve(
                 &Inputs {
                     role: Role::Worker("w"),
                     flags: None,
@@ -1506,7 +1383,8 @@ mod tests {
                     spec: None,
                     split_workers,
                 },
-                &Config::default(),
+                &built_in_presets(),
+                None,
                 None,
             )
             .unwrap()
@@ -1589,136 +1467,11 @@ mod tests {
     }
 
     #[test]
-    fn config_presets_and_layout_are_levels() {
-        let cfg = Config::parse(
-            config::Scope::Project,
-            "layout: { preset: wide, from: first }\nlayout_presets:\n  wide: { layout: split, split: { size: 70% } }\n",
-        )
-        .unwrap();
-        let inputs = Inputs {
-            role: Role::Orchestrator,
-            flags: None,
-            run_flags: None,
-            spec: None,
-            split_workers: true,
-        };
-        let p = resolve_in(&inputs, &cfg, Some("tab".into())).unwrap();
-        // TOME_LAYOUT is above the config.
-        assert_eq!(
-            (p.layout, p.size, p.from),
-            (Layout::Tab, Some(Size::Percent(70)), Some(From::First))
-        );
-        assert_eq!(p.sources["layout"], "TOME_LAYOUT");
-        assert_eq!(
-            p.sources["split.size"],
-            "preset `wide` (from project config)"
-        );
-        let listed = presets(&cfg).unwrap();
-        assert_eq!(listed["wide"].scope, "project");
-        assert_eq!(
-            listed["wide"].settings.describe(),
-            "layout=split split.size=70%"
-        );
-
-        let nested = Config::parse(
-            config::Scope::Global,
-            "layout_presets:\n  a: { preset: b }\n",
-        )
-        .unwrap();
-        assert!(presets(&nested)
-            .unwrap_err()
-            .message
-            .contains("can't reference another preset"));
-    }
-
-    #[test]
-    fn caller_is_for_the_orchestrator_only() {
-        // A worker's own blocks can't give it.
-        for yaml in [
-            "workers: [{ match: \"*\", from: caller }]",
-            "workers: { from: caller }",
-        ] {
-            let (_, problems) = spec(yaml);
-            assert!(
-                problems.iter().any(|p| p
-                    .message
-                    .contains("`from: caller` is for the run's agent or orchestrator only")),
-                "{yaml}: {problems:?}"
-            );
-            assert_eq!(
-                problems[0].path.last().map(String::as_str),
-                Some("from"),
-                "{problems:?}"
-            );
-        }
-        let (_, problems) = spec("orchestrator: { from: caller }");
-        assert!(problems.is_empty(), "{problems:?}");
-
-        // At a shared level it's the orchestrator's; workers take `from`
-        // from the next level down.
-        let cfg = Config::parse(config::Scope::Project, "layout: { from: last }\n").unwrap();
-        let (s, _) = spec("layout: split\nfrom: caller");
-        let run = Settings {
-            from: Some(From::Caller),
-            ..Settings::default()
-        };
-        let inputs = Inputs {
-            role: Role::Orchestrator,
-            flags: None,
-            run_flags: None,
-            spec: s.as_ref(),
-            split_workers: true,
-        };
-        let o = resolve_in(&inputs, &cfg, None).unwrap();
-        assert_eq!(
-            (o.from, o.sources["from"].as_str()),
-            (Some(From::Caller), "`defaults.layout`")
-        );
-        let inputs = Inputs {
-            role: Role::Worker("w"),
-            flags: None,
-            run_flags: Some(&run),
-            spec: s.as_ref(),
-            split_workers: true,
-        };
-        let w = resolve_in(&inputs, &cfg, None).unwrap();
-        assert_eq!(
-            (w.from, w.sources["from"].as_str()),
-            (Some(From::Last), "project config")
-        );
-
-        // A worker's own preset giving it is an error.
-        let cfg = Config::parse(
-            config::Scope::Project,
-            "layout_presets:\n  chat: { from: caller }\n",
-        )
-        .unwrap();
-        let flags = Settings {
-            preset: Some("chat".into()),
-            ..Settings::default()
-        };
-        let inputs = Inputs {
-            role: Role::Worker("w"),
-            flags: Some(&flags),
-            run_flags: None,
-            spec: None,
-            split_workers: true,
-        };
-        let err = resolve_in(&inputs, &cfg, None).unwrap_err();
-        assert!(
-            err.message
-                .contains("(from preset `chat` (from `tome worker spawn` flags))"),
-            "{}",
-            err.message
-        );
-    }
-
-    #[test]
     fn a_move_keeps_from_caller_only_when_its_flags_give_it() {
         let mut at = Placement::of_layout(Layout::Tab);
         at.from = Some(From::Caller);
         at.caller = Some("pane P".into());
-        let m = moved(&at, &Settings::layout(Layout::Split), None).unwrap();
+        let m = moved(&at, &Settings::layout(Layout::Split), &built_in_presets()).unwrap();
         assert_eq!((m.from, m.caller.as_deref()), (None, None));
         let m = moved(
             &at,
@@ -1726,32 +1479,9 @@ mod tests {
                 from: Some(From::Caller),
                 ..Settings::default()
             },
-            None,
+            &built_in_presets(),
         )
         .unwrap();
         assert_eq!(m.from, Some(From::Caller));
-    }
-
-    #[test]
-    fn an_undefined_preset_is_an_error_with_the_known_ones() {
-        let (s, _) = spec("preset: nope");
-        let inputs = Inputs {
-            role: Role::Orchestrator,
-            flags: None,
-            run_flags: None,
-            spec: s.as_ref(),
-            split_workers: true,
-        };
-        let err = resolve_in(&inputs, &Config::default(), None).unwrap_err();
-        assert!(
-            err.message
-                .contains("unknown layout preset `nope` (from `defaults.layout`)"),
-            "{}",
-            err.message
-        );
-        assert!(err
-            .hint
-            .unwrap()
-            .contains("known presets: split, tab, workspace"));
     }
 }

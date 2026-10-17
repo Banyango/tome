@@ -21,6 +21,7 @@ mod orchestrator;
 mod output;
 mod paths;
 mod placement;
+mod placementcmd;
 mod plugin;
 mod plugincmd;
 mod pluginhooks;
@@ -676,6 +677,7 @@ impl PlacementArgs {
             self.size.as_deref(),
             self.from.as_deref(),
         )
+        .map_err(output::CliError::from)
     }
 }
 
@@ -1335,7 +1337,7 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
         },
         Command::Layout {
             command: LayoutCommand::Presets,
-        } => placement::presets_report(&current_dir()?),
+        } => placementcmd::presets_report(&current_dir()?),
         Command::Query { sql } => inspect::query(&sql),
         Command::Gc {
             older_than,

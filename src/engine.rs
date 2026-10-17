@@ -14,6 +14,7 @@ use crate::ids::RunId;
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
 use crate::placement;
+use crate::placementcmd;
 use crate::resume::{self, ResumeRequest};
 use crate::session;
 use crate::stop::Stop;
@@ -637,13 +638,13 @@ impl Engine {
             )));
         }
         let project = orchestrator::run_project(&run);
-        placement::check_flag_preset(&flags, "`tome session move` flags", project.as_deref())?;
+        placementcmd::check_flag_preset(&flags, "`tome session move` flags", project.as_deref())?;
         let current = s
             .placement
             .as_ref()
             .and_then(placement::Placement::from_json)
             .unwrap_or_else(|| placement::Placement::of_layout(session::Layout::of(&s)));
-        let mut placement = placement::moved(&current, &flags, project.as_deref())?;
+        let mut placement = placementcmd::moved(&current, &flags, project.as_deref())?;
         let others: Vec<store::Session> = recorded
             .iter()
             .filter(|o| o.name != s.name)
@@ -1155,10 +1156,10 @@ fn launch_check(
         cmux_caller.is_some_and(|c| c["herdr_pane"].is_string()),
     )?;
     if let Some(flags) = flags {
-        placement::check_flag_preset(flags, "`tome run` flags", project)?;
+        placementcmd::check_flag_preset(flags, "`tome run` flags", project)?;
     }
     orchestrator::placement(fm, mode, flags, project)?;
-    placement::check_presets(fm.defaults.layout.as_ref(), project)?;
+    placementcmd::check_presets(fm.defaults.layout.as_ref(), project)?;
     Ok(kind)
 }
 

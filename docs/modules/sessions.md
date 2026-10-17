@@ -10,9 +10,15 @@ launched in them.
 - `src/session/herdr.rs`: herdr socket adapter. `session/workspace.rs`: per-project
   workspaces (`<project>-orchestrator`). `session/split.rs`: split direction/size/
   `from`. `session/moves.rs`: `tome session move`.
-- `src/placement.rs`: placement `Settings` (layout, split, from ...), presets, and
-  how each setting resolves from CLI flag → workflow → config levels.
-  `parse_settings` / `parse_value` read it from YAML or RPC params.
+- `src/placement.rs`: pure placement rules: `Settings` (layout, split, from ...),
+  `Spec`, built-in presets, and how each setting resolves from CLI flag →
+  workflow → config levels (`resolve`, `moved`). `parse_settings` / `parse_value`
+  read it from YAML or RPC params. Returns its own errors (`FlagError`,
+  `PlacementError`); no `output` or `config` imports.
+- `src/placementcmd.rs`: the CLI side: loads presets and the config `layout`
+  (`presets`, `resolve`, `moved`, `check_flag_preset`, `check_presets`,
+  `undefined_presets`), `tome layout presets`, and `From` conversions of
+  placement errors to `CliError` (hints included).
 - `src/harness.rs`: harness adapter: command templates for launching an agent CLI;
   built-in presets plus user-defined (`config.yaml`). `resolve`.
 - `src/harnesscmd.rs`: `tome harness ls|validate`.

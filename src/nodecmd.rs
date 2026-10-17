@@ -6,6 +6,7 @@ use crate::node::{self, Node};
 use crate::output::{exit, table, CliError, CliResult, ErrorKind, Report};
 use crate::paths;
 use crate::placement::{self, Settings};
+use crate::placementcmd;
 use crate::rpc;
 use crate::session::{self, Kind, Layout, Split, Target};
 use serde_json::{json, Value};
@@ -521,7 +522,7 @@ fn open_tab(argv: &[String], title: &str, caller: Value, flags: &Settings) -> Cl
     let mut settings = match &flags.preset {
         Some(name) => {
             let cfg = Config::load(project.as_deref())?;
-            let presets = placement::presets(&cfg)?;
+            let presets = placementcmd::presets(&cfg)?;
             presets
                 .get(name)
                 .map(|p| p.settings.clone())
