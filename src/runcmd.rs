@@ -10,7 +10,6 @@ use crate::output::{exit, CliError, CliResult, ErrorKind, Mode, Report};
 use crate::paths;
 use crate::placement::{self, Settings};
 use crate::rpc;
-use crate::workflow::Library;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use serde_json::{json, Value};
 use std::cell::Cell;
@@ -40,7 +39,7 @@ pub fn start_params(
     harness: Option<&str>,
     model: Option<&str>,
 ) -> CliResult<Value> {
-    let wf = Library::discover(cwd).find(target)?;
+    let wf = crate::features::plugins::library::discover(cwd).find(target)?;
     let mut p = json!({
         "workflow_path": wf.path(),
         "source": wf.source(),
@@ -128,7 +127,10 @@ fn remote_start_params(
         Ok(wf) => wf,
         Err(e) if e.kind == ErrorKind::NotFound => {
             let mut err = CliError::not_found(format!("{} on {}", e.message, node.name));
-            if Library::discover(cwd).find(name).is_ok() {
+            if crate::features::plugins::library::discover(cwd)
+                .find(name)
+                .is_ok()
+            {
                 err = err.with_hint(format!(
                     "it's here but not on {n}: commit and push it, then pull it on {n}",
                     n = node.name

@@ -237,7 +237,7 @@ pub fn claims_except(builtin_commands: &[String], except: Option<&str>) -> CliRe
 /// plugin updates.
 pub fn collisions(cwd: &Path) -> CliResult<Vec<manifest::Conflict>> {
     let wanted = |c: &Claim| matches!(c.space, Space::Workflow | Space::Harness);
-    let mut user: Vec<Claim> = Library::discover(cwd)
+    let mut user: Vec<Claim> = super::library::discover(cwd)
         .entries()
         .into_iter()
         .filter(|e| e.plugin.is_none())

@@ -12,7 +12,7 @@ Rust CLI and daemon for repeatable agentic workflows (Markdown workflows started
 
 ## Architecture and navigation
 
-One binary crate; the daemon owns the only DuckDB connection and CLI commands reach it over JSON-RPC. Start from the feature doc, not a crate-wide search. Features are moving into `src/features/<name>/` one at a time (done: bus); the rest are flat files in `src/`. Update the docs when you move or add modules. Overview and known coupling: `docs/modules/architecture.md`.
+One binary crate; the daemon owns the only DuckDB connection and CLI commands reach it over JSON-RPC. Start from the feature doc, not a crate-wide search. Features are moving into `src/features/<name>/` one at a time (done: bus, plugins); the rest are flat files in `src/`. Update the docs when you move or add modules. Overview and known coupling: `docs/modules/architecture.md`.
 
 - Workflow files, `tome workflow`, `tome validate`: `docs/modules/workflows.md`
 - Cron, file, topic and manual triggers; arming; file watching: `docs/modules/triggers.md`

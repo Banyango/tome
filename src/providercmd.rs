@@ -8,15 +8,14 @@
 //! outcome and releases the machine, whatever happened.
 
 use crate::config::Config;
+use crate::features::plugins::store;
 use crate::node::{self, Node};
 use crate::nodecmd;
 use crate::output::{exit, CliError, CliResult, ErrorKind, Report};
 use crate::paths;
-use crate::plugin::store;
 use crate::provider::{self, Cause, Opts, Provided, Stub};
 use crate::rpc;
 use crate::runcmd;
-use crate::workflow::Library;
 use serde_json::{json, Value};
 use serde_yaml::Value as Yaml;
 use std::cell::Cell;
@@ -164,7 +163,7 @@ pub fn run(job: &Job, start: impl FnOnce() -> CliResult<Report>) -> CliResult<Re
 fn options(job: &Job) -> CliResult<Opts> {
     let cli = provider::parse_opts(job.opt_args).map_err(CliError::invalid)?;
     let config = config_opts(job.cwd)?;
-    let workflow = Library::discover(job.cwd)
+    let workflow = crate::features::plugins::library::discover(job.cwd)
         .find(job.workflow)
         .map(|wf| wf.frontmatter().defaults.provider_opts.clone())
         .unwrap_or_default();
@@ -312,6 +311,6 @@ fn release(
         );
         let message = format!("couldn't release {what}: {}", e.message);
         eprintln!("warning: {message}; it is not retried");
-        let _ = crate::plugincmd::notify("tome: release failed", &message);
+        let _ = crate::features::plugins::cmd::notify("tome: release failed", &message);
     }
 }

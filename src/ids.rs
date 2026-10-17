@@ -79,3 +79,23 @@ mod tests {
         assert!(RunId::new(2) > RunId::new(1));
     }
 }
+
+/// The name that means this machine.
+pub const LOCAL: &str = "local";
+
+/// A node name: `[a-z0-9_-]`, and not `local`.
+pub fn check_node_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "invalid node name `{name}`: use lowercase letters, digits, `_` and `-`"
+        ));
+    }
+    if name == LOCAL {
+        return Err("`local` is reserved: it means this machine".into());
+    }
+    Ok(())
+}

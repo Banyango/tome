@@ -138,7 +138,7 @@ impl Manifest {
 
         let hooks = parse_hooks(get("hooks"))?;
         let providers = name_list(get("providers"), "providers", |n| {
-            crate::node::check_name(n)
+            crate::ids::check_node_name(n)
         })?;
         let workflows = name_list(get("workflows"), "workflows", |n| {
             if crate::text::is_identifier(n) {

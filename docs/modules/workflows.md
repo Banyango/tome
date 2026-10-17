@@ -28,8 +28,9 @@ feature parses and validates them and implements the `tome workflow` and
 - `workflow.rs` has no dependency on `output`: it returns its own errors
   (`Invalid`, `LibraryError`, `FindError`, `ParamArgError`). Add new CLI wording,
   hints or exit kinds in `workflowcmd.rs`, not in `workflow.rs`.
-- `Library` still does filesystem and plugin-store reads (`discover`, `entries`);
-  that is the next thing to move out of the parsing code.
+- `Library` does filesystem reads (`discover_user`, `entries`) but never reads
+  the plugin store: `features/plugins/library.rs::discover` adds the plugins'
+  workflows (`PluginWorkflows`). Use it unless you want only the user's own.
 
 ## Tests
 

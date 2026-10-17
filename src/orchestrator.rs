@@ -54,7 +54,7 @@ pub fn harness_for(fm: &Frontmatter, mode: Mode, project: Option<&Path>) -> CliR
         Mode::Orchestrated => d.orchestrator_harness.as_deref(),
         Mode::Single => None,
     };
-    harness::resolve(
+    crate::features::plugins::harnesses::resolve(
         own.or(d.harness.as_deref()).unwrap_or(harness::DEFAULT),
         project,
     )

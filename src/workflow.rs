@@ -1209,7 +1209,7 @@ fn parse_defaults(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> 
                     Err(e) => errors.push(Diagnostic::new(line, format!("`defaults.start_timeout` {e}"))),
                 }
             }
-            "provider_opts" => match crate::provider::opts_from_yaml(v) {
+            "provider_opts" => match crate::provider_opts::opts_from_yaml(v) {
                 Ok(opts) => d.provider_opts = opts,
                 Err(e) => errors.push(Diagnostic::new(line, e)),
             },
@@ -1781,12 +1781,22 @@ impl From<LibraryError> for FindError {
 pub struct Library {
     pub global_dir: PathBuf,
     pub project_dir: Option<PathBuf>,
-    /// The enabled plugins' folders, which hold their own `workflows/`.
-    pub plugin_dirs: Vec<(String, PathBuf)>,
+    /// The enabled plugins' workflows. Filled by
+    /// `plugins::library::discover`; empty for a library of the user's own.
+    pub plugin_dirs: Vec<PluginWorkflows>,
+}
+
+/// An enabled plugin's folder and the workflows its manifest lists.
+pub struct PluginWorkflows {
+    pub plugin: String,
+    pub dir: PathBuf,
+    pub workflows: Vec<String>,
 }
 
 impl Library {
-    pub fn discover(cwd: &Path) -> Library {
+    /// The global and project directories only; use
+    /// `plugins::library::discover` to include the enabled plugins' workflows.
+    pub fn discover_user(cwd: &Path) -> Library {
         let home = crate::paths::tome_home();
         let global_dir = home.join("workflows");
         let project_dir = cwd.ancestors().find_map(|dir| {
@@ -1794,14 +1804,10 @@ impl Library {
             let candidate = tome.join("workflows");
             (candidate.is_dir() && !crate::paths::same_path(&tome, &home)).then_some(candidate)
         });
-        let plugin_dirs = crate::plugin::store::active()
-            .into_iter()
-            .map(|p| (p.name, p.dir))
-            .collect();
         Library {
             global_dir,
             project_dir,
-            plugin_dirs,
+            plugin_dirs: Vec::new(),
         }
     }
 
@@ -1848,11 +1854,13 @@ impl Library {
                 });
             }
         }
-        for (plugin, dir) in &self.plugin_dirs {
-            let Some(m) = crate::plugin::store::read_manifest(dir).ok() else {
-                continue;
-            };
-            for name in &m.workflows {
+        for PluginWorkflows {
+            plugin,
+            dir,
+            workflows,
+        } in &self.plugin_dirs
+        {
+            for name in workflows {
                 let path = dir.join("workflows").join(format!("{name}.md"));
                 let result = load(&path).and_then(|wf| check_scope(wf, Scope::Global));
                 out.push(Entry {

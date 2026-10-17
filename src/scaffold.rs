@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 /// `tome workflow ls`: every workflow visible from `cwd`, project ones
 /// first. A global workflow a project one shadows is marked as such.
 pub fn ls(cwd: &Path, global_only: bool) -> CliResult<Report> {
-    let library = Library::discover(cwd);
+    let library = crate::features::plugins::library::discover(cwd);
     let entries: Vec<Entry> = library
         .entries()
         .into_iter()
@@ -109,7 +109,7 @@ pub fn new(
         return Err(CliError::invalid(format!("invalid workflow name `{name}`"))
             .with_hint("use letters, digits, `_` and `-`, starting with a letter or `_`"));
     }
-    let library = Library::discover(cwd);
+    let library = crate::features::plugins::library::discover(cwd);
     let (scope, dir) = match (global, &library.project_dir) {
         (true, _) => (Scope::Global, library.global_dir.clone()),
         (false, Some(dir)) => (Scope::Project, dir.clone()),
@@ -187,7 +187,7 @@ pub fn new(
 /// runs, or when the daemon (which alone can tell) isn't running. Live runs
 /// carry on from their saved snapshots either way.
 pub fn rm(cwd: &Path, target: &str, global: bool, force: bool) -> CliResult<Report> {
-    let library = Library::discover(cwd);
+    let library = crate::features::plugins::library::discover(cwd);
     let (scope, path, name) = if target.contains('/') || target.ends_with(".md") {
         by_path(&library, &cwd.join(target), target, global)?
     } else {
@@ -207,7 +207,7 @@ pub fn rm(cwd: &Path, target: &str, global: bool, force: bool) -> CliResult<Repo
                 .and_then(Path::parent)
                 .and_then(Path::parent)
                 .unwrap_or(cwd);
-            let entries = Library::discover(project_root).entries();
+            let entries = crate::features::plugins::library::discover(project_root).entries();
             let named = |s: Scope| {
                 entries
                     .iter()

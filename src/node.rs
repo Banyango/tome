@@ -19,8 +19,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The name that means this machine.
-pub const LOCAL: &str = "local";
+pub use crate::ids::{check_node_name as check_name, LOCAL};
 
 /// The version of the JSON-RPC protocol between a CLI and a node's daemon.
 /// Bumped when a change would break an older or newer peer.
@@ -70,23 +69,6 @@ pub fn ssh_bin() -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "ssh".into())
-}
-
-/// A node name: `[a-z0-9_-]`, and not `local`.
-pub fn check_name(name: &str) -> Result<(), String> {
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-    {
-        return Err(format!(
-            "invalid node name `{name}`: use lowercase letters, digits, `_` and `-`"
-        ));
-    }
-    if name == LOCAL {
-        return Err("`local` is reserved: it means this machine".into());
-    }
-    Ok(())
 }
 
 /// The configured nodes, by name.
@@ -362,7 +344,7 @@ pub fn resolve_workflow_rpc(p: &Value) -> CliResult<Value> {
     let dir = crate::params::opt_str(p, "project_path")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"));
-    let library = crate::workflow::Library::discover(&dir);
+    let library = crate::features::plugins::library::discover(&dir);
     let wf = match library.locate(name)? {
         Ok(wf) => wf.path().to_path_buf(),
         Err(inv) => inv.path,

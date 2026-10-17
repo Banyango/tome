@@ -1,6 +1,6 @@
 //! Diagnostics for configured agent harnesses.
 
-use crate::harness::{self, Harness, Template, Vars};
+use crate::harness::{Harness, Template, Vars};
 use crate::ids::RunId;
 use crate::output::{exit, CliError, CliResult, Report};
 use serde_json::json;
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 /// `tome harness validate [name]`: check configuration and whether the
 /// configured program can be found, without launching an interactive agent.
 pub fn validate(project: &Path, name: Option<&str>, model: Option<&str>) -> CliResult<Report> {
-    let known = harness::candidates(Some(project))?;
+    let known = crate::features::plugins::harnesses::candidates(Some(project))?;
     let names: Vec<String> = match name {
         Some(name) if known.contains_key(name) => vec![name.to_string()],
         Some(name) => {
@@ -27,7 +27,7 @@ pub fn validate(project: &Path, name: Option<&str>, model: Option<&str>) -> CliR
     let mut results = Vec::new();
     let mut ok = true;
     for name in names {
-        let h = match harness::resolve(&name, Some(project)) {
+        let h = match crate::features::plugins::harnesses::resolve(&name, Some(project)) {
             Ok(h) => h,
             Err(e) if known.get(&name).is_some_and(|f| f.len() > 1) => {
                 ok = false;
@@ -106,7 +106,7 @@ pub fn validate(project: &Path, name: Option<&str>, model: Option<&str>) -> CliR
 
 /// `tome harness ls`: every harness tome knows, and where each is defined.
 pub fn ls(project: &Path) -> CliResult<Report> {
-    let known = harness::candidates(Some(project))?;
+    let known = crate::features::plugins::harnesses::candidates(Some(project))?;
     let mut rows = Vec::new();
     let mut data = Vec::new();
     for (name, found) in &known {

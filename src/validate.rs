@@ -5,13 +5,13 @@
 
 use crate::output::{exit, CliResult, Report};
 use crate::placementcmd;
-use crate::workflow::{self, Entry, Invalid, Library, Scope, Workflow};
+use crate::workflow::{self, Entry, Invalid, Scope, Workflow};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 
 pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Report> {
-    let library = Library::discover(cwd);
+    let library = crate::features::plugins::library::discover(cwd);
     let overrides = workflow::parse_param_args(params)?;
 
     let mut results = Vec::new();
@@ -86,7 +86,7 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
         .map(|root| crate::features::bus::forward::check(&root));
     let bus_ok = bus.as_ref().is_none_or(|(errors, _)| errors.is_empty());
     // Names a plugin shares with something else make every use of them an error.
-    let clashes = crate::plugin::store::collisions(cwd)?;
+    let clashes = crate::features::plugins::store::collisions(cwd)?;
     let valid = results.iter().all(|r| r["valid"] == true) && bus_ok && clashes.is_empty();
     let mut human = render_human(&results, target.is_none());
     for c in &clashes {
@@ -95,7 +95,7 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
     let mut data = json!({ "valid": valid, "workflows": results });
     data["plugin_conflicts"] = json!(clashes
         .iter()
-        .map(crate::plugincmd::conflict_json)
+        .map(crate::features::plugins::cmd::conflict_json)
         .collect::<Vec<_>>());
     if let Some((errors, warnings)) = bus {
         for e in &errors {

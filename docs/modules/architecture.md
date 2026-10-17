@@ -4,7 +4,7 @@ A map for agents and new contributors: where each feature lives today, so a
 change can start from one feature doc instead of a crate-wide search. These
 docs follow the code as it moves: features are being moved one at a time into
 `src/features/<name>/` (daemon code, `cmd.rs` CLI adapter, tests together). Done:
-bus. The rest are still flat files in `src/`.
+bus, plugins. The rest are still flat files in `src/`.
 
 tome is one binary crate. A CLI process parses a command (`src/main.rs`,
 `dispatch`) and either does local work or sends a JSON-RPC request to the
@@ -35,7 +35,9 @@ read or write of run state goes through it.
   (everything under `~/.tome`, overridable with `TOME_HOME`; `same_path`),
   `src/role.rs` (`Mode`, the `orchestrator`/`agent` roles, `is_main`),
   `src/text.rs` (`is_identifier`, `shell_quote`), `src/params.rs` (`req_*`/`opt_*`
-  readers for RPC params, `internal`).
+  readers for RPC params, `internal`), `src/provider_opts.rs` (`--provider-opt`
+  and `provider_opts:` parsing). `ids.rs` also holds the node name rules
+  (`LOCAL`, `check_node_name`).
 - `src/config.rs`: global and project `config.yaml`.
 
 ## Known coupling to be aware of
@@ -54,10 +56,10 @@ These are why a change sometimes spreads wider than its feature:
     `resume`, `triggers`, `watch`, `workers`. Mostly because feature files
     `impl Engine` (the hub) and the hub calls back into them.
   - Remote and plugins: `node`, `rpc`, `lifecycle`, `service`, `provider`,
-    `triggerscmd` (one feature, so its internal cycle is fine) plus the edges
-    that tie it to others: `workflow` → `plugin`/`provider` (`Library` reads the
-    plugin store, `provider_opts` parsing), `harness` ↔ `plugin` (plugin-provided
-    harnesses), `plugin` → `node`/`workflow`.
+    `triggerscmd` and the plugins feature. `workflow` and `harness` are out of
+    it (they no longer import plugins). What remains is `node` ↔ plugins
+    (providers are plugins) and the RPC/lifecycle plumbing; it should shrink
+    when nodes move into `src/features/`.
   When adding code, import downwards: leaf helpers, then `store`/`config`/
   `placement`/`session`, then features.
 - `engine.rs` is the daemon's hub: it dispatches RPCs for runs, workers,

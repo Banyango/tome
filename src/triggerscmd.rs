@@ -17,7 +17,7 @@ fn canonical(p: &Path) -> PathBuf {
 /// The project a directory is in, if any. Worktrees under `.tome/` aren't
 /// projects of their own.
 pub fn project_of(cwd: &Path) -> Option<PathBuf> {
-    let root = canonical(&Library::discover(cwd).project_root()?);
+    let root = canonical(&Library::discover_user(cwd).project_root()?);
     (!root
         .components()
         .any(|c| c == Component::Normal(".tome".as_ref())))
@@ -50,7 +50,7 @@ pub fn fire(
     let (path, project, root) = match crate::node::target() {
         Some(node) => on_node(node, cwd, target)?,
         None => {
-            let library = Library::discover(cwd);
+            let library = crate::features::plugins::library::discover(cwd);
             // An invalid workflow still fires, so the daemon records the error.
             let path = match library.locate(target)? {
                 Ok(wf) => wf.path().to_path_buf(),

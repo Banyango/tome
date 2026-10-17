@@ -22,11 +22,9 @@ mod params;
 mod paths;
 mod placement;
 mod placementcmd;
-mod plugin;
-mod plugincmd;
-mod pluginhooks;
 mod primitives;
 mod provider;
+mod provider_opts;
 mod providercmd;
 mod query;
 mod recovery;
@@ -1326,7 +1324,7 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
             text,
             dry_run,
         } => features::bus::cmd::publish(&current_dir()?, &topic, text, dry_run),
-        Command::Notify { title, message } => plugincmd::notify(&title, &message),
+        Command::Notify { title, message } => features::plugins::cmd::notify(&title, &message),
         Command::Events { command } => match command {
             EventsCommand::Ls => features::bus::cmd::ls(&current_dir()?),
             EventsCommand::Show { topic, all } => {
@@ -1351,21 +1349,23 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
             let builtin = builtin_commands();
             match command {
                 PluginCommand::Install { source } => {
-                    plugincmd::install(&source, &builtin).inspect(|_| plugincmd::reload_daemon())
+                    features::plugins::cmd::install(&source, &builtin)
+                        .inspect(|_| features::plugins::cmd::reload_daemon())
                 }
-                PluginCommand::Update { name } => plugincmd::update(name.as_deref(), &builtin)
-                    .inspect(|_| plugincmd::reload_daemon()),
-                PluginCommand::Rm { name } => {
-                    plugincmd::rm(&name).inspect(|_| plugincmd::reload_daemon())
+                PluginCommand::Update { name } => {
+                    features::plugins::cmd::update(name.as_deref(), &builtin)
+                        .inspect(|_| features::plugins::cmd::reload_daemon())
                 }
-                PluginCommand::Enable { name } => {
-                    plugincmd::set_enabled(&name, true).inspect(|_| plugincmd::reload_daemon())
-                }
+                PluginCommand::Rm { name } => features::plugins::cmd::rm(&name)
+                    .inspect(|_| features::plugins::cmd::reload_daemon()),
+                PluginCommand::Enable { name } => features::plugins::cmd::set_enabled(&name, true)
+                    .inspect(|_| features::plugins::cmd::reload_daemon()),
                 PluginCommand::Disable { name } => {
-                    plugincmd::set_enabled(&name, false).inspect(|_| plugincmd::reload_daemon())
+                    features::plugins::cmd::set_enabled(&name, false)
+                        .inspect(|_| features::plugins::cmd::reload_daemon())
                 }
-                PluginCommand::Ls => plugincmd::ls(&builtin),
-                PluginCommand::Check { name } => plugincmd::check(&name, &builtin),
+                PluginCommand::Ls => features::plugins::cmd::ls(&builtin),
+                PluginCommand::Check { name } => features::plugins::cmd::check(&name, &builtin),
             }
         }
         Command::Node { command } => match command {
@@ -1374,7 +1374,9 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
             NodeCommand::Ls => nodecmd::ls(),
             NodeCommand::Check { name } => nodecmd::check(&name),
         },
-        Command::External(args) => plugincmd::exec_subcommand(&args, &builtin_commands()),
+        Command::External(args) => {
+            features::plugins::cmd::exec_subcommand(&args, &builtin_commands())
+        }
         Command::Rpc { .. } => unreachable!("handled in main"),
     }
 }

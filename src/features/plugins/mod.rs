@@ -4,7 +4,11 @@
 //! [`manifest`] holds the deterministic rules (parsing, compatibility, name
 //! conflicts); [`store`] reads what's installed and the names already taken.
 
+pub mod cmd;
 pub mod gate;
+pub mod harnesses;
+mod hooks;
 pub mod host;
+pub mod library;
 pub mod manifest;
 pub mod store;

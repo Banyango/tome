@@ -6,11 +6,11 @@
 
 use crate::api::StartRequest;
 use crate::engine::Engine;
+use crate::features::plugins::gate::{parse_reply, Gate, Verdict};
+use crate::features::plugins::host::HOOK_TIMEOUT;
+use crate::features::plugins::manifest::{Hook, OnError};
 use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
-use crate::plugin::gate::{parse_reply, Gate, Verdict};
-use crate::plugin::host::HOOK_TIMEOUT;
-use crate::plugin::manifest::{Hook, OnError};
 use crate::store::{Run, RunStatus};
 use crate::workflow::{Invalid, Workflow};
 use serde_json::{json, Map, Value};
@@ -134,7 +134,7 @@ impl Engine {
                     ))
                     .with_hint(format!(
                         "see {}; `tome plugin check {plugin}` tests it, and `on_error: allow` on the hook lets runs through when it fails",
-                        crate::plugin::store::log_path(plugin).display()
+                        crate::features::plugins::store::log_path(plugin).display()
                     )));
                 }
             }
@@ -183,8 +183,8 @@ impl Engine {
 // --- providers ----------------------------------------------------------
 
 use crate::engine::Sink;
+use crate::features::plugins::host::{CallError, ProviderHooks};
 use crate::output::ErrorKind;
-use crate::plugin::host::{CallError, ProviderHooks};
 use std::time::Duration;
 
 /// `45s`, `10m`.

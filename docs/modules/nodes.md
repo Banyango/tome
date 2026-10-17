@@ -14,6 +14,7 @@ machines on demand.
   `classify_ssh` maps SSH failures to errors.
 - `src/provider.rs`: node providers: plugins that make a machine for
   `tome run --on <provider>`; local record of runs on released machines.
+  Option parsing is in `src/provider_opts.rs`; node name rules in `src/ids.rs`.
 - `src/providercmd.rs`: `tome run <workflow> --on <provider>`: create, run, release.
 - `src/main.rs`: `route`/`reach` decide whether a command runs locally or is
   forwarded to a node's daemon.

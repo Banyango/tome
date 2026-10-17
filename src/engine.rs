@@ -113,7 +113,7 @@ pub struct Engine {
     blocked_since: Mutex<HashMap<(RunId, String), Instant>>,
     blocked_notified: Mutex<HashMap<(RunId, String), Instant>>,
     /// The plugins this daemon runs.
-    pub(crate) plugins: Arc<crate::plugin::host::Host>,
+    pub(crate) plugins: Arc<crate::features::plugins::host::Host>,
     /// Set when the daemon starts shutting down.
     pub(crate) stop: Stop,
 }
@@ -131,7 +131,7 @@ impl Engine {
             forwarding: Mutex::new(Default::default()),
             blocked_since: Mutex::new(HashMap::new()),
             blocked_notified: Mutex::new(HashMap::new()),
-            plugins: Arc::new(crate::plugin::host::Host::new()),
+            plugins: Arc::new(crate::features::plugins::host::Host::new()),
             stop: Stop::default(),
         }
     }
@@ -1149,7 +1149,7 @@ fn launch_check(
             .harness
             .as_deref()
             .unwrap_or(crate::harness::DEFAULT);
-        crate::harness::resolve(name, project)?.check_model(Some(model))?;
+        crate::features::plugins::harnesses::resolve(name, project)?.check_model(Some(model))?;
     }
     let kind = session::Kind::choose_with_caller(
         fm.defaults.backend.as_deref(),

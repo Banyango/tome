@@ -21,7 +21,9 @@ launched in them.
   `undefined_presets`), `tome layout presets`, and `From` conversions of
   placement errors to `CliError` (hints included).
 - `src/harness.rs`: harness adapter: command templates for launching an agent CLI;
-  built-in presets plus user-defined (`config.yaml`). `resolve`.
+  built-in presets plus user-defined (`config.yaml`). Does not know plugins;
+  `resolve`/`candidates` (which add the plugins' harnesses) live in
+  `src/features/plugins/harnesses.rs`.
 - `src/harnesscmd.rs`: `tome harness ls|validate`.
 
 ## Notes

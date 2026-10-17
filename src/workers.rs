@@ -270,7 +270,9 @@ impl Engine {
                 // orchestrator runs.
                 let harness =
                     match opt_str(p, "harness").or(wf.frontmatter().defaults.harness.as_deref()) {
-                        Some(name) => harness::resolve(name, project.as_deref())?,
+                        Some(name) => {
+                            crate::features::plugins::harnesses::resolve(name, project.as_deref())?
+                        }
                         None => orchestrator::harness_for(
                             &wf.frontmatter(),
                             wf.frontmatter().mode,
