@@ -5,16 +5,17 @@ each subscribing workflow (`on:` triggers).
 
 ## Files
 
-- `src/bus.rs`: daemon side. `Publish`, `Published`, subscription matching
+- `src/features/bus/mod.rs`: daemon side. `Publish`, `Published`, subscription matching
   (`subscriptions`, `matching`), `METHODS`; dispatched from `Engine::dispatch_bus`.
-- `src/bus/lifecycle.rs`: tome's own events: `tome.run.<workflow>.started|
+- `src/features/bus/lifecycle.rs`: tome's own events: `tome.run.<workflow>.started|
   succeeded|failed|cancelled`.
-- `src/bus/forward.rs`: `bus.forward` rules in `.tome/config.yaml`: re-publish
+- `src/features/bus/forward.rs`: `bus.forward` rules in `.tome/config.yaml`: re-publish
   matching events on another node.
-- `src/bus/admin.rs`: inspect/repair (`tome events ls|show|retry|rm`) and manual
+- `src/features/bus/admin.rs`: inspect/repair (`tome events ls|show|retry|rm`) and manual
   topic trigger fires.
-- `src/eventscmd.rs`: CLI client: `tome publish`, `tome events ...`.
-- `src/store/events.rs`: `bus_events` and `deliveries` tables.
+- `src/features/bus/cmd.rs`: CLI client: `tome publish`, `tome events ...`.
+- `src/store/events.rs`: `bus_events` and `deliveries` tables. Stays in `store`
+  (it uses `Store` internals, and `store` must not import features).
 - `src/topic.rs`: topic name rules and subscription `Pattern`.
 
 ## Notes

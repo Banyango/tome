@@ -2,7 +2,9 @@
 
 A map for agents and new contributors: where each feature lives today, so a
 change can start from one feature doc instead of a crate-wide search. These
-docs describe the **current flat `src/` layout**; update them as modules move.
+docs follow the code as it moves: features are being moved one at a time into
+`src/features/<name>/` (daemon code, `cmd.rs` CLI adapter, tests together). Done:
+bus. The rest are still flat files in `src/`.
 
 tome is one binary crate. A CLI process parses a command (`src/main.rs`,
 `dispatch`) and either does local work or sends a JSON-RPC request to the

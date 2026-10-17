@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod admin;
+pub mod cmd;
 pub mod forward;
 mod lifecycle;
 

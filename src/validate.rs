@@ -83,7 +83,7 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
         .is_none()
         .then(|| crate::triggerscmd::project_of(cwd))
         .flatten()
-        .map(|root| crate::bus::forward::check(&root));
+        .map(|root| crate::features::bus::forward::check(&root));
     let bus_ok = bus.as_ref().is_none_or(|(errors, _)| errors.is_empty());
     // Names a plugin shares with something else make every use of them an error.
     let clashes = crate::plugin::store::collisions(cwd)?;

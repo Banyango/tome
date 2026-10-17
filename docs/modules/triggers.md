@@ -15,7 +15,7 @@ Every source goes down one firing path.
   with a polling fallback; debounces and batches paths.
 - `src/triggerscmd.rs`: CLI client: `tome triggers ls|enable|disable|fire`.
 - `src/store/triggers.rs`: `trigger_fires` outcomes and the `projects` registry.
-- `src/bus/admin.rs`: `tome triggers fire` for topic triggers (bus side).
+- `src/features/bus/admin.rs`: `tome triggers fire` for topic triggers (bus side).
 
 ## Notes
 

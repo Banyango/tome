@@ -1,12 +1,11 @@
 mod api;
 mod arming;
-mod bus;
 mod config;
 mod cron;
 mod daemon;
 mod duration;
 mod engine;
-mod eventscmd;
+mod features;
 mod gc;
 mod glob;
 mod handshake;
@@ -1326,16 +1325,18 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
             topic,
             text,
             dry_run,
-        } => eventscmd::publish(&current_dir()?, &topic, text, dry_run),
+        } => features::bus::cmd::publish(&current_dir()?, &topic, text, dry_run),
         Command::Notify { title, message } => plugincmd::notify(&title, &message),
         Command::Events { command } => match command {
-            EventsCommand::Ls => eventscmd::ls(&current_dir()?),
-            EventsCommand::Show { topic, all } => eventscmd::show(&current_dir()?, &topic, all),
+            EventsCommand::Ls => features::bus::cmd::ls(&current_dir()?),
+            EventsCommand::Show { topic, all } => {
+                features::bus::cmd::show(&current_dir()?, &topic, all)
+            }
             EventsCommand::Retry { event, workflow } => {
-                eventscmd::retry(&current_dir()?, event, workflow.as_deref())
+                features::bus::cmd::retry(&current_dir()?, event, workflow.as_deref())
             }
             EventsCommand::Remove { event, workflow } => {
-                eventscmd::remove(&current_dir()?, event, workflow.as_deref())
+                features::bus::cmd::remove(&current_dir()?, event, workflow.as_deref())
             }
         },
         Command::Layout {

@@ -109,7 +109,7 @@ pub struct Engine {
     /// left alone until they're re-armed.
     pub(crate) stalled: Mutex<HashMap<String, String>>,
     /// The forwarder's attempts and the nodes it's sending to.
-    pub(crate) forwarding: Mutex<crate::bus::forward::State>,
+    pub(crate) forwarding: Mutex<crate::features::bus::forward::State>,
     blocked_since: Mutex<HashMap<(RunId, String), Instant>>,
     blocked_notified: Mutex<HashMap<(RunId, String), Instant>>,
     /// The plugins this daemon runs.
@@ -166,7 +166,7 @@ impl Engine {
             || workers::METHODS.contains(&method)
             || triggers::METHODS.contains(&method)
             || handshake::METHODS.contains(&method)
-            || crate::bus::METHODS.contains(&method)
+            || crate::features::bus::METHODS.contains(&method)
     }
 
     pub fn dispatch(&self, method: &str, p: &Value) -> CliResult<Value> {
@@ -190,7 +190,7 @@ impl Engine {
             "session.attach_command" => self.attach_session(p),
             m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
             m if triggers::METHODS.contains(&m) => self.dispatch_triggers(m, p),
-            m if crate::bus::METHODS.contains(&m) => self.dispatch_bus(m, p),
+            m if crate::features::bus::METHODS.contains(&m) => self.dispatch_bus(m, p),
             "agent.ready" => self.ready(p),
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
@@ -1350,7 +1350,7 @@ pub fn worker_event(run_id: RunId, main: &str, h: &WorkerHistory) -> Value {
             "time": h.occurred_at,
         });
     }
-    if h.worker.is_none() && h.group.is_none() && h.event == crate::bus::PUBLISHED {
+    if h.worker.is_none() && h.group.is_none() && h.event == crate::features::bus::PUBLISHED {
         return json!({
             "type": "publish",
             "run_id": run_id,
