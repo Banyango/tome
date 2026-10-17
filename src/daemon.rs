@@ -144,7 +144,7 @@ fn notify(p: &Value) -> CliResult<Value> {
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| CliError::invalid(format!("`notify` needs a `{key}`")))
     };
-    orchestrator::notify_delivery(text("title")?, text("message")?);
+    crate::session::notify_delivery(text("title")?, text("message")?);
     Ok(json!({ "notified": true }))
 }
 
@@ -350,7 +350,7 @@ fn stream_run(daemon: &Daemon, req: &Request, writer: &mut UnixStream) -> Option
         return Some(daemon.engine.provide(&req.params, &mut sink));
     }
     let result = if req.method == "run.watch" {
-        match api::req_id(&req.params) {
+        match crate::params::req_id(&req.params) {
             Ok(id) => {
                 daemon
                     .engine

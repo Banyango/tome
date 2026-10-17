@@ -2,11 +2,11 @@
 //! trigger by hand (`tome triggers fire`).
 
 use super::{matching, pattern_of, subscriptions, Publish, TEST};
-use crate::api::{opt_str, req_num_at, req_str};
 use crate::arming::Armed;
 use crate::engine::Engine;
 use crate::ids::{DeliveryId, EventId, RunId};
 use crate::output::{CliError, CliResult};
+use crate::params::{opt_str, req_num_at, req_str};
 use crate::store::{BusEvent, Delivery, DeliveryState};
 use crate::triggers::{outcome, Event, FireRequest, Fired};
 use serde_json::{json, Value};

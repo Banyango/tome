@@ -2,7 +2,7 @@
 //! can be overridden with `TOME_HOME` (used by tests and by service units that
 //! need a non-default home).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn tome_home() -> PathBuf {
     if let Some(dir) = std::env::var_os("TOME_HOME").filter(|v| !v.is_empty()) {
@@ -42,4 +42,12 @@ pub fn runs_dir() -> PathBuf {
 /// here and nowhere else, so a cloned repo can never add code tome runs.
 pub fn plugins_dir() -> PathBuf {
     tome_home().join("plugins")
+}
+
+/// Whether `a` and `b` are the same location, following symlinks when both exist.
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }

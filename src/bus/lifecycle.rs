@@ -49,7 +49,9 @@ impl Engine {
                 return Ok(None);
             }
             store.set_announced(run_id, STARTED)?;
-            Ok(store.get_run(run_id, false).map_err(crate::api::internal)?)
+            Ok(store
+                .get_run(run_id, false)
+                .map_err(crate::params::internal)?)
         });
         match first {
             Ok(Some(run)) => {
@@ -70,7 +72,9 @@ impl Engine {
     pub(crate) fn announce_ended(&self, run_id: RunId) {
         let run = self.with_store(|store| {
             store.set_announced(run_id, ENDED)?;
-            store.get_run(run_id, false).map_err(crate::api::internal)
+            store
+                .get_run(run_id, false)
+                .map_err(crate::params::internal)
         });
         match run {
             Ok(Some(run)) => {
@@ -116,9 +120,11 @@ impl Engine {
     }
 
     pub(crate) fn announce_blocked(&self, run_id: RunId, session: &str, pane: &str, at: &str) {
-        if let Ok(Some(run)) =
-            self.with_store(|store| store.get_run(run_id, false).map_err(crate::api::internal))
-        {
+        if let Ok(Some(run)) = self.with_store(|store| {
+            store
+                .get_run(run_id, false)
+                .map_err(crate::params::internal)
+        }) {
             self.publish_lifecycle(&run, "blocked", &json!({"run_id":run.id,"workflow":run.workflow_name,"session":session,"pane":pane,"at":at}));
         }
     }

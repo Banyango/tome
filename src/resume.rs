@@ -3,9 +3,10 @@
 //! uses its workflow snapshot as stored, so params and `{{run.id}}` keep the
 //! old run's values. Nothing about the old run changes.
 
-use crate::api::{self, internal, Origin};
+use crate::api::{self, Origin};
 use crate::ids::{DeliveryId, RunId};
 use crate::output::{CliError, CliResult};
+use crate::params::{self, internal};
 use crate::placement::Settings;
 use crate::store::{
     DeliveryState, Group, NewRun, NewWorktree, Run, RunStatus, Session, StepEvent, StepStatus,
@@ -36,11 +37,11 @@ impl ResumeRequest {
     /// `run.resume {id, start_at?, placement?, cmux_caller?, cancel_on_disconnect?}`
     pub fn from_json(p: &Value) -> CliResult<ResumeRequest> {
         Ok(ResumeRequest {
-            id: api::req_id(p)?,
+            id: params::req_id(p)?,
             placement: api::opt_placement(p)?,
-            cmux_caller: api::opt_object(p, "cmux_caller")?.map(|o| Value::Object(o.clone())),
-            cancel_on_disconnect: api::opt_flag(p, "cancel_on_disconnect", true)?,
-            start_at: api::opt_string(p, "start_at")?.filter(|s| !s.trim().is_empty()),
+            cmux_caller: params::opt_object(p, "cmux_caller")?.map(|o| Value::Object(o.clone())),
+            cancel_on_disconnect: params::opt_flag(p, "cancel_on_disconnect", true)?,
+            start_at: params::opt_string(p, "start_at")?.filter(|s| !s.trim().is_empty()),
         })
     }
 }

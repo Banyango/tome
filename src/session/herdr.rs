@@ -237,7 +237,7 @@ impl Herdr {
             &pane,
             &format!(
                 " exec sh {}",
-                crate::session::shell_quote(&l.script.to_string_lossy())
+                crate::text::shell_quote(&l.script.to_string_lossy())
             ),
         ) {
             let _ = self.close(&pane);

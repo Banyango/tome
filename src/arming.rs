@@ -374,7 +374,7 @@ impl Engine {
 
     /// A trigger couldn't act: notify.
     pub(crate) fn trigger_failed(&self, what: &str, message: &str) {
-        crate::orchestrator::notify_trigger(what, message);
+        crate::session::notify_trigger(what, message);
     }
 }
 

@@ -9,7 +9,7 @@
 
 use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
-use crate::workflow::Mode;
+use crate::role::Mode;
 use anyhow::Context;
 use chrono::{NaiveDateTime, Utc};
 use duckdb::{params, Config, Connection, OptionalExt, Row};

@@ -22,6 +22,7 @@
 
 mod herdr;
 mod moves;
+mod notify;
 mod split;
 mod workspace;
 pub use workspace::run_name as run_workspace_name;
@@ -29,13 +30,14 @@ pub use workspace::run_name as run_workspace_name;
 use crate::ids::RunId;
 use herdr::Herdr;
 pub use moves::{move_to, Move};
+pub use notify::{notify_delivery, notify_trigger};
 pub use split::{Anchor, Split};
 
 use crate::config::Config;
-use crate::harness::shell_quote;
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::store::Session;
+use crate::text::shell_quote;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -111,37 +113,9 @@ impl Kind {
     }
 }
 
-/// Where a run's sessions go in their backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Layout {
-    /// A tab in one split of the project's tome workspace (tmux: a window
-    /// in its session).
-    Tab,
-    /// Its own split in the project's tome workspace (tmux: a pane in its
-    /// session).
-    Split,
-    /// Its own workspace (tmux: its own session).
-    Workspace,
-}
+pub use crate::placement::Layout;
 
 impl Layout {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Layout::Tab => "tab",
-            Layout::Split => "split",
-            Layout::Workspace => "workspace",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Layout> {
-        match s {
-            "tab" => Some(Layout::Tab),
-            "split" => Some(Layout::Split),
-            "workspace" => Some(Layout::Workspace),
-            _ => None,
-        }
-    }
-
     /// A recorded session's layout; sessions from before layouts had their
     /// own workspace.
     pub fn of(s: &Session) -> Layout {

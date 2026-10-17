@@ -7,13 +7,13 @@
 //! directory, so a command worker's result survives `--keep-open` and a
 //! session that's already gone.
 
-use crate::api::{internal, opt_str, req_id_at, req_num_at, req_str};
 use crate::engine::Engine;
 use crate::handshake::{self, Agent};
-use crate::harness::{self, shell_quote, Vars};
+use crate::harness::{self, Vars};
 use crate::ids::RunId;
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
+use crate::params::{internal, opt_str, req_id_at, req_num_at, req_str};
 use crate::paths;
 use crate::placement::{self, Inputs, Role, Settings};
 use crate::placementcmd;
@@ -22,6 +22,7 @@ use crate::session::{self, Backend, Kind, Launch, Split};
 use crate::store::{
     self, NewWorker, NewWorktree, Pulled, Run, RunStatus, Store, Worker, WorkerEnd, WorkerStatus,
 };
+use crate::text::shell_quote;
 use crate::workflow::Mode;
 use crate::worktree;
 use serde_json::{json, Value};
@@ -850,7 +851,7 @@ fn queue(store: &mut Store, method: &str, p: &Value) -> CliResult<Value> {
         }
     };
     let me = match &run {
-        Some(run) => crate::bus::run_sender(run.id, caller(p)),
+        Some(run) => crate::ids::run_sender(run.id, caller(p)),
         None => "user".to_string(),
     };
     match method {

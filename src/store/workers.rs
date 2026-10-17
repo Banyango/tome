@@ -200,7 +200,7 @@ impl Store {
         let name = match new.name {
             Some(name) => {
                 check_name("worker", name)?;
-                if crate::orchestrator::is_main(name) {
+                if crate::role::is_main(name) {
                     return Err(CliError::invalid(format!(
                         "`{name}` is reserved; pick another worker name"
                     )));
@@ -375,7 +375,7 @@ impl Store {
             status.as_str(),
             message,
         )?;
-        self.release_claims(&crate::bus::run_sender(w.run_id, Some(&w.name)))?;
+        self.release_claims(&crate::ids::run_sender(w.run_id, Some(&w.name)))?;
         Ok(())
     }
 

@@ -85,7 +85,7 @@ pub fn project_path(dir: &Path) -> Option<PathBuf> {
     dir.ancestors().find_map(|d| {
         let tome = d.join(".tome");
         let candidate = tome.join("config.yaml");
-        (candidate.is_file() && !crate::workflow::same_path(&tome, &home)).then_some(candidate)
+        (candidate.is_file() && !crate::paths::same_path(&tome, &home)).then_some(candidate)
     })
 }
 

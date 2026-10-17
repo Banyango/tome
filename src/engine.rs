@@ -8,11 +8,12 @@
 //! (a report, a cancel failing its running step, ...) is streamed the same
 //! way.
 
-use crate::api::{self, internal, opt_str, req_id, req_id_at, req_str, StartRequest};
+use crate::api::{self, StartRequest};
 use crate::handshake::{self, Agent, Pending};
 use crate::ids::RunId;
 use crate::orchestrator;
 use crate::output::{CliError, CliResult};
+use crate::params::{internal, opt_str, req_id, req_id_at, req_str};
 use crate::placement;
 use crate::placementcmd;
 use crate::resume::{self, ResumeRequest};

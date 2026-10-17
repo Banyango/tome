@@ -27,6 +27,7 @@
 use crate::config::{self, Config};
 use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
+use crate::text::shell_quote;
 use serde_yaml::Value as Yaml;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -376,11 +377,6 @@ fn substitute(s: &str, vars: &Vars, quote: bool) -> String {
     }
     out.push_str(rest);
     out
-}
-
-/// `it's` → `'it'\''s'`
-pub fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 #[cfg(test)]

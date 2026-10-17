@@ -141,7 +141,7 @@ impl Manifest {
             crate::node::check_name(n)
         })?;
         let workflows = name_list(get("workflows"), "workflows", |n| {
-            if crate::workflow::is_identifier(n) {
+            if crate::text::is_identifier(n) {
                 Ok(())
             } else {
                 Err(format!(

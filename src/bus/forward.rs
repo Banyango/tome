@@ -239,7 +239,7 @@ impl Engine {
                 "tome daemon: delivery {} of event {} {}: failed: {why}",
                 d.id, d.event_id, d.workflow
             );
-            crate::orchestrator::notify_delivery(
+            crate::session::notify_delivery(
                 &format!("couldn't forward {}", event.topic),
                 &format!("event {} {}: {why}", event.id, d.workflow),
             );
@@ -468,7 +468,7 @@ impl Engine {
             e.message
         );
         if tell_auth {
-            crate::orchestrator::notify_delivery(
+            crate::session::notify_delivery(
                 &format!("can't sign in to {} to forward events", node.name),
                 &format!(
                     "{} The daemon may not see your ssh-agent: set an IdentityFile for {} in ~/.ssh/config. Events wait and retry for a day.",

@@ -17,7 +17,8 @@ use crate::placement::{From, Inputs, Placement, Role, Settings, Workspace};
 use crate::placementcmd;
 use crate::recovery::RecoveryHooks;
 use crate::resume;
-use crate::session::{self, Anchor, Backend, Cmux, Kind, Launch, Layout, Split, Target, Tmux};
+pub use crate::role::{is_main, role, AGENT_ROLE, ROLE};
+use crate::session::{self, Anchor, Backend, Kind, Launch, Layout, Split, Target, Tmux};
 use crate::store::{Run, Session, Worker};
 use crate::workflow::{self, Frontmatter, Mode, Workflow};
 use std::fs;
@@ -28,28 +29,11 @@ pub const PROMPT: &str = include_str!("orchestrator_prompt.md");
 /// The built-in prompt for a single run's agent.
 pub const AGENT_PROMPT: &str = include_str!("agent_prompt.md");
 
-pub const ROLE: &str = "orchestrator";
-/// A single run's agent.
-pub const AGENT_ROLE: &str = "agent";
-
 /// Why a run failed when its orchestrator went away before `tome run finish`.
 pub const EXITED: &str = "orchestrator_exited";
 /// Why a single run failed when its agent went away before `tome run finish`.
 pub const AGENT_EXITED: &str = "agent_exited";
 pub const BACKEND_UNAVAILABLE: &str = "backend_unavailable";
-
-/// The role of a run's main session in `mode`.
-pub fn role(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Single => AGENT_ROLE,
-        Mode::Orchestrated => ROLE,
-    }
-}
-
-/// Whether `role` is a run's main session: its orchestrator or its agent.
-pub fn is_main(role: &str) -> bool {
-    role == ROLE || role == AGENT_ROLE
-}
 
 /// What refuses delegation in a single run.
 pub fn single_refusal(what: &str) -> CliError {
@@ -503,26 +487,6 @@ pub fn notify(run: &Run, sessions: &[Session], cut: &[Worker]) {
             run.status.as_str()
         );
         session::notify(backend, &title, &message);
-    }
-}
-
-/// A trigger failed to act (`what` names the workflow or project). It's
-/// always logged; it also goes out as a cmux notification unless
-/// `TOME_NOTIFY=off` (there's no run pane to tie it to, so this is best
-/// effort when cmux isn't around).
-pub fn notify_trigger(what: &str, message: &str) {
-    eprintln!("tome daemon: notify: trigger for {what} failed: {message}");
-    if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
-        Cmux.notify(&format!("tome: trigger for {what} failed"), message);
-    }
-}
-
-/// A run that claimed an event didn't succeed, so its delivery failed.
-/// Logged, and sent as a cmux notification unless `TOME_NOTIFY=off`.
-pub fn notify_delivery(title: &str, message: &str) {
-    eprintln!("tome daemon: notify: {title}: {message}");
-    if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
-        Cmux.notify(&format!("tome: {title}"), message);
     }
 }
 

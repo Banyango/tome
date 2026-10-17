@@ -15,6 +15,7 @@
 //! Every problem is reported with a 1-based line number in the file.
 
 use crate::duration;
+pub use crate::role::Mode;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use serde_yaml::Value as Yaml;
@@ -214,33 +215,6 @@ impl Serialize for StartTimeout {
 pub enum OnConflict {
     Queue,
     Reject,
-}
-
-/// How a workflow is run: by one agent that does the work itself, or by an
-/// orchestrator that can delegate to workers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    #[default]
-    Single,
-    Orchestrated,
-}
-
-impl Mode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Mode::Single => "single",
-            Mode::Orchestrated => "orchestrated",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Mode> {
-        match s {
-            "single" => Some(Mode::Single),
-            "orchestrated" => Some(Mode::Orchestrated),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1043,7 +1017,7 @@ fn parse_params(
             continue;
         };
         let line = loc.line(&["params", name]);
-        if !is_identifier(name) {
+        if !crate::text::is_identifier(name) {
             errors.push(Diagnostic::new(
                 line,
                 format!("invalid param name `{name}` (use letters, digits, `_` or `-`)"),
@@ -1249,12 +1223,6 @@ fn parse_defaults(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> 
         }
     }
     d
-}
-
-pub fn is_identifier(s: &str) -> bool {
-    let mut chars = s.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Finds the file line of a (possibly nested) block-style yaml key. Falls
@@ -1824,7 +1792,7 @@ impl Library {
         let project_dir = cwd.ancestors().find_map(|dir| {
             let tome = dir.join(".tome");
             let candidate = tome.join("workflows");
-            (candidate.is_dir() && !same_path(&tome, &home)).then_some(candidate)
+            (candidate.is_dir() && !crate::paths::same_path(&tome, &home)).then_some(candidate)
         });
         let plugin_dirs = crate::plugin::store::active()
             .into_iter()
@@ -1841,7 +1809,7 @@ impl Library {
     /// one.
     pub fn scope_of(&self, path: &Path) -> Scope {
         match path.parent() {
-            Some(dir) if same_path(dir, &self.global_dir) => Scope::Global,
+            Some(dir) if crate::paths::same_path(dir, &self.global_dir) => Scope::Global,
             _ => Scope::Project,
         }
     }
@@ -1963,13 +1931,6 @@ impl Library {
             global_dir: self.global_dir.clone(),
             project_dir: self.project_dir.clone(),
         })
-    }
-}
-
-pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
     }
 }
 

@@ -24,7 +24,6 @@
 //! it at the levels both roles share.
 
 use crate::glob::Glob;
-use crate::session::Layout;
 use serde::{Serialize, Serializer};
 use serde_json::{json, Value};
 use serde_yaml::Value as Yaml;
@@ -72,7 +71,7 @@ impl Workspace {
         if RESERVED.contains(&name) {
             return Err(format!("`{name}` is reserved and can't be a workspace name (use `workspace: {name}` for the keyword)"));
         }
-        if !crate::workflow::is_identifier(name) {
+        if !crate::text::is_identifier(name) {
             return Err(format!(
                 "unknown workspace `{name}` (expected one of: {}, or a name of letters, digits, `-` and `_`)",
                 RESERVED.join(", ")
@@ -227,6 +226,38 @@ pub struct Settings {
     pub size: Option<Size>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<From>,
+}
+
+/// Where a run's sessions go in their backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// A tab in one split of the project's tome workspace (tmux: a window
+    /// in its session).
+    Tab,
+    /// Its own split in the project's tome workspace (tmux: a pane in its
+    /// session).
+    Split,
+    /// Its own workspace (tmux: its own session).
+    Workspace,
+}
+
+impl Layout {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Layout::Tab => "tab",
+            Layout::Split => "split",
+            Layout::Workspace => "workspace",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Layout> {
+        match s {
+            "tab" => Some(Layout::Tab),
+            "split" => Some(Layout::Split),
+            "workspace" => Some(Layout::Workspace),
+            _ => None,
+        }
+    }
 }
 
 impl Serialize for Layout {

@@ -7,11 +7,12 @@
 //! normal concurrency rules, queues one, or merges into the one it queued
 //! before. Every fire's outcome is recorded.
 
-use crate::api::{opt_str, req_str, StartRequest};
+use crate::api::StartRequest;
 use crate::arming;
 use crate::engine::Engine;
 use crate::ids::{DeliveryId, RunId};
 use crate::output::{CliError, CliResult, ErrorKind};
+use crate::params::{opt_str, req_str};
 use crate::store::{BusEvent, NewFire, Run, RunStatus};
 use crate::workflow::{self, FileEvent, Scope, Target, TriggerKind, WhileRunning, Workflow};
 use crate::{orchestrator, session};
@@ -303,7 +304,7 @@ impl Engine {
     /// Queued and running runs of the workflow at `path`.
     pub(crate) fn active_runs(&self, name: &str, path: &Path) -> CliResult<Vec<Run>> {
         let runs =
-            self.with_store(|store| store.in_progress_runs().map_err(crate::api::internal))?;
+            self.with_store(|store| store.in_progress_runs().map_err(crate::params::internal))?;
         Ok(runs
             .into_iter()
             .filter(|r| {
@@ -544,7 +545,7 @@ impl Engine {
             let merged = self.with_store(|store| {
                 let Some(mut cause) = store
                     .get_run(run.id, false)
-                    .map_err(crate::api::internal)?
+                    .map_err(crate::params::internal)?
                     .and_then(|r| r.trigger)
                 else {
                     return Ok(false);
@@ -552,7 +553,7 @@ impl Engine {
                 merge_paths(&mut cause["event"], &req.event.paths);
                 store
                     .set_queued_trigger(run.id, &cause)
-                    .map_err(crate::api::internal)
+                    .map_err(crate::params::internal)
             });
             match merged {
                 Ok(true) => {

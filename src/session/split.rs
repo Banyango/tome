@@ -75,7 +75,7 @@ impl Split {
                 anchors.extend(
                     placed
                         .iter()
-                        .filter(|s| crate::orchestrator::is_main(&s.role))
+                        .filter(|s| crate::role::is_main(&s.role))
                         .map(anchor),
                 );
             }

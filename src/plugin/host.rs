@@ -253,7 +253,7 @@ pub fn plugin_request(plugin: &str, method: &str, params: &Value) -> Result<Valu
             let (Some(title), Some(message)) = (text("title"), text("message")) else {
                 return Err((-32602, "`notify` needs a `title` and a `message`".into()));
             };
-            crate::orchestrator::notify_delivery(&format!("{plugin}: {title}"), message);
+            crate::session::notify_delivery(&format!("{plugin}: {title}"), message);
             Ok(json!({}))
         }
         other => Err((-32601, format!("unknown method `{other}`"))),
@@ -738,7 +738,7 @@ fn report_failure(slot: &Slot, hook: &str, error: &CallError) {
         return;
     }
     last.insert(hook.to_string(), Instant::now());
-    crate::orchestrator::notify_delivery(
+    crate::session::notify_delivery(
         &format!("plugin {} failed", slot.name),
         &format!(
             "hook `{hook}`: {error} (see {})",
@@ -822,7 +822,7 @@ fn supervise(slot: &Arc<Slot>, plugin: &Installed, manifest: &Manifest) {
             slot.set(State::Failed {
                 error: error.clone(),
             });
-            crate::orchestrator::notify_delivery(
+            crate::session::notify_delivery(
                 &format!("plugin {} failed", slot.name),
                 &format!(
                     "gave up after {failures} failed starts: {error} (see {})",

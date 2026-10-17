@@ -54,6 +54,14 @@ id!(
     DeliveryId
 );
 
+/// `run 12`, or `run 12 worker w1`.
+pub fn run_sender(run_id: RunId, worker: Option<&str>) -> String {
+    match worker {
+        Some(w) => format!("run {run_id} worker {w}"),
+        None => format!("run {run_id}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

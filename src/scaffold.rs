@@ -105,7 +105,7 @@ pub fn new(
     global: bool,
     force: bool,
 ) -> CliResult<Report> {
-    if !workflow::is_identifier(name) {
+    if !crate::text::is_identifier(name) {
         return Err(CliError::invalid(format!("invalid workflow name `{name}`"))
             .with_hint("use letters, digits, `_` and `-`, starting with a letter or `_`"));
     }
@@ -295,7 +295,7 @@ fn by_path(
             .is_some_and(|n| n == ".tome");
     let scope = if path.extension().is_none_or(|x| x != "md") {
         None
-    } else if workflow::same_path(dir, &library.global_dir) {
+    } else if crate::paths::same_path(dir, &library.global_dir) {
         Some(Scope::Global)
     } else if in_project_dir {
         Some(Scope::Project)

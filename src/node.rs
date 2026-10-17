@@ -353,13 +353,13 @@ pub fn locate_rpc(p: &Value) -> CliResult<Value> {
 /// called `name` in the project, else in the global workflows. Names only:
 /// a path from another machine means nothing here.
 pub fn resolve_workflow_rpc(p: &Value) -> CliResult<Value> {
-    let name = crate::api::req_str(p, "name")?;
+    let name = crate::params::req_str(p, "name")?;
     if name.contains('/') || name.ends_with(".md") {
         return Err(CliError::invalid(format!(
             "`{name}` is a path; a node resolves workflows by name"
         )));
     }
-    let dir = crate::api::opt_str(p, "project_path")
+    let dir = crate::params::opt_str(p, "project_path")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"));
     let library = crate::workflow::Library::discover(&dir);

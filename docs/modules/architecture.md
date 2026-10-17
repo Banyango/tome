@@ -28,8 +28,13 @@ read or write of run state goes through it.
 - `src/main.rs`: clap `Command` enum, `dispatch`, node routing (`route`, `reach`).
 - `src/output.rs`: `CliError`, `CliResult`, `Report`, `Mode`, `table`. The output
   contract every command follows (text by default, `--json` for stable JSON).
-- `src/ids.rs` (`RunId` and friends), `src/paths.rs` (everything under `~/.tome`,
-  overridable with `TOME_HOME`), `src/config.rs` (global and project `config.yaml`).
+- Leaf helpers that depend on nothing else in the crate, so any feature may use
+  them: `src/ids.rs` (`RunId` and friends, `run_sender`), `src/paths.rs`
+  (everything under `~/.tome`, overridable with `TOME_HOME`; `same_path`),
+  `src/role.rs` (`Mode`, the `orchestrator`/`agent` roles, `is_main`),
+  `src/text.rs` (`is_identifier`, `shell_quote`), `src/params.rs` (`req_*`/`opt_*`
+  readers for RPC params, `internal`).
+- `src/config.rs`: global and project `config.yaml`.
 
 ## Known coupling to be aware of
 
@@ -40,8 +45,19 @@ These are why a change sometimes spreads wider than its feature:
   `workflow.rs` and `placement.rs` are already clean: they return their own
   errors and `workflowcmd.rs` / `placementcmd.rs` convert them. Follow that
   pattern for the others.
-- Cycles: `engine` ↔ `bus`, `engine` ↔ `workers`, `engine` ↔ `handshake`,
-  `placement` ↔ `session`, `arming` → `engine` → `triggers` → `arming`.
+- Module cycles. `store`, `config`, `placement` and `session` are now below the
+  features (no imports back up). What is left is two clusters; list them with
+  a graph of `crate::` imports before assuming a new edge is safe:
+  - Run engine: `api`, `arming`, `bus`, `engine`, `handshake`, `orchestrator`,
+    `resume`, `triggers`, `watch`, `workers`. Mostly because feature files
+    `impl Engine` (the hub) and the hub calls back into them.
+  - Remote and plugins: `node`, `rpc`, `lifecycle`, `service`, `provider`,
+    `triggerscmd` (one feature, so its internal cycle is fine) plus the edges
+    that tie it to others: `workflow` → `plugin`/`provider` (`Library` reads the
+    plugin store, `provider_opts` parsing), `harness` ↔ `plugin` (plugin-provided
+    harnesses), `plugin` → `node`/`workflow`.
+  When adding code, import downwards: leaf helpers, then `store`/`config`/
+  `placement`/`session`, then features.
 - `engine.rs` is the daemon's hub: it dispatches RPCs for runs, workers,
   triggers and the bus (`Engine::dispatch`).
 - `store.rs` holds the whole schema (all `CREATE TABLE`s and migrations) and the

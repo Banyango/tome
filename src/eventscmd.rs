@@ -76,7 +76,7 @@ fn publish_to(
             let worker = env("TOME_WORKER_ID");
             (
                 project,
-                crate::bus::run_sender(id, worker.as_deref()),
+                crate::ids::run_sender(id, worker.as_deref()),
                 depth,
             )
         }

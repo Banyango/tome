@@ -5,12 +5,13 @@ launched in them.
 
 ## Files
 
-- `src/session.rs`: `Kind` (cmux/tmux/herdr), `Layout`, `Backend`, `Target`;
-  focus/caller detection, notify, liveness, `send_line`, `kill`.
+- `src/session.rs`: `Kind` (cmux/tmux/herdr), `Backend`, `Target`;
+  focus/caller detection, notify (`session/notify.rs`: daemon
+  `notify_trigger`/`notify_delivery`), liveness, `send_line`, `kill`.
 - `src/session/herdr.rs`: herdr socket adapter. `session/workspace.rs`: per-project
   workspaces (`<project>-orchestrator`). `session/split.rs`: split direction/size/
   `from`. `session/moves.rs`: `tome session move`.
-- `src/placement.rs`: pure placement rules: `Settings` (layout, split, from ...),
+- `src/placement.rs`: pure placement rules: `Layout`, `Settings` (layout, split, from ...),
   `Spec`, built-in presets, and how each setting resolves from CLI flag →
   workflow → config levels (`resolve`, `moved`). `parse_settings` / `parse_value`
   read it from YAML or RPC params. Returns its own errors (`FlagError`,
@@ -25,8 +26,9 @@ launched in them.
 
 ## Notes
 
-- `placement` and `session` import each other (placement needs `Layout`/`Kind`,
-  session needs placement settings). Keep new types out of the cycle where possible.
+- `session` depends on `placement` (settings, and `Layout`, which is defined in
+  `placement.rs` and re-exported from `session`), never the other way round.
+  Keep placement free of `session` imports.
 - Backends are `Backend::{Tmux, Cmux, Herdr}`; `TOME_BACKEND` selects one, unset
   means auto. Workspaces are cmux workspaces or tmux sessions
   (`session/workspace.rs`); cmux and herdr sessions open as tabs.

@@ -6,11 +6,12 @@
 //! workflow's name and the trigger's pattern. A workflow with several
 //! matching triggers gets one delivery, for the first.
 
-use crate::api::{opt_str, req_id_at, req_str};
 use crate::arming::{self, Armed};
 use crate::engine::Engine;
+use crate::ids::run_sender;
 use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
+use crate::params::{opt_str, req_id_at, req_str};
 use crate::store::{BusEvent, Delivery, DeliveryState, NewEvent, Run, RunStatus, Subscriber};
 use crate::topic;
 use crate::triggers::{self, outcome, Event, FireRequest, Fired};
@@ -90,14 +91,6 @@ pub struct Published {
     pub matches: Vec<Armed>,
     /// The forward deliveries it gets (or would, on a dry run).
     pub forwards: Vec<Subscriber>,
-}
-
-/// `run 12`, or `run 12 worker w1`.
-pub fn run_sender(run_id: RunId, worker: Option<&str>) -> String {
-    match worker {
-        Some(w) => format!("run {run_id} worker {w}"),
-        None => format!("run {run_id}"),
-    }
 }
 
 /// The depth of events a run publishes: one more than the event that
@@ -341,7 +334,7 @@ impl Engine {
                 e.topic, err.message
             ),
         }
-        crate::orchestrator::notify_delivery(
+        crate::session::notify_delivery(
             &format!("refused an event on {}", e.topic),
             &format!("from {}: {why}", e.sender),
         );
@@ -434,7 +427,7 @@ impl Engine {
             for d in store.deliveries_in(DeliveryState::Claimed)? {
                 let mut ended = Vec::new();
                 for id in &d.run_ids {
-                    if let Some(run) = store.get_run(*id, false).map_err(crate::api::internal)? {
+                    if let Some(run) = store.get_run(*id, false).map_err(crate::params::internal)? {
                         if run.finished_at.is_some() {
                             ended.push(run);
                         }
@@ -471,7 +464,7 @@ impl Engine {
                         .or(run.summary.as_ref())
                         .map(|r| format!(" ({r})"))
                         .unwrap_or_default();
-                    crate::orchestrator::notify_delivery(
+                    crate::session::notify_delivery(
                         &format!("{} didn't handle {topic}", d.workflow),
                         &format!("run {} {}{why}; event {} \"{first}\" is parked: `tome events retry {}`", run.id, run.status.as_str(), d.event_id, d.event_id),
                     );
