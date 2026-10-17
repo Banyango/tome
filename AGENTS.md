@@ -8,6 +8,31 @@ Rust CLI and daemon for repeatable agentic workflows (Markdown workflows started
 - `make release`: release binary with bundled DuckDB (slow).
 - `make docs`: serve the docs (needs mdbook 0.5). Update `docs/src` when user-facing behavior or flags change.
 - Integration tests are in `tests/`; shared helpers in `tests/common`.
+- Run targeted tests first: `cargo test --bin tome <module>::` (inline unit tests) or `cargo test --test <name>`; then `make test`.
+
+## Architecture and navigation
+
+One binary crate; the daemon owns the only DuckDB connection and CLI commands reach it over JSON-RPC. Start from the feature doc, not a crate-wide search. These docs describe the current flat `src/` layout; update them when you move or add modules. Overview and known coupling: `docs/modules/architecture.md`.
+
+- Workflow files, `tome workflow`, `tome validate`: `docs/modules/workflows.md`
+- Cron, file, topic and manual triggers; arming; file watching: `docs/modules/triggers.md`
+- Run lifecycle, steps, orchestrator, resume, recovery, handshake, gc, `tome runs`: `docs/modules/runs.md`
+- `tome worker|group|worktree|queue`: `docs/modules/workers.md`
+- Terminals (cmux/tmux/herdr), placement, harnesses: `docs/modules/sessions.md`
+- Message bus, `tome publish|events`: `docs/modules/bus.md`
+- Nodes over SSH, node providers: `docs/modules/nodes.md`
+- Plugins and hooks: `docs/modules/plugins.md`
+- Daemon process, RPC protocol, service install: `docs/modules/daemon.md`
+
+Rules for changes:
+
+- Prefer modifying existing modules; avoid reading unrelated features.
+- Preserve public interfaces unless the change requires otherwise; don't add dependencies unnecessarily.
+- Keep new domain code free of `output::{CliError, CliResult}` and clap; convert at the command layer.
+- Don't add new cycles between modules (see the known ones in `architecture.md`).
+- Soft targets: files of 100-300 lines, functions of 20-50 lines, 1-5 files touched per routine change, tests next to the code. Don't split a cohesive file just to meet them; fewer files to read is the goal.
+- New RPC methods: list them in the owning module's `METHODS` and route them in `Engine::dispatch` (see `docs/modules/daemon.md`).
+- New commands also go in `main.rs` `reach` so `--on` routing is right (see `docs/modules/nodes.md`).
 
 ## Releasing
 
