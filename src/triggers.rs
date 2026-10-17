@@ -731,15 +731,17 @@ impl Engine {
                 },
             };
         }
-        let start = workflow::parse_param_args(&params).map(|overrides| StartRequest {
-            source: Some(wf.source().to_string()),
-            project_path: req.project.clone(),
-            params: overrides,
-            trigger: fields.clone(),
-            cause: Some(cause),
-            delivery_id: req.event.bus.as_ref().map(|(_, d)| *d),
-            ..StartRequest::new(wf.path().to_path_buf())
-        });
+        let start = workflow::parse_param_args(&params)
+            .map_err(CliError::from)
+            .map(|overrides| StartRequest {
+                source: Some(wf.source().to_string()),
+                project_path: req.project.clone(),
+                params: overrides,
+                trigger: fields.clone(),
+                cause: Some(cause),
+                delivery_id: req.event.bus.as_ref().map(|(_, d)| *d),
+                ..StartRequest::new(wf.path().to_path_buf())
+            });
         match start.and_then(|start| self.start(&start)) {
             Ok(run) => Fired {
                 outcome: started,

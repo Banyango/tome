@@ -10,6 +10,9 @@ feature parses and validates them and implements the `tome workflow` and
   and its kinds, `Scope`, `Library` (what workflows are visible), `parse`,
   `parse_snapshot`, `check_scope`, `Invalid`/`Diagnostic`. The largest file;
   parsing, validation, library lookup and param-arg parsing all live here.
+- `src/workflowcmd.rs`: the only place workflow errors meet the CLI: `From`
+  conversions from `Invalid`, `LibraryError`, `FindError` and `ParamArgError` to
+  `CliError` (exit kind, hint, JSON details).
 - `src/validate.rs`: `tome validate [workflow] [--param k=v]`. Local, no daemon.
 - `src/scaffold.rs`: `tome workflow new|rm|ls`.
 - `src/cron.rs`, `src/duration.rs`, `src/glob.rs`: small pure parsers used by
@@ -22,8 +25,11 @@ feature parses and validates them and implements the `tome workflow` and
   (`~/.tome/workflows`); `check_scope` enforces what each may declare.
 - A run stores a **snapshot** of its workflow (`parse_snapshot`), so edits don't
   change running or resumed runs.
-- `parse_param_args` returns `CliResult`, one place where domain code touches the
-  CLI error type.
+- `workflow.rs` has no dependency on `output`: it returns its own errors
+  (`Invalid`, `LibraryError`, `FindError`, `ParamArgError`). Add new CLI wording,
+  hints or exit kinds in `workflowcmd.rs`, not in `workflow.rs`.
+- `Library` still does filesystem and plugin-store reads (`discover`, `entries`);
+  that is the next thing to move out of the parsing code.
 
 ## Tests
 

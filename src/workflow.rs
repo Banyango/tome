@@ -15,7 +15,6 @@
 //! Every problem is reported with a 1-based line number in the file.
 
 use crate::duration;
-use crate::output::{CliError, CliResult, ErrorKind};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use serde_yaml::Value as Yaml;
@@ -301,22 +300,6 @@ impl Invalid {
                 })
                 .collect(),
         )
-    }
-
-    pub fn into_cli_error(self) -> CliError {
-        let label = self
-            .name
-            .clone()
-            .unwrap_or_else(|| self.path.display().to_string());
-        let n = self.errors.len();
-        CliError::new(
-            ErrorKind::InvalidWorkflow,
-            format!(
-                "workflow `{label}` is invalid ({n} error{})",
-                if n == 1 { "" } else { "s" }
-            ),
-        )
-        .with_details(json!({ "path": self.path, "errors": self.errors_json() }))
     }
 }
 
@@ -1416,14 +1399,24 @@ fn check_placeholders(
     errors
 }
 
+/// A `--param` argument that isn't `key=value`.
+#[derive(Debug, Clone)]
+pub struct ParamArgError {
+    pub arg: String,
+}
+
+impl fmt::Display for ParamArgError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid --param `{}`: expected key=value", self.arg)
+    }
+}
+
 /// Parse `k=v` pairs from `--param` flags.
-pub fn parse_param_args(args: &[String]) -> CliResult<Vec<(String, String)>> {
+pub fn parse_param_args(args: &[String]) -> Result<Vec<(String, String)>, ParamArgError> {
     args.iter()
         .map(|a| match a.split_once('=') {
             Some((k, v)) if !k.trim().is_empty() => Ok((k.trim().to_string(), v.to_string())),
-            _ => Err(CliError::invalid(format!(
-                "invalid --param `{a}`: expected key=value"
-            ))),
+            _ => Err(ParamArgError { arg: a.clone() }),
         })
         .collect()
 }
@@ -1758,6 +1751,62 @@ impl Entry {
     }
 }
 
+/// Why a workflow couldn't be found by name or path. An invalid workflow is
+/// not one of these: see [`Library::locate`].
+#[derive(Debug, Clone)]
+pub enum LibraryError {
+    /// The target looked like a path, but no file is there.
+    NoFileAt { target: String },
+    /// A plugin's workflow shares its name with another workflow.
+    DuplicateWithPlugin {
+        target: String,
+        sources: Vec<String>,
+    },
+    /// Several files in one scope define the same name.
+    Duplicate { target: String, paths: Vec<PathBuf> },
+    /// No workflow has this name.
+    NotFound {
+        target: String,
+        global_dir: PathBuf,
+        project_dir: Option<PathBuf>,
+    },
+}
+
+impl fmt::Display for LibraryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LibraryError::NoFileAt { target } => write!(f, "no workflow file at `{target}`"),
+            LibraryError::DuplicateWithPlugin { target, sources } => write!(
+                f,
+                "workflow name `{target}` is defined more than once: {}",
+                sources.join(" and ")
+            ),
+            LibraryError::Duplicate { target, paths } => {
+                let paths: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+                write!(
+                    f,
+                    "workflow name `{target}` is defined more than once: {}",
+                    paths.join(", ")
+                )
+            }
+            LibraryError::NotFound { target, .. } => write!(f, "no workflow named `{target}`"),
+        }
+    }
+}
+
+/// [`Library::find`] failed: the workflow wasn't found, or it is invalid.
+#[derive(Debug, Clone)]
+pub enum FindError {
+    Library(LibraryError),
+    Invalid(Invalid),
+}
+
+impl From<LibraryError> for FindError {
+    fn from(e: LibraryError) -> Self {
+        FindError::Library(e)
+    }
+}
+
 /// The workflow directories visible from a working directory:
 /// `~/.tome/workflows` (global) and the nearest `.tome/workflows` found by
 /// walking up from the working directory (project).
@@ -1850,23 +1899,23 @@ impl Library {
     }
 
     /// Find a workflow by `name` (project wins over global) or by file path.
-    pub fn find(&self, target: &str) -> CliResult<Workflow> {
-        self.locate(target)?.map_err(Invalid::into_cli_error)
+    pub fn find(&self, target: &str) -> Result<Workflow, FindError> {
+        self.locate(target)?.map_err(FindError::Invalid)
     }
 
     /// Like [`find`](Self::find), but an invalid workflow is returned as
     /// `Ok(Err(..))` so callers can report its diagnostics. Only "not found"
     /// and an ambiguous name are errors.
-    pub fn locate(&self, target: &str) -> CliResult<Result<Workflow, Invalid>> {
+    pub fn locate(&self, target: &str) -> Result<Result<Workflow, Invalid>, LibraryError> {
         let as_path = Path::new(target);
         if target.contains('/') || target.ends_with(".md") {
             if as_path.is_file() {
                 return Ok(load(as_path).and_then(|wf| check_scope(wf, self.scope_of(as_path))));
             }
             if target.contains('/') {
-                return Err(CliError::not_found(format!(
-                    "no workflow file at `{target}`"
-                )));
+                return Err(LibraryError::NoFileAt {
+                    target: target.to_string(),
+                });
             }
         }
 
@@ -1877,18 +1926,10 @@ impl Library {
             .filter(|e| e.name() == Some(target))
             .collect();
         if holders.len() > 1 && holders.iter().any(|e| e.plugin.is_some()) {
-            return Err(CliError::new(
-                ErrorKind::InvalidWorkflow,
-                format!(
-                    "workflow name `{target}` is defined more than once: {}",
-                    holders
-                        .iter()
-                        .map(|e| e.source_label())
-                        .collect::<Vec<_>>()
-                        .join(" and ")
-                ),
-            )
-            .with_hint("rename one, or disable the plugin with `tome plugin disable <name>`"));
+            return Err(LibraryError::DuplicateWithPlugin {
+                target: target.to_string(),
+                sources: holders.iter().map(|e| e.source_label()).collect(),
+            });
         }
         for scope in [Scope::Project, Scope::Global] {
             let matches: Vec<&Entry> = entries
@@ -1899,15 +1940,10 @@ impl Library {
                 [] => {}
                 [only] => return Ok(only.result.clone()),
                 many => {
-                    let paths: Vec<String> =
-                        many.iter().map(|e| e.path.display().to_string()).collect();
-                    return Err(CliError::new(
-                        ErrorKind::InvalidWorkflow,
-                        format!(
-                            "workflow name `{target}` is defined more than once: {}",
-                            paths.join(", ")
-                        ),
-                    ));
+                    return Err(LibraryError::Duplicate {
+                        target: target.to_string(),
+                        paths: many.iter().map(|e| e.path.clone()).collect(),
+                    });
                 }
             }
         }
@@ -1922,16 +1958,11 @@ impl Library {
                 return Ok(e.result.clone());
             }
         }
-        Err(
-            CliError::not_found(format!("no workflow named `{target}`")).with_hint(format!(
-                "workflows are loaded from {}{}",
-                self.global_dir.display(),
-                self.project_dir
-                    .as_ref()
-                    .map(|d| format!(" and {}", d.display()))
-                    .unwrap_or_default()
-            )),
-        )
+        Err(LibraryError::NotFound {
+            target: target.to_string(),
+            global_dir: self.global_dir.clone(),
+            project_dir: self.project_dir.clone(),
+        })
     }
 }
 

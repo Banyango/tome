@@ -44,6 +44,7 @@ mod validate;
 mod watch;
 mod workers;
 mod workflow;
+mod workflowcmd;
 mod worktree;
 
 use clap::{Parser, Subcommand};
