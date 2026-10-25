@@ -34,6 +34,12 @@ Rules for changes:
 - New RPC methods: list them in the owning module's `METHODS` and route them in `Engine::dispatch` (see `docs/modules/daemon.md`).
 - New commands also go in `main.rs` `reach` so `--on` routing is right (see `docs/modules/nodes.md`).
 
+## Committing
+
+- Stage files by explicit path; never `git add -A`, `git add .` or `git commit -a`. Untracked files in the tree are often the user's, not yours.
+- Before every commit, run `git status` and `git diff --cached --stat` and check each file belongs to the change. Stop and ask about anything unexpected, especially shell history (`.zsh_history`, `.bash_history`, or stray files with numeric names like `1078` containing `: <timestamp>:0;<command>` lines), `.DS_Store`, `.env*`, keys, tokens, or editor/OS files.
+- If an unexpected file is already tracked or pushed, tell the user; don't rewrite pushed history without explicit approval.
+
 ## Releasing
 
 1. Pick the version (minor for features, patch for fixes) and bump it everywhere:

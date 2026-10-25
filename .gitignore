@@ -2,3 +2,16 @@
 /.tome/
 /.idea/
 /docs/book/
+
+# Local/OS/editor files that must never be committed
+.DS_Store
+.zsh_history
+.zsh_sessions/
+.bash_history
+.history
+.python_history
+.lesshst
+.viminfo
+*.rtf
+.env
+.env.*
