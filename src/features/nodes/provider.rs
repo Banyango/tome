@@ -6,7 +6,7 @@
 //! reply, the name of the node it becomes, a stub record's contents). The
 //! files at the end are the edge: the registry of kept nodes and the stubs.
 
-use crate::node::{self, Node};
+use crate::features::nodes::{self as node, Node};
 use crate::paths;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

@@ -8,12 +8,12 @@
 //! outcome and releases the machine, whatever happened.
 
 use crate::config::Config;
+use crate::features::nodes::cmd as nodecmd;
+use crate::features::nodes::provider::{self, Cause, Opts, Provided, Stub};
+use crate::features::nodes::{self as node, Node};
 use crate::features::plugins::store;
-use crate::node::{self, Node};
-use crate::nodecmd;
 use crate::output::{exit, CliError, CliResult, ErrorKind, Report};
 use crate::paths;
-use crate::provider::{self, Cause, Opts, Provided, Stub};
 use crate::rpc;
 use crate::runcmd;
 use serde_json::{json, Value};

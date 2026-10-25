@@ -11,8 +11,8 @@
 use super::{Publish, TOME};
 use crate::config::Config;
 use crate::engine::Engine;
+use crate::features::nodes::{self as node, Node};
 use crate::ids::DeliveryId;
-use crate::node::{self, Node};
 use crate::output::{CliError, CliResult, ErrorKind};
 use crate::rpc;
 use crate::store::{BusEvent, Delivery, DeliveryState, Subscriber};

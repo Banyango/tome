@@ -4,7 +4,7 @@
 //! Errors carry the tome [`ErrorKind`] in `error.data.kind` (plus an optional
 //! `hint` / `details`) so the CLI can map them straight onto its exit codes.
 
-use crate::node::Node;
+use crate::features::nodes::Node;
 use crate::output::{CliError, CliResult, ErrorKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -211,7 +211,7 @@ impl Client {
     /// nothing is listening, this fails with a `daemon_not_running` error
     /// carrying a hint.
     pub fn connect(socket: &Path) -> CliResult<Client> {
-        match crate::node::target() {
+        match crate::features::nodes::target() {
             Some(node) => Client::to_node(node),
             None => Client::local(socket),
         }
@@ -252,9 +252,12 @@ impl Client {
             rtt: None,
         };
         let started = Instant::now();
-        let pong = client.call("daemon.ping", json!({ "protocol": crate::node::PROTOCOL }))?;
+        let pong = client.call(
+            "daemon.ping",
+            json!({ "protocol": crate::features::nodes::PROTOCOL }),
+        )?;
         client.rtt = Some(started.elapsed());
-        crate::node::check_protocol(node, &pong)?;
+        crate::features::nodes::check_protocol(node, &pong)?;
         client.pong = Some(pong);
         Ok(client)
     }

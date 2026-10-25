@@ -5,17 +5,17 @@ machines on demand.
 
 ## Files
 
-- `src/node.rs`: `Node` (from `nodes:` in `~/.tome/config.yaml`), resolving
+- `src/features/nodes/mod.rs`: `Node` (from `nodes:` in `~/.tome/config.yaml`), resolving
   `--on` / `TOME_NODE` / `node:ref` (`resolve`, `split_ref`), `set_target`/`target`.
-- `src/nodecmd.rs`: `tome node add|rm|ls|check`, `runs ls --nodes`,
+- `src/features/nodes/cmd.rs`: `tome node add|rm|ls|check`, `runs ls --nodes`,
   `tome session view`, `tome run --view`.
 - `src/rpc/ssh.rs`: SSH transport (`ssh ... tome rpc --stdio`).
   `src/rpc.rs` holds the protocol and `Client` (see [daemon.md](daemon.md));
   `classify_ssh` maps SSH failures to errors.
-- `src/provider.rs`: node providers: plugins that make a machine for
+- `src/features/nodes/provider.rs`: node providers: plugins that make a machine for
   `tome run --on <provider>`; local record of runs on released machines.
   Option parsing is in `src/provider_opts.rs`; node name rules in `src/ids.rs`.
-- `src/providercmd.rs`: `tome run <workflow> --on <provider>`: create, run, release.
+- `src/features/nodes/provider_cmd.rs`: `tome run <workflow> --on <provider>`: create, run, release.
 - `src/main.rs`: `route`/`reach` decide whether a command runs locally or is
   forwarded to a node's daemon.
 
@@ -29,7 +29,7 @@ machines on demand.
 
 ## Tests
 
-- Unit: `cargo test --bin tome node::` (also `provider::`, `nodecmd::`, `rpc::ssh`)
+- Unit: `cargo test --bin tome features::nodes::` (also `rpc::ssh`)
 - Integration: `nodes`, `providers`
 
 ## User docs

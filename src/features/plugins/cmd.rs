@@ -5,10 +5,10 @@
 //! refuse `--on`) and never run plugin code: an install validates the
 //! manifest and copies or clones the folder, nothing more.
 
+use crate::features::nodes as node;
 use crate::features::plugins::host;
 use crate::features::plugins::manifest::{self, Claim, Conflict, Incompatible, Manifest};
 use crate::features::plugins::store::{self, InstallState, Installed};
-use crate::node;
 use crate::output::{exit, table, CliError, CliResult, Report};
 use crate::paths;
 use crate::rpc;

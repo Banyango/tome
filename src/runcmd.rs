@@ -5,7 +5,7 @@
 //! through `--run <id>` or `TOME_RUN_ID`.
 
 use crate::engine::reason;
-use crate::node::{self, Node};
+use crate::features::nodes::{self as node, Node};
 use crate::output::{exit, CliError, CliResult, ErrorKind, Mode, Report};
 use crate::paths;
 use crate::placement::{self, Settings};

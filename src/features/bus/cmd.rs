@@ -1,10 +1,11 @@
 //! `tome publish` and `tome events ...`: the client side of the project
 //! message bus.
 
+use crate::features::nodes as node;
 use crate::ids::RunId;
 use crate::output::{table, CliError, CliResult, Report};
 use crate::triggerscmd::project_of;
-use crate::{node, paths, rpc};
+use crate::{paths, rpc};
 use serde_json::{json, Value};
 use std::io::Read;
 use std::path::{Path, PathBuf};

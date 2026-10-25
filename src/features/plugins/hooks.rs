@@ -103,7 +103,7 @@ impl Engine {
                 "env": gate.env,
                 "cause": cause,
                 "resumes": resumes,
-                "node": crate::node::host_name(),
+                "node": crate::features::nodes::host_name(),
             });
             let timeout = hook.timeout.unwrap_or(HOOK_TIMEOUT);
             let verdict = self
@@ -152,7 +152,7 @@ impl Engine {
                 "project": run.project_path,
                 "params": run.params,
                 "cause": run.trigger,
-                "node": crate::node::host_name(),
+                "node": crate::features::nodes::host_name(),
             }),
         );
     }
@@ -174,7 +174,7 @@ impl Engine {
                 "status": status,
                 "reason": run.reason,
                 "summary": run.summary,
-                "node": crate::node::host_name(),
+                "node": crate::features::nodes::host_name(),
             }),
         );
     }

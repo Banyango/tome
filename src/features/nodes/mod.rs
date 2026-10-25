@@ -6,6 +6,9 @@
 //! JSON-RPC through it to the node's own daemon. Nothing is shared between
 //! daemons: each owns its runs.
 
+pub mod cmd;
+pub mod provider;
+pub mod provider_cmd;
 use crate::config::{self, Config};
 use crate::output::{CliError, CliResult};
 use crate::paths;
@@ -80,7 +83,7 @@ pub fn all() -> CliResult<BTreeMap<String, Node>> {
         out.insert(name, node);
     }
     // Machines a provider made and `--keep` left: a configured node wins.
-    for (name, node) in crate::provider::ephemeral_nodes() {
+    for (name, node) in crate::features::nodes::provider::ephemeral_nodes() {
         out.entry(name).or_insert(node);
     }
     Ok(out)

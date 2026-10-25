@@ -1,10 +1,10 @@
 //! `tome runs list|show|logs` and `tome query`: inspection of current and
 //! past runs. All data comes from the daemon.
 
-use crate::node;
+use crate::features::nodes as node;
+use crate::features::nodes::provider;
 use crate::output::{table, CliResult, Report};
 use crate::paths;
-use crate::provider;
 use crate::rpc;
 use chrono::{Local, NaiveDateTime, TimeZone};
 use serde_json::{json, Value};
@@ -104,7 +104,7 @@ pub fn show(id: &str, snapshot: bool) -> CliResult<Report> {
     let mut out = format!(
         "run {}{}  {}  [{}]\n",
         s(&run["id"]),
-        crate::node::on_suffix(),
+        crate::features::nodes::on_suffix(),
         s(&run["workflow_name"]),
         s(&run["status"])
     );

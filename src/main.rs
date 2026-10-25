@@ -14,8 +14,6 @@ mod harnesscmd;
 mod ids;
 mod inspect;
 mod lifecycle;
-mod node;
-mod nodecmd;
 mod orchestrator;
 mod output;
 mod params;
@@ -23,9 +21,7 @@ mod paths;
 mod placement;
 mod placementcmd;
 mod primitives;
-mod provider;
 mod provider_opts;
-mod providercmd;
 mod query;
 mod recovery;
 mod resume;
@@ -49,6 +45,7 @@ mod workflowcmd;
 mod worktree;
 
 use clap::{Parser, Subcommand};
+use features::nodes::{self as node, cmd as nodecmd, provider_cmd as providercmd};
 use output::{emit, CliResult, Mode, Report};
 use std::ffi::OsString;
 

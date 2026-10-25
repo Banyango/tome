@@ -35,9 +35,9 @@ All under `src/features/plugins/`:
 - The host is called from `engine` around run start/finish.
 - `workflow.rs` and `harness.rs` do not import plugins; code that needs plugin
   workflows or harnesses calls `library::discover` / `harnesses::resolve`.
-- Still coupled to nodes: `store.rs`/`cmd.rs`/`hooks.rs` use `node`, and
-  `node::resolve_workflow_rpc` uses `library::discover`. That edge goes away or
-  becomes intra-feature when nodes move.
+- Still coupled to nodes: `store.rs`/`cmd.rs`/`hooks.rs` use the nodes feature,
+  and `nodes::resolve_workflow_rpc` uses `library::discover`. This is a
+  feature-to-feature cycle (providers are plugins; plugins list nodes).
 
 ## Tests
 

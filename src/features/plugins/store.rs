@@ -2,8 +2,8 @@
 //! user's setup already holds.
 
 use super::manifest::{self, Claim, Manifest, Space, Version};
+use crate::features::nodes as node;
 use crate::harness;
-use crate::node;
 use crate::output::{CliError, CliResult};
 use crate::paths;
 use crate::workflow::Library;

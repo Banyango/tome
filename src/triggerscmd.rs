@@ -47,7 +47,7 @@ pub fn fire(
     payload: Option<&str>,
     dry_run: bool,
 ) -> CliResult<Report> {
-    let (path, project, root) = match crate::node::target() {
+    let (path, project, root) = match crate::features::nodes::target() {
         Some(node) => on_node(node, cwd, target)?,
         None => {
             let library = crate::features::plugins::library::discover(cwd);
@@ -124,7 +124,7 @@ pub fn fire(
 /// workflow's path and project there, and this project's root here (what
 /// `--paths` are relative to).
 fn on_node(
-    node: &crate::node::Node,
+    node: &crate::features::nodes::Node,
     cwd: &Path,
     target: &str,
 ) -> CliResult<(PathBuf, Option<PathBuf>, Option<PathBuf>)> {
@@ -139,7 +139,7 @@ fn on_node(
     }
     let local = project_of(cwd);
     let mapped = match &local {
-        Some(l) => Some(crate::node::map_project(l)?),
+        Some(l) => Some(crate::features::nodes::map_project(l)?),
         None => None,
     };
     let out = call(
@@ -172,7 +172,7 @@ fn project_arg(cwd: &Path, project: Option<PathBuf>) -> CliResult<PathBuf> {
 
 /// `tome triggers enable|disable [--project <path>]`
 pub fn enable(cwd: &Path, project: Option<PathBuf>, enabled: bool) -> CliResult<Report> {
-    let path = crate::node::map_project(&project_arg(cwd, project)?)?;
+    let path = crate::features::nodes::map_project(&project_arg(cwd, project)?)?;
     let p = call(
         "triggers.enable",
         json!({ "project": path, "enabled": enabled }),
@@ -181,7 +181,7 @@ pub fn enable(cwd: &Path, project: Option<PathBuf>, enabled: bool) -> CliResult<
         "triggers {} for {}{}",
         if enabled { "enabled" } else { "disabled" },
         path.display(),
-        crate::node::on_suffix()
+        crate::features::nodes::on_suffix()
     );
     Ok(Report::new(p, human))
 }

@@ -2,7 +2,7 @@
 //! and `tome run --view`.
 
 use crate::config::Config;
-use crate::node::{self, Node};
+use crate::features::nodes::{self as node, Node};
 use crate::output::{exit, table, CliError, CliResult, ErrorKind, Report};
 use crate::paths;
 use crate::placement::{self, Settings};
@@ -28,7 +28,7 @@ fn s(v: &Value) -> String {
 /// `tome node add <name> <ssh> [--tome <path>]`: write the entry, then check
 /// it. The entry stays even if the check fails, so it can be fixed in place.
 pub fn add(name: &str, ssh: &str, tome: Option<&str>) -> CliResult<Report> {
-    if let Some(plugin) = crate::providercmd::provider_plugin(name) {
+    if let Some(plugin) = crate::features::nodes::provider_cmd::provider_plugin(name) {
         return Err(CliError::conflict(format!(
             "`{name}` is a provider declared by plugin `{plugin}`, so `--on {name}` already means that"
         ))
@@ -58,7 +58,7 @@ pub fn add(name: &str, ssh: &str, tome: Option<&str>) -> CliResult<Report> {
 pub fn rm(name: &str) -> CliResult<Report> {
     // A machine a provider made and `--keep` left is a node too; removing
     // it forgets the node, not the machine.
-    let kept = crate::provider::unregister(name);
+    let kept = crate::features::nodes::provider::unregister(name);
     if !node::remove_entry(name)? && !kept {
         return Err(CliError::not_found(format!("no node named `{name}`"))
             .with_hint("list them with `tome node ls`"));

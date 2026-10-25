@@ -4,7 +4,7 @@
 //! another collects its stderr to explain a connection that closes.
 
 use super::Got;
-use crate::node::Node;
+use crate::features::nodes::Node;
 use crate::output::{CliError, CliResult, ErrorKind};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::CommandExt;
@@ -44,7 +44,7 @@ impl Conn {
                     ErrorKind::Unreachable,
                     format!(
                         "can't run `{}` to reach {}: {e}",
-                        crate::node::ssh_bin(),
+                        crate::features::nodes::ssh_bin(),
                         node.name
                     ),
                 )
