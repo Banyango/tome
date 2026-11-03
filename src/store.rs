@@ -566,6 +566,8 @@ impl Store {
             runs_dir: runs_dir.to_path_buf(),
         };
         store.migrate()?;
+        // The table is the truth; the mirror may be stale or missing.
+        let _ = store.mirror_attachments();
         Ok(store)
     }
 

@@ -93,7 +93,7 @@ This lists runs from this machine and every node, with a `NODE` column. `--limit
 
 ## Forwarding events
 
-A project can forward bus events to nodes in its `.tome/config.yaml`:
+A project can forward bus events to nodes in its `.tome/config.yaml` (or in an attached hub's, or the global config):
 
 ```yaml
 bus:

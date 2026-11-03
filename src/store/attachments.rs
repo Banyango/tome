@@ -5,6 +5,7 @@ use super::{internal, now, Store};
 use crate::output::CliResult;
 use crate::scope::Shared;
 use duckdb::params;
+use std::collections::BTreeMap;
 
 impl Store {
     /// Attach a project to a hub or global. Returns whether it was new.
@@ -56,6 +57,27 @@ impl Store {
             .map_err(internal)?;
         let keys: Vec<String> = rows.collect::<Result<_, _>>().map_err(internal)?;
         Ok(keys.iter().filter_map(|k| Shared::from_key(k)).collect())
+    }
+
+    /// Rewrite `~/.tome/attachments.json` from the table, for
+    /// [`crate::layers`].
+    pub fn mirror_attachments(&self) -> CliResult<()> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT project_path, scope FROM attachments ORDER BY attached_at, scope")
+            .map_err(internal)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(internal)?;
+        let mut all: BTreeMap<String, Vec<Shared>> = BTreeMap::new();
+        for row in rows {
+            let (project, key) = row.map_err(internal)?;
+            if let Some(s) = Shared::from_key(&key) {
+                all.entry(project).or_default().push(s);
+            }
+        }
+        crate::layers::write_mirror(&all);
+        Ok(())
     }
 
     /// The projects attached to a hub or global.

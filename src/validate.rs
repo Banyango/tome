@@ -35,21 +35,30 @@ pub fn run(cwd: &Path, target: Option<&str>, params: &[String]) -> CliResult<Rep
             let entries = library.entries();
             let duplicates = duplicate_names(&entries);
             for entry in &entries {
-                let overridden_by = match entry.scope {
-                    Scope::Global => entry.name().and_then(|n| {
-                        entries
-                            .iter()
-                            .find(|e| e.scope == Scope::Project && e.name() == Some(n))
-                            .map(|e| &e.path)
-                    }),
-                    Scope::Project => None,
+                // Project wins over hubs, and hubs over global.
+                let rank = |s: Scope| match s {
+                    Scope::Global => 0,
+                    Scope::Hub => 1,
+                    Scope::Project => 2,
                 };
+                let overridden_by = entry.name().and_then(|n| {
+                    entries
+                        .iter()
+                        .filter(|e| e.plugin.is_none() && e.name() == Some(n))
+                        .filter(|e| rank(e.scope) > rank(entry.scope))
+                        .max_by_key(|e| rank(e.scope))
+                        .map(|e| &e.path)
+                });
                 let mut invalid = entry.result.as_ref().err().cloned();
                 if let Some(name) = entry.name() {
                     if duplicates.contains_key(&(entry.scope, name.to_string())) {
                         let err = workflow::Diagnostic {
                             line: 1,
-                            message: format!("workflow name `{name}` is defined more than once in the same directory"),
+                            message: if entry.scope == Scope::Hub {
+                                format!("workflow name `{name}` is defined by more than one attached hub")
+                            } else {
+                                format!("workflow name `{name}` is defined more than once in the same directory")
+                            },
                         };
                         match invalid.as_mut() {
                             Some(inv) => inv.errors.insert(0, err),

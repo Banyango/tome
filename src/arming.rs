@@ -98,6 +98,7 @@ pub fn scan(projects: &[PathBuf]) -> Scan {
         None,
         Library {
             global_dir: global_dir.clone(),
+            hubs: Vec::new(),
             project_dir: None,
             plugin_dirs: Vec::new(),
         },
@@ -105,18 +106,58 @@ pub fn scan(projects: &[PathBuf]) -> Scan {
     for root in projects {
         let lib = Library {
             global_dir: global_dir.clone(),
+            hubs: crate::layers::hubs(root),
             project_dir: Some(root.join(".tome/workflows")),
             plugin_dirs: Vec::new(),
         };
         libraries.push((Some(root.clone()), lib));
     }
     for (project, lib) in libraries {
-        let scope = if project.is_some() {
-            Scope::Project
-        } else {
-            Scope::Global
+        // A project arms its own workflows and its hubs' (each hub workflow
+        // once per attached project), the project's winning by name.
+        let entries: Vec<_> = lib
+            .entries()
+            .into_iter()
+            .filter(|e| (e.scope == Scope::Global) == project.is_none())
+            .collect();
+        let own: HashSet<String> = entries
+            .iter()
+            .filter(|e| e.scope == Scope::Project)
+            .filter_map(|e| e.name().map(str::to_string))
+            .collect();
+        let hubs_of = |n: &str| -> Vec<String> {
+            entries
+                .iter()
+                .filter(|e| e.scope == Scope::Hub && e.name() == Some(n))
+                .filter_map(|e| e.hub.as_ref().map(ToString::to_string))
+                .collect()
         };
-        for entry in lib.entries().into_iter().filter(|e| e.scope == scope) {
+        let clashes: HashMap<String, Vec<String>> = entries
+            .iter()
+            .filter(|e| e.scope == Scope::Hub)
+            .filter_map(|e| e.name())
+            .map(|n| (n.to_string(), hubs_of(n)))
+            .filter(|(_, hubs)| hubs.len() > 1)
+            .collect();
+        for entry in entries {
+            if entry.scope == Scope::Hub {
+                let Some(n) = entry.name() else { continue };
+                if own.contains(n) {
+                    continue;
+                }
+                if let Some(hubs) = clashes.get(n) {
+                    out.broken.push(Broken {
+                        workflow_path: entry.path.clone(),
+                        name: n.to_string(),
+                        project: project.clone(),
+                        message: format!(
+                            "workflow name `{n}` is defined by more than one attached hub ({})",
+                            hubs.join(", ")
+                        ),
+                    });
+                    continue;
+                }
+            }
             let name = entry.name().map(str::to_string).unwrap_or_else(|| {
                 entry
                     .path
@@ -216,6 +257,10 @@ impl CronState {
 fn signature(projects: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>, u64)> {
     let mut dirs = vec![crate::paths::tome_home().join("workflows")];
     dirs.extend(projects.iter().map(|p| p.join(".tome/workflows")));
+    // Attaching or detaching changes the hub directories listed.
+    for p in projects {
+        dirs.extend(crate::layers::hubs(p).iter().map(|h| h.workflows_dir()));
+    }
     let mut sig = Vec::new();
     for dir in dirs {
         sig.push((dir.clone(), None, 0));

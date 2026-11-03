@@ -57,7 +57,7 @@ pub fn fire(
                 Err(inv) => inv.path,
             };
             let project = match library.scope_of(&path) {
-                Scope::Project => library.project_root().map(|r| canonical(&r)),
+                Scope::Project | Scope::Hub => library.project_root().map(|r| canonical(&r)),
                 Scope::Global => None,
             };
             (canonical(&path), project.clone(), project)

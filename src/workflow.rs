@@ -1019,7 +1019,7 @@ fn check_trigger_params(fm: &mut Frontmatter, errors: &mut Vec<Diagnostic>) {
 /// project root, so its file triggers need absolute or `~/` globs, and no
 /// project bus, so it can't have topic triggers.
 pub fn check_scope(wf: Workflow, scope: Scope) -> Result<Workflow, Invalid> {
-    if scope == Scope::Project {
+    if scope != Scope::Global {
         return Ok(wf);
     }
     let errors: Vec<Diagnostic> = wf
@@ -1755,6 +1755,8 @@ fn yaml_to_json(v: &Yaml) -> Value {
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
     Global,
+    /// An attached hub's: it applies to the project like its own.
+    Hub,
     Project,
 }
 
@@ -1766,15 +1768,18 @@ pub struct Entry {
     /// The plugin that ships this workflow, if one does. It is listed under
     /// the global scope.
     pub plugin: Option<String>,
+    /// The hub it comes from, for the hub scope.
+    pub hub: Option<crate::scope::HubName>,
 }
 
 impl Entry {
     /// Where the workflow comes from, for messages: ``plugin `x` (path)`` or
     /// ``your workflow path``.
     pub fn source_label(&self) -> String {
-        match &self.plugin {
-            Some(p) => format!("plugin `{p}` ({})", self.path.display()),
-            None => format!("your workflow {}", self.path.display()),
+        match (&self.plugin, &self.hub) {
+            (Some(p), _) => format!("plugin `{p}` ({})", self.path.display()),
+            (None, Some(h)) => format!("hub `{h}`'s workflow {}", self.path.display()),
+            (None, None) => format!("your workflow {}", self.path.display()),
         }
     }
 
@@ -1797,7 +1802,8 @@ pub enum LibraryError {
         target: String,
         sources: Vec<String>,
     },
-    /// Several files in one scope define the same name.
+    /// Several files in one scope define the same name (in the hub scope,
+    /// two attached hubs).
     Duplicate { target: String, paths: Vec<PathBuf> },
     /// No workflow has this name.
     NotFound {
@@ -1843,10 +1849,13 @@ impl From<LibraryError> for FindError {
 }
 
 /// The workflow directories visible from a working directory:
-/// `~/.tome/workflows` (global) and the nearest `.tome/workflows` found by
-/// walking up from the working directory (project).
+/// `~/.tome/workflows` (global), the project's attached hubs, and the
+/// nearest `.tome/workflows` found by walking up from the working
+/// directory (project).
 pub struct Library {
     pub global_dir: PathBuf,
+    /// The project's attached hubs, in attach order (see `crate::layers`).
+    pub hubs: Vec<crate::layers::Layer>,
     pub project_dir: Option<PathBuf>,
     /// The enabled plugins' workflows. Filled by
     /// `plugins::library::discover`; empty for a library of the user's own.
@@ -1871,11 +1880,17 @@ impl Library {
             let candidate = tome.join("workflows");
             (candidate.is_dir() && !crate::paths::same_path(&tome, &home)).then_some(candidate)
         });
-        Library {
+        let mut library = Library {
             global_dir,
+            hubs: Vec::new(),
             project_dir,
             plugin_dirs: Vec::new(),
-        }
+        };
+        library.hubs = library
+            .project_root()
+            .map(|r| crate::layers::hubs(&r))
+            .unwrap_or_default();
+        library
     }
 
     /// A workflow file outside the global directory is treated as a project
@@ -1883,6 +1898,14 @@ impl Library {
     pub fn scope_of(&self, path: &Path) -> Scope {
         match path.parent() {
             Some(dir) if crate::paths::same_path(dir, &self.global_dir) => Scope::Global,
+            Some(dir)
+                if self
+                    .hubs
+                    .iter()
+                    .any(|h| crate::paths::same_path(dir, &h.workflows_dir())) =>
+            {
+                Scope::Hub
+            }
             _ => Scope::Project,
         }
     }
@@ -1894,16 +1917,18 @@ impl Library {
             .and_then(|d| d.parent()?.parent().map(Path::to_path_buf))
     }
 
-    /// Every workflow file in both directories, global first, then the
-    /// enabled plugins' workflows.
+    /// Every workflow file in the directories, global first, then the
+    /// hubs', the project's, and the enabled plugins' workflows.
     pub fn entries(&self) -> Vec<Entry> {
         let mut out = Vec::new();
-        for (scope, dir) in [
-            (Scope::Global, Some(&self.global_dir)),
-            (Scope::Project, self.project_dir.as_ref()),
-        ] {
+        let mut dirs = vec![(Scope::Global, None, Some(self.global_dir.clone()))];
+        for h in &self.hubs {
+            dirs.push((Scope::Hub, Some(h.hub.clone()), Some(h.workflows_dir())));
+        }
+        dirs.push((Scope::Project, None, self.project_dir.clone()));
+        for (scope, hub, dir) in dirs {
             let Some(dir) = dir else { continue };
-            let Ok(read) = std::fs::read_dir(dir) else {
+            let Ok(read) = std::fs::read_dir(&dir) else {
                 continue;
             };
             let mut paths: Vec<PathBuf> = read
@@ -1918,6 +1943,7 @@ impl Library {
                     path,
                     result,
                     plugin: None,
+                    hub: hub.clone(),
                 });
             }
         }
@@ -1935,13 +1961,15 @@ impl Library {
                     path,
                     result,
                     plugin: Some(plugin.clone()),
+                    hub: None,
                 });
             }
         }
         out
     }
 
-    /// Find a workflow by `name` (project wins over global) or by file path.
+    /// Find a workflow by `name` (project wins over hubs, hubs over global)
+    /// or by file path.
     pub fn find(&self, target: &str) -> Result<Workflow, FindError> {
         self.locate(target)?.map_err(FindError::Invalid)
     }
@@ -1974,7 +2002,7 @@ impl Library {
                 sources: holders.iter().map(|e| e.source_label()).collect(),
             });
         }
-        for scope in [Scope::Project, Scope::Global] {
+        for scope in [Scope::Project, Scope::Hub, Scope::Global] {
             let matches: Vec<&Entry> = entries
                 .iter()
                 .filter(|e| e.scope == scope && e.name() == Some(target))

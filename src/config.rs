@@ -1,13 +1,15 @@
-//! tome's config files: the global `~/.tome/config.yaml` and a project's
-//! `.tome/config.yaml` (the nearest one above the run's project directory,
-//! found the same way as project workflows).
+//! tome's config files: the global `~/.tome/config.yaml`, each attached
+//! hub's `~/.tome/hubs/<name>/config.yaml` (in attach order, see
+//! `crate::layers`) and a project's `.tome/config.yaml` (the nearest one
+//! above the run's project directory, found the same way as project
+//! workflows).
 //!
-//! Both take the same keys. The project file wins per top-level key, and per
+//! All take the same keys. A later file wins per top-level key, and per
 //! entry for the named maps (`harnesses`, `layout_presets`): an entry with
-//! the same name in the project file replaces the global one entirely.
+//! the same name in a later file replaces the earlier one entirely.
 
 use crate::output::{CliError, CliResult};
-use crate::paths;
+use crate::{layers, paths};
 use serde_yaml::{Mapping, Value as Yaml};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +29,7 @@ pub const KEYS: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Global,
+    Hub,
     Project,
 }
 
@@ -34,6 +37,7 @@ impl Scope {
     pub fn as_str(self) -> &'static str {
         match self {
             Scope::Global => "global",
+            Scope::Hub => "hub",
             Scope::Project => "project",
         }
     }
@@ -52,6 +56,7 @@ impl File {
     pub fn label(&self) -> String {
         match self.scope {
             Scope::Global => "the tome config".to_string(),
+            Scope::Hub => format!("the hub config ({})", self.path.display()),
             Scope::Project => format!("the project config ({})", self.path.display()),
         }
     }
@@ -70,7 +75,7 @@ impl File {
 /// The config files in effect for a project (or for none).
 #[derive(Debug, Clone, Default)]
 pub struct Config {
-    /// Global first, then the project's.
+    /// Global first, then the hubs', then the project's.
     files: Vec<File>,
 }
 
@@ -89,14 +94,31 @@ pub fn project_path(dir: &Path) -> Option<PathBuf> {
     })
 }
 
+/// The project that `dir` is in: the nearest directory with a `.tome/`
+/// that isn't the tome home.
+fn project_root(dir: &Path) -> Option<PathBuf> {
+    let home = paths::tome_home();
+    dir.ancestors()
+        .find(|d| d.join(".tome").is_dir() && !paths::same_path(&d.join(".tome"), &home))
+        .map(Path::to_path_buf)
+}
+
 impl Config {
-    /// Read the global config and, with a project directory, its project
-    /// config. Either may be missing; an unreadable or malformed one, or one
-    /// with a key tome doesn't know, is an error.
+    /// Read the global config and, with a project directory, its hubs'
+    /// and its project config. Any may be missing; an unreadable or
+    /// malformed one, or one with a key tome doesn't know, is an error.
     pub fn load(project: Option<&Path>) -> CliResult<Config> {
         let mut files = Vec::new();
         if let Some(f) = read(Scope::Global, global_path())? {
             files.push(f);
+        }
+        for hub in project
+            .and_then(project_root)
+            .map_or_else(Vec::new, |r| layers::hubs(&r))
+        {
+            if let Some(f) = read(Scope::Hub, hub.config_path())? {
+                files.push(f);
+            }
         }
         if let Some(f) = project
             .and_then(project_path)
@@ -113,7 +135,7 @@ impl Config {
         &self.files
     }
 
-    /// A top-level value and the file it came from, the project's first.
+    /// A top-level value and the file it came from, the latest file first.
     pub fn get(&self, key: &str) -> Option<(&Yaml, &File)> {
         self.files.iter().rev().find_map(|f| match f.doc.get(key) {
             None | Some(Yaml::Null) => None,
@@ -186,9 +208,9 @@ fn parse(scope: Scope, path: PathBuf, text: &str) -> CliResult<File> {
             return Err(bad(format!("unknown key `{key}`"))
                 .with_hint(format!("known keys: {}", KEYS.join(", "))));
         }
-        // Hosts and SSH access are the user's; forwarding rules are the repo's.
+        // Hosts and SSH access are the user's.
         match (key, scope) {
-            ("herdr", Scope::Project) => {
+            ("herdr", Scope::Project | Scope::Hub) => {
                 return Err(bad("`herdr` settings go in the global config".into())
                     .with_hint(format!("move it to {}", global_path().display())))
             }
@@ -208,12 +230,9 @@ fn parse(scope: Scope, path: PathBuf, text: &str) -> CliResult<File> {
                     }
                 }
             }
-            ("nodes", Scope::Project) => {
+            ("nodes", Scope::Project | Scope::Hub) => {
                 return Err(bad("`nodes` goes in the global config".into())
                     .with_hint(format!("move it to {}", global_path().display())))
-            }
-            ("bus", Scope::Global) => {
-                return Err(bad("`bus` goes in a project's .tome/config.yaml".into()))
             }
             ("defaults", _) => {
                 let map = doc
@@ -236,6 +255,22 @@ fn parse(scope: Scope, path: PathBuf, text: &str) -> CliResult<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hub_and_global_configs_take_bus_but_not_machine_settings() {
+        for scope in [Scope::Global, Scope::Hub] {
+            assert!(Config::parse(scope, "bus: { forward: [] }\n").is_ok());
+        }
+        for text in ["nodes: {}\n", "herdr: { session: x }\n"] {
+            let e = Config::parse(Scope::Hub, text).unwrap_err();
+            assert!(
+                e.message.contains("goes in the global config")
+                    || e.message.contains("go in the global config"),
+                "{}",
+                e.message
+            );
+        }
+    }
 
     #[test]
     fn unknown_keys_are_refused() {

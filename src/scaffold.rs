@@ -66,6 +66,10 @@ pub fn ls(cwd: &Path, global_only: bool) -> CliResult<Report> {
         let scope = match (&e.plugin, e.scope) {
             (Some(p), _) => format!("plugin {p}"),
             (None, Scope::Project) => "project".to_string(),
+            (None, Scope::Hub) => format!(
+                "hub {}",
+                e.hub.as_ref().map(ToString::to_string).unwrap_or_default()
+            ),
             (None, Scope::Global) if shadowed(e) => "global (shadowed)".to_string(),
             (None, Scope::Global) => "global".to_string(),
         };
@@ -359,6 +363,7 @@ fn by_name(
                         "there's a project one at {}; drop --global to remove it",
                         e.path.display()
                     ),
+                    Scope::Hub => format!("there's a hub one at {}", e.path.display()),
                 }
             } else if let Some(e) = entries.iter().find(|e| {
                 e.scope == scope
@@ -375,6 +380,7 @@ fn by_name(
                         "global workflows are loaded from {}",
                         library.global_dir.display()
                     ),
+                    (Scope::Hub, _) => "hub workflows are loaded from each hub's workflows/".into(),
                     (Scope::Project, Some(dir)) => {
                         format!("project workflows are loaded from {}", dir.display())
                     }
@@ -399,6 +405,7 @@ fn by_name(
 fn scope_str(scope: Scope) -> &'static str {
     match scope {
         Scope::Global => "global",
+        Scope::Hub => "hub",
         Scope::Project => "project",
     }
 }

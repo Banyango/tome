@@ -40,7 +40,9 @@ read or write of run state goes through it.
   readers for RPC params, `internal`), `src/provider_opts.rs` (`--provider-opt`
   and `provider_opts:` parsing). `ids.rs` also holds the node name rules
   (`LOCAL`, `check_node_name`).
-- `src/config.rs`: global and project `config.yaml`.
+- `src/config.rs`: global, hub and project `config.yaml`.
+- `src/layers.rs` (leaf): the one loader for a project's hub layers (its attached
+  hubs' directories), read from the attachments mirror.
 
 ## Known coupling to be aware of
 

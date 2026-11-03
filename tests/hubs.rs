@@ -215,3 +215,101 @@ fn a_trigger_on_a_missing_hub_is_invalid() {
     assert_ne!(code, 0, "{v}");
     assert!(v.to_string().contains("tome hub create"), "{v}");
 }
+
+fn hub_wf(env: &Env, hub: &str, name: &str, front: &str) {
+    let dir = env.home().join("hubs").join(hub).join("workflows");
+    fs::write(
+        dir.join(format!("{name}.md")),
+        format!("---\nname: {name}\n{front}---\n## Go\nGo.\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn hub_workflows_apply_to_attached_projects() {
+    let env = env_with_project();
+    let other = env.project().parent().unwrap().join("q");
+    fs::create_dir_all(other.join(".tome/workflows")).unwrap();
+    for hub in ["release", "ops"] {
+        assert_eq!(env.json(&["hub", "create", hub]).0, 0);
+    }
+    hub_wf(&env, "release", "ship", "triggers:\n  - on: build.done\n");
+    hub_wf(&env, "release", "tidy", "");
+    fs::write(
+        env.project().join(".tome/workflows/tidy.md"),
+        "---\nname: tidy\n---\n## Mine\nGo.\n",
+    )
+    .unwrap();
+
+    let (_, v) = env.json(&["workflow", "ls"]);
+    assert!(!v.to_string().contains("ship"), "not attached yet: {v}");
+
+    assert_eq!(env.json(&["triggers", "disable"]).0, 0);
+    assert_eq!(json_in(&env, &other, &["triggers", "disable"]).0, 0);
+    assert_eq!(env.json(&["hub", "attach", "release"]).0, 0);
+    assert_eq!(json_in(&env, &other, &["hub", "attach", "release"]).0, 0);
+    let (code, v) = env.json(&["validate"]);
+    assert_eq!(code, 0, "{v}");
+    let scopes: Vec<(String, String)> = v["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| {
+            (
+                w["name"].as_str().unwrap().into(),
+                w["scope"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    assert!(scopes.contains(&("ship".into(), "hub".into())), "{v}");
+    let hub_tidy = v["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == "tidy" && w["scope"] == "hub")
+        .unwrap();
+    assert!(
+        hub_tidy["overridden_by"].is_string(),
+        "the project's wins: {v}"
+    );
+
+    // An `on:` without `hub:` listens on each project's own bus.
+    let (_, v) = env.json(&["publish", "build.done", "x"]);
+    let ds = v["deliveries"].as_array().unwrap();
+    assert_eq!(ds.len(), 1, "{v}");
+    assert_eq!(ds[0]["workflow"], "ship", "{v}");
+    let (_, v) = json_in(&env, &other, &["publish", "build.done", "x"]);
+    assert_eq!(v["deliveries"].as_array().unwrap().len(), 1, "{v}");
+
+    // Two attached hubs with one name: an error everywhere it's used.
+    hub_wf(&env, "ops", "ship", "");
+    assert_eq!(env.json(&["hub", "attach", "ops"]).0, 0);
+    let (code, v) = env.json(&["validate"]);
+    assert_ne!(code, 0, "{v}");
+    assert!(v.to_string().contains("more than one attached hub"), "{v}");
+    let (code, v) = env.json(&["run", "ship"]);
+    assert_ne!(code, 0, "{v}");
+    assert!(v.to_string().contains("defined more than once"), "{v}");
+    let (_, v) = env.json(&["triggers", "ls"]);
+    assert!(v.to_string().contains("more than one attached hub"), "{v}");
+}
+
+#[test]
+fn hub_config_layers_between_global_and_project() {
+    let env = env_with_project();
+    assert_eq!(env.json(&["hub", "create", "release"]).0, 0);
+    assert_eq!(env.json(&["hub", "attach", "release"]).0, 0);
+    let cfg = env.home().join("hubs/release/config.yaml");
+    fs::write(&cfg, "nodes: {}\n").unwrap();
+    let (code, v) = env.json(&["validate"]);
+    assert_ne!(code, 0, "nodes are the user's: {v}");
+    assert!(v.to_string().contains("goes in the global config"), "{v}");
+    fs::write(&cfg, "bus:\n  forward:\n    - bad: 1\n").unwrap();
+    let (_, v) = env.json(&["validate"]);
+    assert!(
+        v["bus"]["errors"]
+            .to_string()
+            .contains("hubs/release/config.yaml"),
+        "hub forwarding rules are read: {v}"
+    );
+}

@@ -13,6 +13,7 @@ mod harness;
 mod harnesscmd;
 mod ids;
 mod inspect;
+mod layers;
 mod lifecycle;
 mod orchestrator;
 mod output;

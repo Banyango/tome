@@ -355,6 +355,7 @@ pub fn resolve_workflow_rpc(p: &Value) -> CliResult<Value> {
     let scope = match library.scope_of(&wf) {
         crate::workflow::Scope::Global => "global",
         crate::workflow::Scope::Project => "project",
+        crate::workflow::Scope::Hub => "hub",
     };
     Ok(json!({ "name": name, "path": wf, "scope": scope }))
 }

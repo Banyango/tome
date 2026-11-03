@@ -21,8 +21,10 @@ feature parses and validates them and implements the `tome workflow` and
 
 ## Notes
 
-- Workflows resolve in two scopes: project (`.tome/workflows`) and global
-  (`~/.tome/workflows`); `check_scope` enforces what each may declare.
+- Workflows resolve in three scopes: project (`.tome/workflows`), hub (each
+  attached hub's `workflows/`, from `crate::layers`) and global
+  (`~/.tome/workflows`), in that order of precedence; `check_scope` enforces what
+  each may declare (a hub workflow follows the project rules).
 - A run stores a **snapshot** of its workflow (`parse_snapshot`), so edits don't
   change running or resumed runs.
 - `workflow.rs` has no dependency on `output`: it returns its own errors

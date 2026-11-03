@@ -57,6 +57,24 @@ triggers:
   never gets hub events, and one with it never gets the project's.
 - Global workflows (`~/.tome/workflows/`) still can't subscribe.
 
+## Hub workflows and config
+
+Workflows in `~/.tome/hubs/<name>/workflows/` apply to every attached
+project, as if each project had a copy:
+
+- Names resolve project first, then the attached hubs, then global, so a
+  project's own workflow wins over a hub's of the same name.
+- Relative file globs resolve in each project, and a cron trigger fires once
+  per project.
+- An `on:` without `hub:` listens on each project's own bus.
+- When two attached hubs define the same name, `tome validate`, `tome
+  triggers ls` and `tome run` all report it as an error.
+
+`~/.tome/hubs/<name>/config.yaml` takes the same keys as a project's
+`.tome/config.yaml` (`bus.forward` included), layered between the global
+config and the project's: a later file wins per key. `nodes` and `herdr`
+stay in the global config.
+
 ## Hub and global queues
 
 `tome queue` takes `--hub`/`--global` too, with the same attachment check. A

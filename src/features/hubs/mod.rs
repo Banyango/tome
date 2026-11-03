@@ -26,7 +26,7 @@ pub const METHODS: &[&str] = &[
 ];
 
 pub fn dir(hub: &HubName) -> PathBuf {
-    paths::hubs_dir().join(hub.as_str())
+    crate::layers::hub_dir(hub)
 }
 
 pub fn exists(hub: &HubName) -> bool {
@@ -160,12 +160,14 @@ impl Engine {
             }
         }
         let changed = self.with_store(|store| {
-            if attach {
+            let changed = if attach {
                 store.register_project(project)?;
                 store.attach(project, &to)
             } else {
                 store.detach(project, &to)
-            }
+            }?;
+            store.mirror_attachments()?;
+            Ok(changed)
         })?;
         Ok(json!({
             "project": project,

@@ -186,6 +186,7 @@ pub fn user_claims(builtin_commands: &[String]) -> CliResult<Vec<Claim>> {
     });
     let library = Library {
         global_dir: paths::tome_home().join("workflows"),
+        hubs: Vec::new(),
         project_dir: None,
         plugin_dirs: Vec::new(),
     };
