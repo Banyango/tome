@@ -546,18 +546,28 @@ fn chat_pane() -> (String, String) {
         .strip_prefix("OK ")
         .unwrap_or_else(|| panic!("{stdout}"))
         .to_string();
-    let out = cmux(&["--id-format", "both", "tree", "--all", "--json"]);
-    let tree: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let ws = tree["windows"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .flat_map(|w| w["workspaces"].as_array().into_iter().flatten())
-        .find(|w| w["ref"] == reference.as_str())
-        .unwrap_or_else(|| panic!("no {reference}: {tree}"))["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    // A new workspace can take a moment to show in the tree (and the tree
+    // can come back partial while other tests change it): poll.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let ws = loop {
+        let out = cmux(&["--id-format", "both", "tree", "--all", "--json"]);
+        let tree: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+        let found = tree["windows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|w| w["workspaces"].as_array().into_iter().flatten())
+            .find(|w| w["ref"] == reference.as_str())
+            .and_then(|w| w["id"].as_str())
+            .map(str::to_string);
+        if let Some(id) = found {
+            break id;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("no {reference}: {tree}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
     let surface = panes_of(&ws)[0].1[0].0.clone();
     (ws, surface)
 }
