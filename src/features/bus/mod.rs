@@ -12,6 +12,7 @@ use crate::ids::run_sender;
 use crate::ids::RunId;
 use crate::output::{CliError, CliResult};
 use crate::params::{opt_str, req_id_at, req_str};
+use crate::scope::Shared;
 use crate::store::{BusEvent, Delivery, DeliveryState, NewEvent, Run, RunStatus, Subscriber};
 use crate::topic;
 use crate::triggers::{self, outcome, Event, FireRequest, Fired};
@@ -83,6 +84,9 @@ pub struct Publish<'a> {
     pub depth: i64,
     /// Deliver only to this workflow (a test event).
     pub only: Option<&'a str>,
+    /// A hub's or global's bus, else the project's own. `project` is then
+    /// the publisher, which must be attached.
+    pub bus: Option<&'a Shared>,
 }
 
 pub struct Published {
@@ -154,6 +158,12 @@ impl Engine {
                     .with_hint("run `tome publish` in a project (a directory with .tome/)"))
             }
         };
+        let bus = crate::features::hubs::bus_param(p)?;
+        if let Some(to) = &bus {
+            self.with_store(|store| {
+                crate::features::hubs::require_attached(store, Some(&project), to)
+            })?;
+        }
         let worker = opt_str(p, "worker").filter(|w| !w.is_empty());
         let (sender, depth) = match forwarded {
             Some(f) => (
@@ -178,6 +188,7 @@ impl Engine {
             sender_run: run.as_ref().map(|r| r.id),
             depth,
             only: None,
+            bus: bus.as_ref(),
         };
         let dry_run = p["dry_run"] == true;
         if !dry_run {
@@ -215,6 +226,7 @@ impl Engine {
         Ok(json!({
             "event": published.event,
             "project": project,
+            "bus": bus.as_ref().map(Shared::label),
             "topic": topic,
             "delivered_to": if dry_run { Vec::new() } else { names },
             "deliveries": published.deliveries,
@@ -226,16 +238,22 @@ impl Engine {
     /// Publish an event: record it with a pending delivery per matching
     /// subscription. A publish from a run shows in the run's stream.
     pub fn publish(&self, e: &Publish<'_>, dry_run: bool) -> CliResult<Published> {
-        let mut matches = matching(&subscriptions(e.project), e.topic);
+        // A hub's or global's bus has no subscribers yet.
+        let mut matches = match e.bus {
+            Some(_) => Vec::new(),
+            None => matching(&subscriptions(e.project), e.topic),
+        };
         if let Some(only) = e.only {
             matches.retain(|a| a.name == only);
         }
-        let project = e.project.display().to_string();
+        let publisher = e.project.display().to_string();
+        let project = e.bus.map_or_else(|| publisher.clone(), Shared::key);
         if e.depth > MAX_DEPTH {
-            return Err(self.refuse(e, &project, dry_run));
+            return Err(self.refuse(e, &project, &publisher, dry_run));
         }
-        // A test event is for one workflow: it isn't forwarded.
-        let forwards = if e.only.is_some() {
+        // A test event is for one workflow, and a shared bus isn't
+        // forwarded yet.
+        let forwards = if e.only.is_some() || e.bus.is_some() {
             Vec::new()
         } else {
             forward::subscribers(e)
@@ -261,6 +279,7 @@ impl Engine {
             let published = store.publish_event(
                 &NewEvent {
                     project_path: &project,
+                    publisher: Some(&publisher),
                     topic: e.topic,
                     payload: e.payload,
                     sender: &e.sender,
@@ -304,7 +323,7 @@ impl Engine {
 
     /// An event too deep in a chain: recorded as refused (unless it's a dry
     /// run) and notified, and not delivered.
-    fn refuse(&self, e: &Publish<'_>, project: &str, dry_run: bool) -> CliError {
+    fn refuse(&self, e: &Publish<'_>, project: &str, publisher: &str, dry_run: bool) -> CliError {
         let why = format!("depth {} is over the limit of {MAX_DEPTH}", e.depth);
         let err = CliError::invalid(format!("refused to publish {}: {why}", e.topic))
             .with_hint("each event a run publishes is one deeper than the event that started it; this chain probably loops");
@@ -315,6 +334,7 @@ impl Engine {
             store.publish_event(
                 &NewEvent {
                     project_path: project,
+                    publisher: Some(publisher),
                     topic: e.topic,
                     payload: e.payload,
                     sender: &e.sender,

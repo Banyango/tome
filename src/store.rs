@@ -272,6 +272,9 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (project_path, scope)
     );
     ",
+    // 18: the project that published an event; its `project_path` is the
+    // bus it's on (a project, or a `scope::Shared` key)
+    "ALTER TABLE bus_events ADD COLUMN publisher VARCHAR;",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -618,6 +621,11 @@ impl Store {
             )?;
             tx.commit()?;
             eprintln!("tome daemon: migrated database schema to version {version}");
+        }
+        // Checkpoint, so a crash never leaves a migration in the WAL: DuckDB
+        // can't replay an ALTER of a table whose id default is a sequence.
+        if current < MIGRATIONS.len() {
+            self.conn.execute_batch("CHECKPOINT")?;
         }
         Ok(())
     }

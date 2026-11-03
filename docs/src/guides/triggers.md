@@ -113,6 +113,7 @@ tome events ls                     # topics, and each subscriber's backlog
 tome events show <topic>           # events that aren't settled yet
 tome events retry <event>          # hand a failed delivery out again
 tome events remove <event>         # drop a pending or failed delivery
+# each takes --hub <name> or --global for a hub's or global's bus (see Hubs)
 ```
 
 A delivery is `pending`, `claimed`, `done`, `failed` or `dropped`. Resuming a failed run that a topic event started (`tome run resume <id>`) takes its parked delivery back instead of handing it to a fresh run. `tome gc` clears events once all their deliveries are settled.

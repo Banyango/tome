@@ -21,6 +21,26 @@ tome hub attach --global       # opt this project into the global bus and queues
 - Attachments are recorded in this machine's daemon, never in the repo, so a
   teammate without the hub is unaffected.
 
+## Hub and global buses
+
+An attached project can publish to and inspect a hub's bus, or global's:
+
+```sh
+tome publish --hub release build.done "api 1.4.0"
+tome publish --global deploy.started "..."
+tome events ls --hub release
+tome events show build.done --hub release   # SENDER shows the publishing project
+tome events retry <event> --hub release     # retry and remove take it too
+```
+
+- A project that isn't attached is refused, with a hint to `tome hub attach`.
+- `tome.` topics are reserved on every bus, and tome's own run events stay on
+  the project bus.
+- A chain's depth counts across buses: an event a run publishes to a hub is
+  one deeper than the event that started the run.
+- Hub and global events aren't delivered to workflows yet, and `--on` can't
+  publish to another node's hub yet.
+
 ## Inspect
 
 ```sh

@@ -23,6 +23,15 @@ each subscribing workflow (`on:` triggers).
 - A delivery becomes a run via the trigger path ([triggers.md](triggers.md)).
 - `bus::depth_from` tracks how deep an event chain is (an event published by a run
   that an earlier event started is one deeper).
+- Every event is on one bus: its `project_path` is the project's path, or a hub's or
+  global's `scope::Shared` key (`hub:<name>`, `global:`); `publisher` is the project
+  that published it. `--hub`/`--global` calls check the caller's project is attached
+  (`hubs::require_attached`). Lifecycle events stay on the project bus. Depth comes
+  from the publishing run, so it counts across buses.
+- Remote-ready: only the store turns a `Shared` into a key, and `scope::owner` always
+  answers `Local`. Moving hub and global state to another machine means making
+  `owner` return that node and sending the scope's `events.*` calls there, the way
+  `--on` does; queue claims would stay in the owning store, never forwarded.
 - `bus` calls into `engine` to start runs, and `engine` dispatches into `bus`:
   a known cycle.
 

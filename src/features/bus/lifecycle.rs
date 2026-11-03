@@ -110,6 +110,7 @@ impl Engine {
             sender_run: Some(run.id),
             depth: depth_from(run),
             only: None,
+            bus: None,
         };
         if let Err(e) = self.publish(&publish, false) {
             eprintln!(

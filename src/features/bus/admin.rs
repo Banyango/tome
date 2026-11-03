@@ -4,9 +4,11 @@
 use super::{matching, pattern_of, subscriptions, Publish, TEST};
 use crate::arming::Armed;
 use crate::engine::Engine;
+use crate::features::hubs;
 use crate::ids::{DeliveryId, EventId, RunId};
 use crate::output::{CliError, CliResult};
 use crate::params::{opt_str, req_num_at, req_str};
+use crate::scope::Shared;
 use crate::store::{BusEvent, Delivery, DeliveryState};
 use crate::triggers::{outcome, Event, FireRequest, Fired};
 use serde_json::{json, Value};
@@ -23,6 +25,19 @@ pub fn preview(payload: &str) -> String {
     }
 }
 
+/// The bus an `events.*` call is about: `project_path`'s own, or with
+/// `hub` / `global`, that shared bus, once the project is attached to it.
+fn bus_of(engine: &Engine, p: &Value) -> CliResult<(String, Option<Shared>)> {
+    let project = req_str(p, "project_path")?;
+    match hubs::bus_param(p)? {
+        None => Ok((project.to_string(), None)),
+        Some(to) => {
+            engine.with_store(|store| hubs::require_attached(store, Some(project), &to))?;
+            Ok((to.key(), Some(to)))
+        }
+    }
+}
+
 fn settled(d: &Delivery) -> bool {
     d.state == DeliveryState::Done || d.state == DeliveryState::Dropped
 }
@@ -31,8 +46,12 @@ impl Engine {
     /// `events.ls {project_path}`: each topic with its event count, last
     /// publish and each subscriber's pending, claimed and failed counts.
     pub(crate) fn events_ls(&self, p: &Value) -> CliResult<Value> {
-        let project = req_str(p, "project_path")?;
-        let subs = subscriptions(Path::new(project));
+        let (bus, shared) = bus_of(self, p)?;
+        let project = bus.as_str();
+        let subs = match shared {
+            Some(_) => Vec::new(),
+            None => subscriptions(Path::new(project)),
+        };
         let (topics, deliveries, events) = self.with_store(|store| {
             let topics = store.bus_topics(project)?;
             let mut events = Vec::new();
@@ -65,13 +84,16 @@ impl Engine {
                 json!({ "topic": topic, "events": count, "last_published": last, "subscribers": subscribers })
             })
             .collect();
-        Ok(json!({ "project": project, "topics": topics }))
+        Ok(
+            json!({ "project": project, "bus": shared.as_ref().map(Shared::label), "topics": topics }),
+        )
     }
 
     /// `events.show {project_path, topic, all?}`: the topic's events, oldest
     /// first, with each delivery; settled ones only with `all`.
     pub(crate) fn events_show(&self, p: &Value) -> CliResult<Value> {
-        let project = req_str(p, "project_path")?;
+        let (bus, shared) = bus_of(self, p)?;
+        let project = bus.as_str();
         let topic = req_str(p, "topic")?;
         let all = p["all"] == true;
         let events = self.with_store(|store| {
@@ -92,6 +114,7 @@ impl Engine {
                 json!({
                     "id": e.id,
                     "sender": e.sender,
+                    "publisher": e.publisher,
                     "published_at": e.published_at,
                     "depth": e.depth,
                     "refused": e.refused,
@@ -103,7 +126,7 @@ impl Engine {
             .collect();
         let hidden = total - shown.len();
         Ok(
-            json!({ "project": project, "topic": topic, "all": all, "events": shown, "hidden": hidden }),
+            json!({ "project": project, "bus": shared.as_ref().map(Shared::label), "topic": topic, "all": all, "events": shown, "hidden": hidden }),
         )
     }
 
@@ -120,7 +143,11 @@ impl Engine {
     ) -> CliResult<Value> {
         let id = EventId::new(req_num_at(p, "event")?);
         let workflow = opt_str(p, "workflow");
-        let project = opt_str(p, "project_path");
+        let bus = match p.get("project_path").filter(|v| !v.is_null()) {
+            Some(_) => Some(bus_of(self, p)?.0),
+            None => None,
+        };
+        let project = bus.as_deref();
         let verb = if to == DeliveryState::Pending {
             "retried"
         } else {
@@ -282,6 +309,7 @@ impl Engine {
                     let event = BusEvent {
                         id: EventId::new(0),
                         project_path: project.display().to_string(),
+                        publisher: Some(project.display().to_string()),
                         topic,
                         payload: payload.to_string(),
                         sender: TEST.into(),
@@ -301,6 +329,7 @@ impl Engine {
                         sender_run: None,
                         depth: 0,
                         only: Some(&a.name),
+                        bus: None,
                     },
                     false,
                 )?;

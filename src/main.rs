@@ -47,7 +47,7 @@ mod worktree;
 
 use clap::{Parser, Subcommand};
 use features::nodes::{self as node, cmd as nodecmd, provider_cmd as providercmd};
-use output::{emit, CliResult, Mode, Report};
+use output::{emit, CliError, CliResult, Mode, Report};
 use std::ffi::OsString;
 
 /// Tome: agentic workflow management.
@@ -182,6 +182,8 @@ enum Command {
         /// Show which workflows would get it, without publishing.
         #[arg(long)]
         dry_run: bool,
+        #[command(flatten)]
+        bus: BusArgs,
     },
     /// Show a notification on this machine, through the daemon (for plugins and scripts).
     ///
@@ -781,16 +783,38 @@ enum HubCommand {
     },
 }
 
+impl BusArgs {
+    fn cmd(&self) -> CliResult<Option<scope::Shared>> {
+        scope::Shared::from_flags(self.hub.as_deref(), self.global).map_err(CliError::invalid)
+    }
+}
+
+/// Which bus: the project's own, a hub's, or global's.
+#[derive(clap::Args, Clone, Default)]
+struct BusArgs {
+    /// Use this hub's bus (the project must be attached to it).
+    #[arg(long, conflicts_with = "global")]
+    hub: Option<String>,
+    /// Use the global bus (the project must be attached to global).
+    #[arg(long)]
+    global: bool,
+}
+
 #[derive(Subcommand)]
 enum EventsCommand {
-    /// List the project's topics, with each subscriber's backlog.
-    Ls,
+    /// List the bus's topics, with each subscriber's backlog.
+    Ls {
+        #[command(flatten)]
+        bus: BusArgs,
+    },
     /// List a topic's events that aren't settled yet.
     Show {
         topic: String,
         /// Include events every workflow is done with.
         #[arg(long)]
         all: bool,
+        #[command(flatten)]
+        bus: BusArgs,
     },
     /// Hand a failed delivery of an event out again.
     Retry {
@@ -799,6 +823,8 @@ enum EventsCommand {
         /// Which workflow's delivery, if it went to several.
         #[arg(long)]
         workflow: Option<String>,
+        #[command(flatten)]
+        bus: BusArgs,
     },
     /// Drop a pending or failed delivery of an event.
     Remove {
@@ -807,6 +833,8 @@ enum EventsCommand {
         /// Which workflow's delivery, if it went to several.
         #[arg(long)]
         workflow: Option<String>,
+        #[command(flatten)]
+        bus: BusArgs,
     },
 }
 
@@ -1358,7 +1386,8 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
             topic,
             text,
             dry_run,
-        } => features::bus::cmd::publish(&current_dir()?, &topic, text, dry_run),
+            bus,
+        } => features::bus::cmd::publish(&current_dir()?, &topic, text, dry_run, &bus.cmd()?),
         Command::Notify { title, message } => features::plugins::cmd::notify(&title, &message),
         Command::Hub { command } => match command {
             HubCommand::Create { name } => features::hubs::cmd::create(&name),
@@ -1375,15 +1404,23 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
             }
         },
         Command::Events { command } => match command {
-            EventsCommand::Ls => features::bus::cmd::ls(&current_dir()?),
-            EventsCommand::Show { topic, all } => {
-                features::bus::cmd::show(&current_dir()?, &topic, all)
+            EventsCommand::Ls { bus } => features::bus::cmd::ls(&current_dir()?, &bus.cmd()?),
+            EventsCommand::Show { topic, all, bus } => {
+                features::bus::cmd::show(&current_dir()?, &topic, all, &bus.cmd()?)
             }
-            EventsCommand::Retry { event, workflow } => {
-                features::bus::cmd::retry(&current_dir()?, event, workflow.as_deref())
+            EventsCommand::Retry {
+                event,
+                workflow,
+                bus,
+            } => {
+                features::bus::cmd::retry(&current_dir()?, event, workflow.as_deref(), &bus.cmd()?)
             }
-            EventsCommand::Remove { event, workflow } => {
-                features::bus::cmd::remove(&current_dir()?, event, workflow.as_deref())
+            EventsCommand::Remove {
+                event,
+                workflow,
+                bus,
+            } => {
+                features::bus::cmd::remove(&current_dir()?, event, workflow.as_deref(), &bus.cmd()?)
             }
         },
         Command::Layout {

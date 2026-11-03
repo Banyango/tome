@@ -538,6 +538,7 @@ mod tests {
         let mut e = BusEvent {
             id: EventId::new(1),
             project_path: "/p".into(),
+            publisher: Some("/p".into()),
             topic: "tome.run.build.succeeded".into(),
             payload: r#"{"run_id":3}"#.into(),
             sender: TOME.into(),

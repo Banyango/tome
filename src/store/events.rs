@@ -50,7 +50,10 @@ impl DeliveryState {
 #[derive(Debug, Clone, Serialize)]
 pub struct BusEvent {
     pub id: EventId,
+    /// The bus it's on: a project, or a hub's or global's key.
     pub project_path: String,
+    /// The project that published it (none for events from before hubs).
+    pub publisher: Option<String>,
     pub topic: String,
     pub payload: String,
     /// `user`, `run N`, `run N worker W`, `tome` or `test`.
@@ -64,6 +67,7 @@ pub struct BusEvent {
 
 pub struct NewEvent<'a> {
     pub project_path: &'a str,
+    pub publisher: Option<&'a str>,
     pub topic: &'a str,
     pub payload: &'a str,
     pub sender: &'a str,
@@ -96,7 +100,7 @@ pub struct Delivery {
 }
 
 const EVENT_COLUMNS: &str =
-    "id, project_path, topic, payload, sender, sender_run_id, depth, refused, published_at";
+    "id, project_path, topic, payload, sender, sender_run_id, depth, refused, published_at, publisher";
 const DELIVERY_COLUMNS: &str =
     "id, event_id, project_path, workflow_name, workflow_path, pattern, state, run_ids, updated_at";
 
@@ -111,6 +115,7 @@ fn event_from_row(r: &Row<'_>) -> duckdb::Result<BusEvent> {
         depth: r.get(6)?,
         refused: r.get(7)?,
         published_at: fmt_ts(r.get(8)?),
+        publisher: r.get(9)?,
     })
 }
 
@@ -158,9 +163,9 @@ impl Store {
         let at = now();
         let id: EventId = tx
             .query_row(
-                "INSERT INTO bus_events (project_path, topic, payload, sender, sender_run_id, depth, refused, published_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-                params![e.project_path, e.topic, e.payload, e.sender, e.sender_run_id, e.depth, e.refused, at],
+                "INSERT INTO bus_events (project_path, topic, payload, sender, sender_run_id, depth, refused, published_at, publisher)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                params![e.project_path, e.topic, e.payload, e.sender, e.sender_run_id, e.depth, e.refused, at, e.publisher],
                 |r| r.get(0),
             )
             .map_err(internal)?;
@@ -404,6 +409,7 @@ mod tests {
     fn event<'a>(topic: &'a str, payload: &'a str) -> NewEvent<'a> {
         NewEvent {
             project_path: "/p",
+            publisher: Some("/p"),
             topic,
             payload,
             sender: "user",

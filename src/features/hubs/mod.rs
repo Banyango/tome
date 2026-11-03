@@ -58,10 +58,13 @@ pub fn create_dir(hub: &HubName) -> std::io::Result<bool> {
 
 /// A hub or global from RPC params: `hub` or `global: true`.
 pub fn shared_param(p: &Value) -> CliResult<Shared> {
+    bus_param(p)?.ok_or_else(|| CliError::invalid("name a hub, or say global"))
+}
+
+/// The same, optional: `None` is the project's own bus or queues.
+pub fn bus_param(p: &Value) -> CliResult<Option<Shared>> {
     let global = opt_flag(p, "global", false)?;
-    Shared::from_flags(opt_str(p, "hub"), global)
-        .map_err(CliError::invalid)?
-        .ok_or_else(|| CliError::invalid("name a hub, or say global"))
+    Shared::from_flags(opt_str(p, "hub"), global).map_err(CliError::invalid)
 }
 
 fn hub_param(p: &Value) -> CliResult<HubName> {

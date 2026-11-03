@@ -4,6 +4,7 @@
 use crate::features::nodes as node;
 use crate::ids::RunId;
 use crate::output::{table, CliError, CliResult, Report};
+use crate::scope::Shared;
 use crate::triggerscmd::project_of;
 use crate::{paths, rpc};
 use serde_json::{json, Value};
@@ -14,13 +15,35 @@ fn call(method: &str, params: Value) -> CliResult<Value> {
     rpc::call(&paths::socket_path(), method, params)
 }
 
+/// Add a shared bus's `hub` / `global` params.
+fn on_bus(mut params: Value, bus: &Option<Shared>) -> Value {
+    match bus {
+        Some(Shared::Hub(h)) => params["hub"] = json!(h.as_str()),
+        Some(Shared::Global) => params["global"] = json!(true),
+        None => {}
+    }
+    params
+}
+
+/// ` on hub release`, ` on global`, or nothing for the project's bus.
+fn bus_suffix(bus: &Option<Shared>) -> String {
+    bus.as_ref()
+        .map_or_else(String::new, |b| format!(" on {}", b.label()))
+}
+
 fn env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
 /// `tome publish <topic> <text|-> [--dry-run]`: inside a run
 /// (`TOME_RUN_ID`) it goes to the run's project, else to the current one.
-pub fn publish(cwd: &Path, topic: &str, text: String, dry_run: bool) -> CliResult<Report> {
+pub fn publish(
+    cwd: &Path,
+    topic: &str,
+    text: String,
+    dry_run: bool,
+    bus: &Option<Shared>,
+) -> CliResult<Report> {
     let payload = if text == "-" {
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
@@ -30,6 +53,11 @@ pub fn publish(cwd: &Path, topic: &str, text: String, dry_run: bool) -> CliResul
     };
     let run = env("TOME_RUN_ID");
     if let Some(node) = node::target() {
+        if bus.is_some() {
+            return Err(CliError::invalid(
+                "publishing to a hub or global on another node isn't supported yet",
+            ));
+        }
         let out = publish_to(node, cwd, topic, &payload, run.as_deref(), dry_run)?;
         return Ok(Report::new(out.clone(), publish_human(&out)));
     }
@@ -40,14 +68,17 @@ pub fn publish(cwd: &Path, topic: &str, text: String, dry_run: bool) -> CliResul
     }
     let out = call(
         "events.publish",
-        json!({
-            "topic": topic,
-            "payload": payload,
-            "project_path": project,
-            "run_id": run,
-            "worker": env("TOME_WORKER_ID"),
-            "dry_run": dry_run,
-        }),
+        on_bus(
+            json!({
+                "topic": topic,
+                "payload": payload,
+                "project_path": project,
+                "run_id": run,
+                "worker": env("TOME_WORKER_ID"),
+                "dry_run": dry_run,
+            }),
+            bus,
+        ),
     )?;
     Ok(Report::new(out.clone(), publish_human(&out)))
 }
@@ -134,8 +165,12 @@ fn publish_human(out: &Value) -> String {
     } else {
         names.join(", ")
     };
+    let bus = out["bus"]
+        .as_str()
+        .map(|b| format!(" ({b})"))
+        .unwrap_or_default();
     format!(
-        "event {} on {}{}: delivered to {to}",
+        "event {} on {}{bus}{}: delivered to {to}",
         out["event"]["id"],
         text(&out["topic"]),
         node::on_suffix()
@@ -169,15 +204,13 @@ fn age(v: &Value) -> String {
 }
 
 /// `tome events ls`
-pub fn ls(cwd: &Path) -> CliResult<Report> {
+pub fn ls(cwd: &Path, bus: &Option<Shared>) -> CliResult<Report> {
     let project = project(cwd)?;
-    let out = call("events.ls", json!({ "project_path": project }))?;
+    let out = call("events.ls", on_bus(json!({ "project_path": project }), bus))?;
     let topics = out["topics"].as_array().cloned().unwrap_or_default();
     if topics.is_empty() {
-        return Ok(Report::new(
-            out,
-            format!("no events published in {project}"),
-        ));
+        let place = bus.as_ref().map_or(project, Shared::label);
+        return Ok(Report::new(out, format!("no events published in {place}")));
     }
     let rows = topics
         .iter()
@@ -212,15 +245,19 @@ pub fn ls(cwd: &Path) -> CliResult<Report> {
 }
 
 /// `tome events show <topic> [--all]`
-pub fn show(cwd: &Path, topic: &str, all: bool) -> CliResult<Report> {
+pub fn show(cwd: &Path, topic: &str, all: bool, bus: &Option<Shared>) -> CliResult<Report> {
     let project = project(cwd)?;
     let out = call(
         "events.show",
-        json!({ "project_path": project, "topic": topic, "all": all }),
+        on_bus(
+            json!({ "project_path": project, "topic": topic, "all": all }),
+            bus,
+        ),
     )?;
     let events = out["events"].as_array().cloned().unwrap_or_default();
+    let shared = bus.is_some();
     let mut human = if events.is_empty() {
-        format!("no unsettled events on {topic}")
+        format!("no unsettled events on {topic}{}", bus_suffix(bus))
     } else {
         let rows = events
             .iter()
@@ -249,9 +286,14 @@ pub fn show(cwd: &Path, topic: &str, all: bool) -> CliResult<Report> {
                     (true, None) => "no subscribers".into(),
                     (false, None) => deliveries.join("; "),
                 };
+                let sender = if shared {
+                    format!("{} ({})", text(&e["sender"]), text(&e["publisher"]))
+                } else {
+                    text(&e["sender"])
+                };
                 vec![
                     text(&e["id"]),
-                    text(&e["sender"]),
+                    sender,
                     age(&e["published_at"]),
                     text(&e["preview"]),
                     deliveries,
@@ -276,11 +318,15 @@ fn move_delivery(
     event: i64,
     workflow: Option<&str>,
     verb: &str,
+    bus: &Option<Shared>,
 ) -> CliResult<Report> {
     let project = project(cwd)?;
     let out = call(
         method,
-        json!({ "project_path": project, "event": event, "workflow": workflow }),
+        on_bus(
+            json!({ "project_path": project, "event": event, "workflow": workflow }),
+            bus,
+        ),
     )?;
     let human = if out["deleted"] == true {
         format!("removed event {event}: it had no deliveries")
@@ -295,13 +341,23 @@ fn move_delivery(
 }
 
 /// `tome events retry <event> [--workflow <wf>]`
-pub fn retry(cwd: &Path, event: i64, workflow: Option<&str>) -> CliResult<Report> {
-    move_delivery(cwd, "events.retry", event, workflow, "requeued")
+pub fn retry(
+    cwd: &Path,
+    event: i64,
+    workflow: Option<&str>,
+    bus: &Option<Shared>,
+) -> CliResult<Report> {
+    move_delivery(cwd, "events.retry", event, workflow, "requeued", bus)
 }
 
 /// `tome events remove <event> [--workflow <wf>]`
-pub fn remove(cwd: &Path, event: i64, workflow: Option<&str>) -> CliResult<Report> {
-    move_delivery(cwd, "events.remove", event, workflow, "dropped")
+pub fn remove(
+    cwd: &Path,
+    event: i64,
+    workflow: Option<&str>,
+    bus: &Option<Shared>,
+) -> CliResult<Report> {
+    move_delivery(cwd, "events.remove", event, workflow, "dropped", bus)
 }
 
 pub fn text(v: &Value) -> String {
