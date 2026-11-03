@@ -167,22 +167,34 @@ impl Engine {
             Some(_) => Some(self.with_store(|store| store.require_run(req_id_at(p, "run_id")?))?),
             None => None,
         };
+        let bus = crate::features::hubs::bus_param(p)?;
+        // Another machine's event for a hub or global (`bus.forward`, or
+        // `publish --on --hub`) has no project here: it goes straight on
+        // the bus, the hub made if it's new.
+        let from_afar = forwarded.is_some() && bus.is_some() && run.is_none();
         let project = match (&run, opt_str(p, "project_path")) {
             (Some(run), _) => run.project_path.clone().ok_or_else(|| {
                 CliError::invalid(format!("run {} has no project to publish to", run.id))
                     .with_hint("the bus belongs to a project: run the workflow inside one")
             })?,
             (None, Some(path)) => path.to_string(),
+            (None, None) if from_afar => String::new(),
             (None, None) => {
                 return Err(CliError::invalid("not inside a project")
                     .with_hint("run `tome publish` in a project (a directory with .tome/)"))
             }
         };
-        let bus = crate::features::hubs::bus_param(p)?;
-        if let Some(to) = &bus {
-            self.with_store(|store| {
+        match &bus {
+            Some(Shared::Hub(h)) if from_afar && project.is_empty() => {
+                if crate::features::hubs::create_dir(h)? {
+                    eprintln!("tome daemon: created hub {h} for a forwarded event");
+                }
+            }
+            Some(Shared::Global) if from_afar && project.is_empty() => {}
+            Some(to) => self.with_store(|store| {
                 crate::features::hubs::require_attached(store, Some(&project), to)
-            })?;
+            })?,
+            None => {}
         }
         let worker = opt_str(p, "worker").filter(|w| !w.is_empty());
         let (sender, depth) = match forwarded {
@@ -211,7 +223,7 @@ impl Engine {
             bus: bus.as_ref(),
         };
         let dry_run = p["dry_run"] == true;
-        if !dry_run {
+        if !dry_run && !project.is_empty() {
             self.with_store(|store| store.register_project(&project).map(|_| ()))?;
         }
         let published = self.publish(&publish, dry_run)?;
@@ -270,14 +282,17 @@ impl Engine {
         if let Some(only) = e.only {
             matches.retain(|a| a.name == only && a.project.as_deref() == Some(e.project));
         }
-        let publisher = e.project.display().to_string();
-        let project = e.bus.map_or_else(|| publisher.clone(), Shared::key);
+        // No publisher project for another machine's hub or global event.
+        let publisher =
+            (!e.project.as_os_str().is_empty()).then(|| e.project.display().to_string());
+        let project = e
+            .bus
+            .map_or_else(|| publisher.clone().unwrap_or_default(), Shared::key);
         if e.depth > MAX_DEPTH {
-            return Err(self.refuse(e, &project, &publisher, dry_run));
+            return Err(self.refuse(e, &project, publisher.as_deref(), dry_run));
         }
-        // A test event is for one workflow, and a shared bus isn't
-        // forwarded yet.
-        let forwards = if e.only.is_some() || e.bus.is_some() {
+        // A test event is for one workflow.
+        let forwards = if e.only.is_some() {
             Vec::new()
         } else {
             forward::subscribers(e)
@@ -304,7 +319,7 @@ impl Engine {
             let published = store.publish_event(
                 &NewEvent {
                     project_path: &project,
-                    publisher: Some(&publisher),
+                    publisher: publisher.as_deref(),
                     topic: e.topic,
                     payload: e.payload,
                     sender: &e.sender,
@@ -348,7 +363,13 @@ impl Engine {
 
     /// An event too deep in a chain: recorded as refused (unless it's a dry
     /// run) and notified, and not delivered.
-    fn refuse(&self, e: &Publish<'_>, project: &str, publisher: &str, dry_run: bool) -> CliError {
+    fn refuse(
+        &self,
+        e: &Publish<'_>,
+        project: &str,
+        publisher: Option<&str>,
+        dry_run: bool,
+    ) -> CliError {
         let why = format!("depth {} is over the limit of {MAX_DEPTH}", e.depth);
         let err = CliError::invalid(format!("refused to publish {}: {why}", e.topic))
             .with_hint("each event a run publishes is one deeper than the event that started it; this chain probably loops");
@@ -359,7 +380,7 @@ impl Engine {
             store.publish_event(
                 &NewEvent {
                     project_path: project,
-                    publisher: Some(publisher),
+                    publisher,
                     topic: e.topic,
                     payload: e.payload,
                     sender: &e.sender,

@@ -27,7 +27,16 @@ pub fn preview(payload: &str) -> String {
 
 /// The bus an `events.*` call is about: `project_path`'s own, or with
 /// `hub` / `global`, that shared bus, once the project is attached to it.
+/// From another machine (`from_node`, `--on`) a shared bus needs no project.
 fn bus_of(engine: &Engine, p: &Value) -> CliResult<(String, Option<Shared>)> {
+    if p["from_node"].is_string() && p.get("project_path").is_none() {
+        if let Some(to) = hubs::bus_param(p)? {
+            if let Some(h) = to.hub().filter(|h| !hubs::exists(h)) {
+                return Err(hubs::missing(h));
+            }
+            return Ok((to.key(), Some(to)));
+        }
+    }
     let project = req_str(p, "project_path")?;
     match hubs::bus_param(p)? {
         None => Ok((project.to_string(), None)),

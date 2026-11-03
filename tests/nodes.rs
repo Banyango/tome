@@ -320,3 +320,58 @@ fn events_are_forwarded_to_nodes_and_wait_for_unreachable_ones() {
     assert_eq!(code, 0, "{v}");
     assert_eq!(state("→ down"), "dropped");
 }
+
+#[test]
+fn hub_and_global_events_forward_to_the_nodes_own_buses() {
+    let n = Nodes::new();
+    n.mini.start_daemon();
+    let out = n
+        .here
+        .cmd(&["daemon", "start"])
+        .env("TOME_TRIGGER_TICK_MS", "100")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(n.here.json(&["hub", "create", "release"]).0, 0);
+    assert_eq!(n.here.json(&["hub", "attach", "release"]).0, 0);
+    fs::write(
+        n.here.home().join("hubs/release/config.yaml"),
+        "bus:\n  forward:\n    - topic: build.*\n      to: mini\n",
+    )
+    .unwrap();
+
+    let (code, v) = n
+        .here
+        .json(&["publish", "build.done", "shared", "--hub", "release"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["delivered_to"], serde_json::json!(["→ mini"]), "{v}");
+
+    // mini makes the hub on first use; `--on` reads its hub from here.
+    let shown = || {
+        n.here.json(&[
+            "events",
+            "show",
+            "build.done",
+            "--hub",
+            "release",
+            "--all",
+            "--on",
+            "mini",
+        ])
+    };
+    eventually("the hub event reaches mini", || shown().0 == 0);
+    assert!(n.mini.home().join("hubs/release").is_dir());
+    let (_, v) = shown();
+    let e = &v["events"][0];
+    assert_eq!(e["preview"], "shared", "{v}");
+    assert!(e["sender"].as_str().unwrap().starts_with("node "), "{e}");
+
+    // `publish --on --global` goes on mini's global bus.
+    let (code, v) = n
+        .here
+        .json(&["publish", "ping", "hi", "--global", "--on", "mini"]);
+    assert_eq!(code, 0, "{v}");
+    let (code, v) = n.here.json(&["events", "ls", "--global", "--on", "mini"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["topics"][0]["topic"], "ping", "{v}");
+}

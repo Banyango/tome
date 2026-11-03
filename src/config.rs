@@ -131,6 +131,18 @@ impl Config {
         Ok(Config { files })
     }
 
+    /// Only a shared bus's own file: the hub's config, or the global one.
+    /// Its `bus.forward` rules are that bus's.
+    pub fn load_shared(of: &crate::scope::Shared) -> CliResult<Config> {
+        let (scope, path) = match of.hub() {
+            Some(h) => (Scope::Hub, layers::hub_dir(h).join("config.yaml")),
+            None => (Scope::Global, global_path()),
+        };
+        Ok(Config {
+            files: read(scope, path)?.into_iter().collect(),
+        })
+    }
+
     pub fn files(&self) -> &[File] {
         &self.files
     }

@@ -10,7 +10,11 @@ each subscribing workflow (`on:` triggers).
 - `src/features/bus/lifecycle.rs`: tome's own events: `tome.run.<workflow>.started|
   succeeded|failed|cancelled`.
 - `src/features/bus/forward.rs`: `bus.forward` rules in `.tome/config.yaml`: re-publish
-  matching events on another node.
+  matching events on another node. A hub's or global's bus uses `shared_rules`
+  (`Config::load_shared`: its own file only) and is sent with `hub`/`global` and
+  no project; the node's `events.publish` accepts that for a `forwarded` event and
+  creates the hub. `events.*` with `from_node` and no project (`--on --hub`) read
+  the node's shared bus without an attachment.
 - `src/features/bus/admin.rs`: inspect/repair (`tome events ls|show|retry|rm`) and manual
   topic trigger fires.
 - `src/features/bus/cmd.rs`: CLI client: `tome publish`, `tome events ...`.

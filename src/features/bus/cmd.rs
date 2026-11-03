@@ -15,14 +15,31 @@ fn call(method: &str, params: Value) -> CliResult<Value> {
     rpc::call(&paths::socket_path(), method, params)
 }
 
-/// Add a shared bus's `hub` / `global` params.
+/// Add a shared bus's `hub` / `global` params. On another node a shared
+/// bus is the node's own: no project, marked as from this machine.
 fn on_bus(mut params: Value, bus: &Option<Shared>) -> Value {
     match bus {
         Some(Shared::Hub(h)) => params["hub"] = json!(h.as_str()),
         Some(Shared::Global) => params["global"] = json!(true),
-        None => {}
+        None => return params,
+    }
+    if node::target().is_some() {
+        if let Some(m) = params.as_object_mut() {
+            m.remove("project_path");
+        }
+        if !params["forwarded"].is_object() {
+            params["from_node"] = json!(node::host_name());
+        }
     }
     params
+}
+
+/// The project an `events` command is about; none for a node's shared bus.
+fn project_for(cwd: &Path, bus: &Option<Shared>) -> CliResult<String> {
+    if bus.is_some() && node::target().is_some() {
+        return Ok(String::new());
+    }
+    project(cwd)
 }
 
 /// ` on hub release`, ` on global`, or nothing for the project's bus.
@@ -53,12 +70,7 @@ pub fn publish(
     };
     let run = env("TOME_RUN_ID");
     if let Some(node) = node::target() {
-        if bus.is_some() {
-            return Err(CliError::invalid(
-                "publishing to a hub or global on another node isn't supported yet",
-            ));
-        }
-        let out = publish_to(node, cwd, topic, &payload, run.as_deref(), dry_run)?;
+        let out = publish_to(node, cwd, topic, &payload, run.as_deref(), dry_run, bus)?;
         return Ok(Report::new(out.clone(), publish_human(&out)));
     }
     let project = project_of(cwd);
@@ -84,8 +96,9 @@ pub fn publish(
 }
 
 /// `tome publish --on <node>`: to the node's copy of this project (inside
-/// a run, the run's project), sent as forwarded from this machine so the
-/// node's subscribers see who published it and the chain keeps its depth.
+/// a run, the run's project), or with `--hub`/`--global` to the node's hub
+/// or global bus, sent as forwarded from this machine so the node's
+/// subscribers see who published it and the chain keeps its depth.
 fn publish_to(
     node: &node::Node,
     cwd: &Path,
@@ -93,6 +106,7 @@ fn publish_to(
     payload: &str,
     run: Option<&str>,
     dry_run: bool,
+    bus: &Option<Shared>,
 ) -> CliResult<Value> {
     let (local, sender, depth) = match run {
         Some(id) => {
@@ -114,22 +128,23 @@ fn publish_to(
         }
         None => (project_of(cwd), "user".to_string(), 0),
     };
-    let local = local.ok_or_else(|| {
-        CliError::invalid("not inside a project")
-            .with_hint("run `tome publish` in a project (a directory with .tome/)")
-    })?;
-    let project = node::map_project(&local)?;
+    let mut params = json!({
+        "topic": topic,
+        "payload": payload,
+        "dry_run": dry_run,
+        "forwarded": { "origin": node::host_name(), "sender": sender, "depth": depth },
+    });
+    if bus.is_some() {
+        params = on_bus(params, bus);
+    } else {
+        let local = local.ok_or_else(|| {
+            CliError::invalid("not inside a project")
+                .with_hint("run `tome publish` in a project (a directory with .tome/)")
+        })?;
+        params["project_path"] = json!(node::map_project(&local)?);
+    }
     let mut client = rpc::Client::to_node(node)?;
-    let mut out = client.call(
-        "events.publish",
-        json!({
-            "topic": topic,
-            "payload": payload,
-            "project_path": project,
-            "dry_run": dry_run,
-            "forwarded": { "origin": node::host_name(), "sender": sender, "depth": depth },
-        }),
-    )?;
+    let mut out = client.call("events.publish", params)?;
     out["node"] = json!(node.name);
     Ok(out)
 }
@@ -205,7 +220,7 @@ fn age(v: &Value) -> String {
 
 /// `tome events ls`
 pub fn ls(cwd: &Path, bus: &Option<Shared>) -> CliResult<Report> {
-    let project = project(cwd)?;
+    let project = project_for(cwd, bus)?;
     let out = call("events.ls", on_bus(json!({ "project_path": project }), bus))?;
     let topics = out["topics"].as_array().cloned().unwrap_or_default();
     if topics.is_empty() {
@@ -246,7 +261,7 @@ pub fn ls(cwd: &Path, bus: &Option<Shared>) -> CliResult<Report> {
 
 /// `tome events show <topic> [--all]`
 pub fn show(cwd: &Path, topic: &str, all: bool, bus: &Option<Shared>) -> CliResult<Report> {
-    let project = project(cwd)?;
+    let project = project_for(cwd, bus)?;
     let out = call(
         "events.show",
         on_bus(
@@ -320,7 +335,7 @@ fn move_delivery(
     verb: &str,
     bus: &Option<Shared>,
 ) -> CliResult<Report> {
-    let project = project(cwd)?;
+    let project = project_for(cwd, bus)?;
     let out = call(
         method,
         on_bus(

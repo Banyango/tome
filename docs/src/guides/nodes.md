@@ -104,7 +104,7 @@ bus:
       to: [mini, ci]
 ```
 
-Each matching event gets a delivery to each node, listed in `tome events show` as `→ mini`. The daemon sends it by publishing the event to the same topic on the node's copy of the project. The node's `on:` triggers then handle it.
+Each matching event gets a delivery to each node, listed in `tome events show` as `→ mini`. The daemon sends it by publishing the event to the same topic on the node's copy of the project. The node's `on:` triggers then handle it. A hub's rules (in its `config.yaml`) and the global config's also forward that hub's or global's own events: they go on the node's hub of the same name (created on first use) or its global bus. See [Hubs](hubs.md#across-nodes).
 
 - **Waiting for the node.** If the node can't be reached, the delivery stays `pending` and is retried with backoff (at most a minute apart) for 24 hours. After that it becomes `failed` and you get a notification. `tome events retry` and `tome events remove` work on these deliveries too: `--workflow mini` names the forward to mini.
 - **Unknown nodes.** If a rule names a node that isn't in this machine's config, the delivery fails straight away and you get a notification. `tome validate` warns about such rules.

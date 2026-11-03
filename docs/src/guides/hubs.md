@@ -38,7 +38,18 @@ tome events retry <event> --hub release     # retry and remove take it too
   the project bus.
 - A chain's depth counts across buses: an event a run publishes to a hub is
   one deeper than the event that started the run.
-- `--on` can't publish to another node's hub yet.
+- With `--on <node>`, `--hub`/`--global` mean that node's hub or global bus
+  (`tome publish build.done hi --hub release --on mini`, `tome events ls
+  --global --on mini`). No project needs to be attached there.
+
+### Across nodes
+
+A `bus.forward` rule in a hub's `config.yaml` forwards that hub's events to
+nodes; one in the global config forwards global's. The node publishes them on
+its hub of the same name, creating it if it's new, or on its global bus, so
+workflows there that subscribe with `hub:` or `global: true` handle them.
+These rules also forward the events of the projects attached to the hub, as
+config layers do. Only events are forwarded, never queues.
 
 A workflow subscribes to a hub's bus with `hub:` (or global's with
 `global: true`) on its `on:` trigger:

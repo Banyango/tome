@@ -1,7 +1,10 @@
 //! Forwarding events to other machines: a project's `bus.forward` rules
 //! (`.tome/config.yaml`) give each matching event a delivery to a node,
 //! which the daemon sends by publishing the event on the node's copy of the
-//! project.
+//! project. A hub's rules (its `config.yaml`) and the global config's do
+//! the same for the hub's and global's bus: the node publishes on its hub
+//! of the same name (made on first use) or its global bus. Queues are
+//! never forwarded.
 //!
 //! A forward delivery is an ordinary delivery whose subscriber is `→ <node>`
 //! (its workflow path `node:<node>`), so `tome events` shows, retries and
@@ -15,6 +18,7 @@ use crate::features::nodes::{self as node, Node};
 use crate::ids::DeliveryId;
 use crate::output::{CliError, CliResult, ErrorKind};
 use crate::rpc;
+use crate::scope::Shared;
 use crate::store::{BusEvent, Delivery, DeliveryState, Subscriber};
 use crate::topic;
 use serde_json::{json, Value};
@@ -56,7 +60,15 @@ pub fn names(d: &Delivery, wf: &str) -> bool {
 
 /// A project's forwarding rules. A malformed `bus` is an error.
 pub fn rules(project: &Path) -> CliResult<Vec<Rule>> {
-    let cfg = Config::load(Some(project))?;
+    parse(&Config::load(Some(project))?)
+}
+
+/// A hub's or global's forwarding rules, from its own config only.
+pub fn shared_rules(of: &Shared) -> CliResult<Vec<Rule>> {
+    parse(&Config::load_shared(of)?)
+}
+
+fn parse(cfg: &Config) -> CliResult<Vec<Rule>> {
     let Some((bus, file)) = cfg.get("bus") else {
         return Ok(Vec::new());
     };
@@ -154,7 +166,7 @@ fn origin(sender: &str) -> Option<&str> {
 /// The forward deliveries an event gets: one per node its topic is
 /// forwarded to, never back to the node it came from.
 pub fn subscribers(e: &Publish<'_>) -> Vec<Subscriber> {
-    let rules = match rules(e.project) {
+    let rules = match e.bus.map_or_else(|| rules(e.project), shared_rules) {
         Ok(r) => r,
         Err(err) => {
             eprintln!("tome daemon: not forwarding {}: {}", e.topic, err.message);
@@ -412,28 +424,34 @@ impl Engine {
             );
             return Ok(());
         }
-        let project = match located.get(&d.project_path) {
-            Some(found) => found.clone()?,
+        let mut params = json!({
+            "topic": event.topic,
+            "payload": payload_for(&event),
+            "forwarded": {
+                "origin": node::host_name(),
+                "sender": event.sender,
+                "depth": event.depth,
+            },
+        });
+        // A hub's or global's event goes to the node's bus of the same
+        // name; a project's to the node's copy of the project.
+        match Shared::from_key(&event.project_path) {
+            Some(Shared::Hub(h)) => params["hub"] = json!(h.as_str()),
+            Some(Shared::Global) => params["global"] = json!(true),
             None => {
-                let found =
-                    node::locate(client, node, Path::new(&d.project_path), false).map(|l| l.path);
-                located.insert(d.project_path.clone(), found.clone());
-                found?
+                let project = match located.get(&d.project_path) {
+                    Some(found) => found.clone()?,
+                    None => {
+                        let found = node::locate(client, node, Path::new(&d.project_path), false)
+                            .map(|l| l.path);
+                        located.insert(d.project_path.clone(), found.clone());
+                        found?
+                    }
+                };
+                params["project_path"] = json!(project);
             }
-        };
-        let out = client.call(
-            "events.publish",
-            json!({
-                "topic": event.topic,
-                "payload": payload_for(&event),
-                "project_path": project,
-                "forwarded": {
-                    "origin": node::host_name(),
-                    "sender": event.sender,
-                    "depth": event.depth,
-                },
-            }),
-        )?;
+        }
+        let out = client.call("events.publish", params)?;
         let sent = self.with_store(|store| {
             store.move_delivery(d.id, DeliveryState::Pending, DeliveryState::Done, None)
         })?;
