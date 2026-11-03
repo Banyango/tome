@@ -174,6 +174,7 @@ pub fn subscribers(e: &Publish<'_>) -> Vec<Subscriber> {
                 workflow_name: format!("{ARROW}{n}"),
                 workflow_path: format!("{PATH}{n}"),
                 pattern: r.pattern.to_string(),
+                project_path: None,
             });
         }
     }

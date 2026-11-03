@@ -83,6 +83,9 @@ pub struct Subscriber {
     pub workflow_name: String,
     pub workflow_path: String,
     pub pattern: String,
+    /// The subscribing project, when it isn't the event's (a hub's or
+    /// global's event is delivered into each attached project).
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,7 +177,7 @@ impl Store {
                 tx.execute(
                     "INSERT INTO deliveries (event_id, project_path, workflow_name, workflow_path, pattern, state, run_ids, updated_at)
                      VALUES (?, ?, ?, ?, ?, ?, '[]', ?)",
-                    params![id, e.project_path, s.workflow_name, s.workflow_path, s.pattern, DeliveryState::Pending.as_str(), at],
+                    params![id, s.project_path.as_deref().unwrap_or(e.project_path), s.workflow_name, s.workflow_path, s.pattern, DeliveryState::Pending.as_str(), at],
                 )
                 .map_err(internal)?;
             }
@@ -403,6 +406,7 @@ mod tests {
             workflow_name: wf.into(),
             workflow_path: format!("/p/.tome/workflows/{wf}.md"),
             pattern: pattern.into(),
+            project_path: None,
         }
     }
 

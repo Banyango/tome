@@ -508,6 +508,9 @@ pub enum TriggerKind {
     /// `on: <pattern>`: events published to a matching topic.
     Topic {
         on: crate::topic::Pattern,
+        /// `hub:` / `global: true`: that shared bus, else the project's.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bus: Option<crate::scope::Shared>,
     },
 }
 
@@ -605,7 +608,8 @@ impl Trigger {
             TriggerKind::Manual => "manual".into(),
             TriggerKind::File(f) => format!("file {}", f.file),
             TriggerKind::Cron { cron, .. } => format!("cron {cron}"),
-            TriggerKind::Topic { on } => format!("on {on}"),
+            TriggerKind::Topic { on, bus: None } => format!("on {on}"),
+            TriggerKind::Topic { on, bus: Some(b) } => format!("on {on} ({})", b.label()),
         }
     }
 
@@ -626,6 +630,8 @@ pub const TRIGGER_KEYS: &[&str] = &[
     "while_running",
     "to",
     "params",
+    "hub",
+    "global",
 ];
 pub const TRIGGER_FIELDS: &[&str] = &[
     "kind",
@@ -637,6 +643,7 @@ pub const TRIGGER_FIELDS: &[&str] = &[
     "payload",
     "event_id",
     "sender",
+    "publisher",
 ];
 const DEFAULT_DEBOUNCE: Duration = Duration::from_secs(2);
 
@@ -662,6 +669,46 @@ fn parse_triggers(value: &Yaml, loc: &Locator, errors: &mut Vec<Diagnostic>) -> 
         }
     }
     out
+}
+
+/// A topic trigger's `hub: <name>` / `global: true`. A hub must exist on
+/// this machine. `None` in the outer option is an error (reported).
+fn topic_bus(
+    hub: Option<&Yaml>,
+    global: Option<&Yaml>,
+    line: usize,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Option<crate::scope::Shared>> {
+    let mut fail = |msg: String| {
+        errors.push(Diagnostic::new(line, msg));
+        None
+    };
+    let hub = match hub {
+        None => None,
+        Some(h) => match h.as_str() {
+            Some(h) => Some(h),
+            None => return fail("`hub` must be a hub name".into()),
+        },
+    };
+    let global = match global {
+        None => false,
+        Some(g) => match g.as_bool() {
+            Some(g) => g,
+            None => return fail("`global` must be `true` or `false`".into()),
+        },
+    };
+    let bus = match crate::scope::Shared::from_flags(hub, global) {
+        Ok(bus) => bus,
+        Err(e) => return fail(e.replace("--hub or --global", "`hub:` or `global:`")),
+    };
+    if let Some(h) = bus.as_ref().and_then(crate::scope::Shared::hub) {
+        if !crate::paths::hubs_dir().join(h.as_str()).is_dir() {
+            return fail(format!(
+                "there's no hub `{h}` on this machine; create it with `tome hub create {h}`"
+            ));
+        }
+    }
+    Some(bus)
 }
 
 fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Option<Trigger> {
@@ -767,8 +814,9 @@ fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Opti
                 );
                 return None;
             };
+            let bus = topic_bus(get("hub"), get("global"), line, errors)?;
             match crate::topic::Pattern::parse(pattern) {
-                Ok(on) => TriggerKind::Topic { on },
+                Ok(on) => TriggerKind::Topic { on, bus },
                 Err(e) => {
                     n(errors, e);
                     return None;
@@ -779,6 +827,11 @@ fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Opti
             for k in ["on", "debounce", "ignore", "while_running"] {
                 if get(k).is_some() {
                     n(errors, format!("`{k}` only applies to file triggers"));
+                }
+            }
+            for k in ["hub", "global"] {
+                if get(k).is_some() {
+                    n(errors, format!("`{k}` only applies to `on:` triggers"));
                 }
             }
             let Some(expr) = cron.as_str() else {
@@ -800,6 +853,11 @@ fn parse_trigger(item: &Yaml, line: usize, errors: &mut Vec<Diagnostic>) -> Opti
             }
         }
         (Some(file), None) => {
+            for k in ["hub", "global"] {
+                if get(k).is_some() {
+                    n(errors, format!("`{k}` only applies to `on:` triggers"));
+                }
+            }
             let Some(pattern) = file.as_str() else {
                 n(errors, "`file` must be a glob string".into());
                 return None;
@@ -973,7 +1031,7 @@ pub fn check_scope(wf: Workflow, scope: Scope) -> Result<Workflow, Invalid> {
                 t.line,
                 format!("file trigger `{}` in a global workflow must use an absolute or `~/` path", f.file),
             )),
-            TriggerKind::Topic { on } => Some(Diagnostic::new(
+            TriggerKind::Topic { on, .. } => Some(Diagnostic::new(
                 t.line,
                 format!("topic trigger `on: {on}` needs a project; a global workflow has no project bus"),
             )),
@@ -1460,26 +1518,35 @@ impl Workflow {
     /// that can match the same topic (an event is delivered once, for the
     /// first), and patterns that match the workflow's own lifecycle events.
     pub fn warnings(&self) -> Vec<Diagnostic> {
-        let topics: Vec<(&Trigger, &crate::topic::Pattern)> = self
+        type Sub<'a> = (
+            &'a Trigger,
+            &'a crate::topic::Pattern,
+            &'a Option<crate::scope::Shared>,
+        );
+        let topics: Vec<Sub<'_>> = self
             .frontmatter
             .triggers
             .iter()
             .filter_map(|t| match &t.kind {
-                TriggerKind::Topic { on } => Some((t, on)),
+                TriggerKind::Topic { on, bus } => Some((t, on, bus)),
                 _ => None,
             })
             .collect();
         let mut out = Vec::new();
-        for (i, (t, on)) in topics.iter().enumerate() {
-            if let Some((_, first)) = topics[..i].iter().find(|(_, earlier)| earlier.overlaps(on)) {
+        for (i, (t, on, bus)) in topics.iter().enumerate() {
+            if let Some((_, first, _)) = topics[..i]
+                .iter()
+                .find(|(_, earlier, b)| b == bus && earlier.overlaps(on))
+            {
                 out.push(Diagnostic::new(
                     t.line,
                     format!("`on: {on}` and `on: {first}` can match the same topic; such an event is delivered once, for `on: {first}`"),
                 ));
             }
-            if crate::topic::lifecycle_topics(self.name())
-                .iter()
-                .any(|topic| on.matches(topic))
+            if bus.is_none()
+                && crate::topic::lifecycle_topics(self.name())
+                    .iter()
+                    .any(|topic| on.matches(topic))
             {
                 out.push(Diagnostic::new(
                     t.line,
@@ -2331,7 +2398,7 @@ triggers:
     fn topic_triggers() {
         let wf = p("---\nname: review\nparams:\n  base: {}\ntriggers:\n  - on: review.requested\n    params: {base: main}\n  - on: \"feature.**\"\n    to: running-or-new\n    params: {base: dev}\n---\n{{trigger.topic}}|{{trigger.payload}}|{{trigger.event_id}}|{{trigger.sender}}\n").unwrap();
         let t = &wf.frontmatter.triggers;
-        let TriggerKind::Topic { on } = &t[0].kind else {
+        let TriggerKind::Topic { on, .. } = &t[0].kind else {
             panic!("{:?}", t[0])
         };
         assert!(on.matches("review.requested"));
@@ -2371,6 +2438,19 @@ triggers:
                 "`debounce` only applies to file triggers",
             ),
             ("  - on: a.b\n    to: later\n", "trigger `to` must be"),
+            (
+                "  - on: a.b\n    hub: x\n    global: true\n",
+                "`hub:` or `global:`, not both",
+            ),
+            ("  - on: a.b\n    global: 1\n", "`global` must be `true`"),
+            (
+                "  - cron: \"0 * * * *\"\n    hub: x\n",
+                "`hub` only applies to `on:` triggers",
+            ),
+            (
+                "  - file: \"*.md\"\n    global: true\n",
+                "`global` only applies to `on:` triggers",
+            ),
             ("  - to: new\n", "needs `file:`, `cron:` or `on:`"),
         ] {
             assert!(
@@ -2380,6 +2460,20 @@ triggers:
                 e(t)
             );
         }
+        let wf = p(
+            "---\nname: x\ntriggers:\n  - on: a.b\n    global: true\n---\n{{trigger.publisher}}\n",
+        )
+        .unwrap();
+        let t = &wf.frontmatter.triggers[0];
+        assert!(matches!(
+            &t.kind,
+            TriggerKind::Topic {
+                bus: Some(crate::scope::Shared::Global),
+                ..
+            }
+        ));
+        assert_eq!(t.describe(), "on a.b (global)");
+        assert_eq!(serde_json::to_value(t).unwrap()["bus"], "global");
         // A file trigger's `on:` is still its events.
         assert!(p("---\nname: x\ntriggers:\n  - file: \"*.md\"\n    on: created\n---\n").is_ok());
 

@@ -28,6 +28,11 @@ each subscribing workflow (`on:` triggers).
   that published it. `--hub`/`--global` calls check the caller's project is attached
   (`hubs::require_attached`). Lifecycle events stay on the project bus. Depth comes
   from the publishing run, so it counts across buses.
+- A topic trigger's `bus` (`hub:`/`global:`) picks the bus it listens on. A shared
+  bus's event is delivered to the matching triggers of each attached project; the
+  delivery's `project_path` is the subscriber's, and its `pattern` is
+  `subscription_of` (`build.* (hub release)`), so pending/drop/backlog lookups keep
+  project and shared subscriptions apart.
 - Remote-ready: only the store turns a `Shared` into a key, and `scope::owner` always
   answers `Local`. Moving hub and global state to another machine means making
   `owner` return that node and sending the scope's `events.*` calls there, the way

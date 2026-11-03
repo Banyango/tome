@@ -153,9 +153,13 @@ pub fn fields(kind: &TriggerKind, event: &Event, now: DateTime<Local>) -> Map<St
             m.insert("payload".into(), json!(e.payload));
             m.insert("event_id".into(), json!(e.id.to_string()));
             m.insert("sender".into(), json!(e.sender));
+            m.insert(
+                "publisher".into(),
+                json!(e.publisher.as_deref().unwrap_or("")),
+            );
         }
         None => {
-            for field in ["topic", "payload", "event_id", "sender"] {
+            for field in ["topic", "payload", "event_id", "sender", "publisher"] {
                 m.insert(field.into(), json!(""));
             }
         }

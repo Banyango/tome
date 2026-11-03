@@ -61,7 +61,15 @@ Every workflow that subscribes to a matching topic gets its own **delivery** of 
 - `running` gives the event to the runs that are going, on their `events-<run id>` queue, and nudges the orchestrator to look. If no run is going, the delivery is marked done.
 - `running-or-new` does one or the other.
 
-The event reaches a new run in the body as `{{trigger.topic}}`, `{{trigger.payload}}`, `{{trigger.event_id}}` and `{{trigger.sender}}`.
+The event reaches a new run in the body as `{{trigger.topic}}`, `{{trigger.payload}}`, `{{trigger.event_id}}`, `{{trigger.sender}}` and `{{trigger.publisher}}` (the project that published it).
+
+To subscribe to a hub's bus or global's instead of the project's, add `hub: <name>` or `global: true` to the trigger (see [Hubs](hubs.md)):
+
+```yaml
+triggers:
+  - on: build.done
+    hub: release
+```
 
 This example receives requests one at a time. `concurrency: 1` makes extra ones wait:
 

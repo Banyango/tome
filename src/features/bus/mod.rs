@@ -56,17 +56,37 @@ pub fn subscriptions(project: &Path) -> Vec<Armed> {
 /// The pattern of a topic trigger.
 pub fn pattern_of(a: &Armed) -> Option<&topic::Pattern> {
     match &a.trigger.kind {
-        TriggerKind::Topic { on } => Some(on),
+        TriggerKind::Topic { on, .. } => Some(on),
         _ => None,
     }
 }
 
-/// The subscriptions `topic` is delivered to: each workflow's first
-/// matching trigger.
-pub fn matching(subs: &[Armed], topic: &str) -> Vec<Armed> {
+/// The bus a topic trigger listens on: `None` is its project's own.
+pub fn bus_of(a: &Armed) -> Option<&Shared> {
+    match &a.trigger.kind {
+        TriggerKind::Topic { bus, .. } => bus.as_ref(),
+        _ => None,
+    }
+}
+
+/// What a subscription's deliveries are recorded under: its pattern, with
+/// the bus for a hub's or global's (`release.* (hub release)`).
+pub fn subscription_of(a: &Armed) -> Option<String> {
+    let p = pattern_of(a)?;
+    Some(match bus_of(a) {
+        Some(bus) => format!("{p} ({})", bus.label()),
+        None => p.to_string(),
+    })
+}
+
+/// The subscriptions on `bus` that `topic` is delivered to: each
+/// workflow's first matching trigger.
+pub fn matching(subs: &[Armed], bus: Option<&Shared>, topic: &str) -> Vec<Armed> {
     let mut out: Vec<Armed> = Vec::new();
     for a in subs {
-        if pattern_of(a).is_some_and(|p| p.matches(topic)) && !out.iter().any(|m| m.name == a.name)
+        if bus_of(a) == bus
+            && pattern_of(a).is_some_and(|p| p.matches(topic))
+            && !out.iter().any(|m| m.name == a.name)
         {
             out.push(a.clone());
         }
@@ -238,13 +258,17 @@ impl Engine {
     /// Publish an event: record it with a pending delivery per matching
     /// subscription. A publish from a run shows in the run's stream.
     pub fn publish(&self, e: &Publish<'_>, dry_run: bool) -> CliResult<Published> {
-        // A hub's or global's bus has no subscribers yet.
+        // A hub's or global's subscribers are in its attached projects.
         let mut matches = match e.bus {
-            Some(_) => Vec::new(),
-            None => matching(&subscriptions(e.project), e.topic),
+            Some(bus) => self
+                .with_store(|store| store.attached_projects(bus))?
+                .iter()
+                .flat_map(|p| matching(&subscriptions(Path::new(p)), Some(bus), e.topic))
+                .collect(),
+            None => matching(&subscriptions(e.project), None, e.topic),
         };
         if let Some(only) = e.only {
-            matches.retain(|a| a.name == only);
+            matches.retain(|a| a.name == only && a.project.as_deref() == Some(e.project));
         }
         let publisher = e.project.display().to_string();
         let project = e.bus.map_or_else(|| publisher.clone(), Shared::key);
@@ -271,7 +295,8 @@ impl Engine {
             .map(|a| Subscriber {
                 workflow_name: a.name.clone(),
                 workflow_path: a.workflow_path.display().to_string(),
-                pattern: pattern_of(a).map(ToString::to_string).unwrap_or_default(),
+                pattern: subscription_of(a).unwrap_or_default(),
+                project_path: a.project.as_ref().map(|p| p.display().to_string()),
             })
             .collect();
         subscribers.extend(forwards.iter().cloned());
@@ -371,7 +396,7 @@ impl Engine {
                 .armed
                 .iter()
                 .filter(|a| a.project.as_deref() == Some(root.as_path()))
-                .filter_map(|a| pattern_of(a).map(|p| (a.name.clone(), p.to_string())))
+                .filter_map(|a| subscription_of(a).map(|p| (a.name.clone(), p)))
                 .collect();
             let keep: Vec<String> = scan
                 .broken
@@ -503,14 +528,14 @@ impl Engine {
 
     /// A subscription's pending deliveries, oldest first.
     pub(crate) fn pending_of(&self, a: &Armed) -> Vec<Delivery> {
-        let (Some(project), Some(pattern)) = (&a.project, pattern_of(a)) else {
+        let (Some(project), Some(pattern)) = (&a.project, subscription_of(a)) else {
             return Vec::new();
         };
         self.with_store(|store| {
             store.subscription_deliveries(
                 &project.display().to_string(),
                 &a.name,
-                &pattern.to_string(),
+                &pattern,
                 DeliveryState::Pending,
             )
         })
@@ -684,10 +709,10 @@ mod tests {
             armed("b", "review.**", 0),
             armed("c", "deploy", 0),
         ];
-        let m = matching(&subs, "review.requested");
+        let m = matching(&subs, None, "review.requested");
         let got: Vec<(&str, usize)> = m.iter().map(|a| (a.name.as_str(), a.index)).collect();
         assert_eq!(got, [("a", 0), ("b", 0)]);
-        assert!(matching(&subs, "other").is_empty());
+        assert!(matching(&subs, None, "other").is_empty());
     }
 
     #[test]

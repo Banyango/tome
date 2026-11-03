@@ -38,8 +38,24 @@ tome events retry <event> --hub release     # retry and remove take it too
   the project bus.
 - A chain's depth counts across buses: an event a run publishes to a hub is
   one deeper than the event that started the run.
-- Hub and global events aren't delivered to workflows yet, and `--on` can't
-  publish to another node's hub yet.
+- `--on` can't publish to another node's hub yet.
+
+A workflow subscribes to a hub's bus with `hub:` (or global's with
+`global: true`) on its `on:` trigger:
+
+```yaml
+triggers:
+  - on: build.*
+    hub: release
+```
+
+- Each subscribing workflow in each attached project gets its own delivery,
+  and its run starts in that project. `{{trigger.publisher}}` is the project
+  that published the event.
+- A trigger naming a hub that doesn't exist fails `tome validate`.
+- A project's own bus and a hub's are separate: a trigger without `hub:`
+  never gets hub events, and one with it never gets the project's.
+- Global workflows (`~/.tome/workflows/`) still can't subscribe.
 
 ## Hub and global queues
 

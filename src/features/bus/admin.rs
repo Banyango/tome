@@ -1,7 +1,7 @@
 //! Inspecting and repairing the bus (`tome events ...`), and firing a topic
 //! trigger by hand (`tome triggers fire`).
 
-use super::{matching, pattern_of, subscriptions, Publish, TEST};
+use super::{matching, pattern_of, subscription_of, subscriptions, Publish, TEST};
 use crate::arming::Armed;
 use crate::engine::Engine;
 use crate::features::hubs;
@@ -67,7 +67,7 @@ impl Engine {
             .map(|(topic, count, last)| {
                 // Current subscribers first, so they show with nothing waiting too.
                 let mut counts: BTreeMap<String, [i64; 3]> =
-                    matching(&subs, topic).into_iter().map(|a| (a.name, [0; 3])).collect();
+                    matching(&subs, None, topic).into_iter().map(|a| (a.name, [0; 3])).collect();
                 for d in deliveries.iter().filter(|d| topic_of.get(&d.event_id) == Some(&topic.as_str())) {
                     let c = counts.entry(d.workflow.clone()).or_default();
                     match d.state {
@@ -238,7 +238,7 @@ impl Engine {
     /// A topic trigger's backlog for `tome triggers ls`: how many events wait,
     /// and the last one a run took.
     pub(crate) fn topic_status(&self, a: &Armed) -> Option<Value> {
-        let (project, pattern) = (a.project.as_ref()?, pattern_of(a)?.to_string());
+        let (project, pattern) = (a.project.as_ref()?, subscription_of(a)?);
         let ds = self
             .with_store(|store| store.project_deliveries(&project.display().to_string()))
             .ok()?;
@@ -329,7 +329,7 @@ impl Engine {
                         sender_run: None,
                         depth: 0,
                         only: Some(&a.name),
-                        bus: None,
+                        bus: super::bus_of(a),
                     },
                     false,
                 )?;

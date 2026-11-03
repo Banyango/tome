@@ -49,6 +49,13 @@ pub enum Shared {
 const HUB_PREFIX: &str = "hub:";
 const GLOBAL_KEY: &str = "global:";
 
+/// Shown as its label (`hub release`, `global`).
+impl serde::Serialize for Shared {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.label())
+    }
+}
+
 impl Shared {
     /// From `--hub <name>` / `--global` (or `hub:` / `global: true`).
     pub fn from_flags(hub: Option<&str>, global: bool) -> Result<Option<Shared>, String> {

@@ -147,5 +147,71 @@ fn hub_queues_are_shared_by_attached_projects() {
     let (_, v) = env.json(&["queue", "peek", "jobs"]);
     assert_eq!(v["messages"][0]["body"], "mine", "{v}");
 
-    assert_ne!(env.json(&["queue", "ls", "--global"]).0, 0, "not attached to global");
+    assert_ne!(
+        env.json(&["queue", "ls", "--global"]).0,
+        0,
+        "not attached to global"
+    );
+}
+
+#[test]
+fn hub_events_are_delivered_into_each_attached_project() {
+    let env = env_with_project();
+    let other = env.project().parent().unwrap().join("q");
+    fs::create_dir_all(other.join(".tome/workflows")).unwrap();
+    assert_eq!(env.json(&["hub", "create", "release"]).0, 0);
+    let wf = "---\nname: ship\ntriggers:\n  - on: build.*\n    hub: release\n---\n## Ship\nFrom {{trigger.publisher}}.\n";
+    let own = "---\nname: own\ntriggers:\n  - on: build.*\n---\n## Own\nGo.\n";
+    for dir in [env.project().to_path_buf(), other.clone()] {
+        fs::write(dir.join(".tome/workflows/ship.md"), wf).unwrap();
+        fs::write(dir.join(".tome/workflows/own.md"), own).unwrap();
+    }
+    assert_eq!(env.json(&["triggers", "disable"]).0, 0);
+    assert_eq!(json_in(&env, &other, &["triggers", "disable"]).0, 0);
+    assert_eq!(env.json(&["hub", "attach", "release"]).0, 0);
+    assert_eq!(json_in(&env, &other, &["hub", "attach", "release"]).0, 0);
+
+    let (code, v) = env.json(&["publish", "--hub", "release", "build.done", "x"]);
+    assert_eq!(code, 0, "{v}");
+    let ds = v["deliveries"].as_array().unwrap();
+    assert_eq!(
+        ds.len(),
+        2,
+        "one per attached project, not the own-bus workflow: {v}"
+    );
+    let mut projects: Vec<&str> = ds
+        .iter()
+        .map(|d| d["project_path"].as_str().unwrap())
+        .collect();
+    projects.sort();
+    let mut want = vec![
+        env.project().canonicalize().unwrap().display().to_string(),
+        other.canonicalize().unwrap().display().to_string(),
+    ];
+    want.sort();
+    assert_eq!(projects, want, "{v}");
+    assert!(
+        ds.iter()
+            .all(|d| d["workflow"] == "ship" && d["pattern"] == "build.* (hub release)"),
+        "{v}"
+    );
+
+    // The project's own bus doesn't reach hub subscribers.
+    let (_, v) = env.json(&["publish", "build.done", "x"]);
+    let ds = v["deliveries"].as_array().unwrap();
+    assert_eq!(ds.len(), 1, "{v}");
+    assert_eq!(ds[0]["workflow"], "own", "{v}");
+}
+
+#[test]
+fn a_trigger_on_a_missing_hub_is_invalid() {
+    let env = env_with_project();
+    fs::write(
+        env.project().join(".tome/workflows/ship.md"),
+        "---\nname: ship\ntriggers:\n  - on: build.*\n    hub: nope\n---\n## Ship\nGo.\n",
+    )
+    .unwrap();
+    let (code, v) = env.json(&["validate"]);
+    assert_ne!(code, 0, "{v}");
+    assert!(v.to_string().contains("tome hub create"), "{v}");
 }
