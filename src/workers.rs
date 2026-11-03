@@ -833,8 +833,9 @@ impl Engine {
 }
 
 /// The queue RPCs: `{queue?, body?, id?, limit?, run_id?, project_path?,
-/// caller?}`. A queue belongs to a project: the run's (`run_id`), else
-/// `project_path`. The sender or claimer is `user` outside a run, else the
+/// caller?, hub?, global?}`. A queue belongs to a project: the run's
+/// (`run_id`), else `project_path`; with `hub` or `global`, to that shared
+/// scope, once the project is attached to it. The sender or claimer is `user` outside a run, else the
 /// run or its `caller` worker.
 fn queue(store: &mut Store, method: &str, p: &Value) -> CliResult<Value> {
     let run = match p.get("run_id").filter(|v| !v.is_null()) {
@@ -851,6 +852,14 @@ fn queue(store: &mut Store, method: &str, p: &Value) -> CliResult<Value> {
             return Err(CliError::invalid("not inside a project")
                 .with_hint("run `tome queue` in a project (a directory with .tome/)"))
         }
+    };
+    let shared = crate::features::hubs::bus_param(p)?;
+    let project = match &shared {
+        Some(to) => {
+            crate::features::hubs::require_attached(store, Some(&project), to)?;
+            to.key()
+        }
+        None => project,
     };
     let me = match &run {
         Some(run) => crate::ids::run_sender(run.id, caller(p)),
@@ -877,7 +886,11 @@ fn queue(store: &mut Store, method: &str, p: &Value) -> CliResult<Value> {
         }
         "queue.ack" => Ok(json!(store.ack_message(&project, req_num_at(p, "id")?)?)),
         "queue.close" => Ok(json!(store.close_queue(&project, req_str(p, "queue")?)?)),
-        "queue.ls" => Ok(json!({ "project": project, "queues": store.queues(&project)? })),
+        "queue.ls" => Ok(json!({
+            "project": project,
+            "scope": shared.as_ref().map(crate::scope::Shared::label),
+            "queues": store.queues(&project)?,
+        })),
         _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
     }
 }

@@ -105,3 +105,47 @@ fn hub_and_global_buses_need_an_attached_project() {
     let (code, v) = env.json(&["events", "remove", &id, "--hub", "release"]);
     assert_eq!(code, 0, "{v}");
 }
+
+/// `--json` output of `tome` run in `dir`.
+fn json_in(env: &Env, dir: &std::path::Path, args: &[&str]) -> (i32, serde_json::Value) {
+    let mut full = vec!["--json"];
+    full.extend_from_slice(args);
+    let out = env.cmd(&full).current_dir(dir).output().unwrap();
+    let v = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    (out.status.code().unwrap(), v)
+}
+
+#[test]
+fn hub_queues_are_shared_by_attached_projects() {
+    let env = env_with_project();
+    let other = env.project().parent().unwrap().join("q");
+    fs::create_dir_all(other.join(".tome/workflows")).unwrap();
+    assert_eq!(env.json(&["hub", "create", "release"]).0, 0);
+
+    let (code, v) = env.json(&["queue", "push", "jobs", "a", "--hub", "release"]);
+    assert_ne!(code, 0, "not attached: {v}");
+    assert!(v.to_string().contains("tome hub attach release"), "{v}");
+
+    assert_eq!(env.json(&["hub", "attach", "release"]).0, 0);
+    assert_eq!(json_in(&env, &other, &["hub", "attach", "release"]).0, 0);
+    let (code, v) = env.json(&["queue", "push", "jobs", "a", "--hub", "release"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(env.json(&["queue", "push", "jobs", "mine"]).0, 0);
+
+    // The other project pulls it from the hub, not from its own queues.
+    assert_eq!(json_in(&env, &other, &["queue", "pull", "jobs"]).0, 3);
+    let (code, v) = json_in(&env, &other, &["queue", "pull", "jobs", "--hub", "release"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["message"]["body"], "a", "{v}");
+    let id = v["message"]["id"].to_string();
+    let (code, v) = json_in(&env, &other, &["queue", "ack", &id, "--hub", "release"]);
+    assert_eq!(code, 0, "{v}");
+
+    let (_, v) = env.json(&["queue", "ls", "--hub", "release"]);
+    assert_eq!(v["scope"], "hub release", "{v}");
+    assert_eq!(v["queues"][0]["name"], "jobs", "{v}");
+    let (_, v) = env.json(&["queue", "peek", "jobs"]);
+    assert_eq!(v["messages"][0]["body"], "mine", "{v}");
+
+    assert_ne!(env.json(&["queue", "ls", "--global"]).0, 0, "not attached to global");
+}

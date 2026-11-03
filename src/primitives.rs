@@ -3,6 +3,7 @@
 //! or `TOME_RUN_ID`, and a worker is known by `TOME_WORKER_ID`.
 
 use crate::output::{exit, table, CliError, CliResult, Report};
+use crate::scope::Shared;
 use crate::{duration, paths, rpc};
 use serde_json::{json, Value};
 use std::io::Read;
@@ -238,12 +239,19 @@ pub fn worktree_create(
 
 /// The params that say whose queue it is: the run's project (`--run`,
 /// `TOME_RUN_ID`), else the project the command runs in.
-fn queue_scope(cwd: &Path, run: Option<String>) -> Value {
-    json!({
+/// With `bus`, a hub's or global's queue instead.
+fn queue_scope(cwd: &Path, run: Option<String>, bus: &Option<Shared>) -> Value {
+    let mut params = json!({
         "run_id": run.filter(|r| !r.trim().is_empty()),
         "project_path": crate::triggerscmd::project_of(cwd),
         "caller": me(),
-    })
+    });
+    match bus {
+        Some(Shared::Hub(h)) => params["hub"] = json!(h.as_str()),
+        Some(Shared::Global) => params["global"] = json!(true),
+        None => {}
+    }
+    params
 }
 
 fn queue_call(method: &str, scope: Value, extra: Value) -> CliResult<Value> {
@@ -255,7 +263,13 @@ fn queue_call(method: &str, scope: Value, extra: Value) -> CliResult<Value> {
 }
 
 /// `tome queue push <q> <text|->`
-pub fn push(cwd: &Path, queue: String, text: String, run: Option<String>) -> CliResult<Report> {
+pub fn push(
+    cwd: &Path,
+    queue: String,
+    text: String,
+    run: Option<String>,
+    bus: &Option<Shared>,
+) -> CliResult<Report> {
     let body = if text == "-" {
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
@@ -265,7 +279,7 @@ pub fn push(cwd: &Path, queue: String, text: String, run: Option<String>) -> Cli
     };
     let m = queue_call(
         "queue.push",
-        queue_scope(cwd, run),
+        queue_scope(cwd, run, bus),
         json!({ "queue": queue, "body": body }),
     )?;
     let human = format!("message {} on {}", m["id"], s(&m["queue"]));
@@ -279,6 +293,7 @@ pub fn pull(
     queue: String,
     wait: Option<String>,
     run: Option<String>,
+    bus: &Option<Shared>,
 ) -> CliResult<Report> {
     let deadline = match wait.as_deref() {
         None => Some(Instant::now()),
@@ -292,7 +307,7 @@ pub fn pull(
     loop {
         let r = queue_call(
             "queue.pull",
-            queue_scope(cwd, run.clone()),
+            queue_scope(cwd, run.clone(), bus),
             json!({ "queue": queue }),
         )?;
         match r["status"].as_str() {
@@ -313,10 +328,16 @@ pub fn pull(
 }
 
 /// `tome queue peek <q> [--limit N]`: the oldest messages, claiming none.
-pub fn peek(cwd: &Path, queue: String, limit: usize, run: Option<String>) -> CliResult<Report> {
+pub fn peek(
+    cwd: &Path,
+    queue: String,
+    limit: usize,
+    run: Option<String>,
+    bus: &Option<Shared>,
+) -> CliResult<Report> {
     let r = queue_call(
         "queue.peek",
-        queue_scope(cwd, run),
+        queue_scope(cwd, run, bus),
         json!({ "queue": queue, "limit": limit }),
     )?;
     let rows = r["messages"]
@@ -346,17 +367,22 @@ pub fn peek(cwd: &Path, queue: String, limit: usize, run: Option<String>) -> Cli
 }
 
 /// `tome queue ack <id>`
-pub fn ack(cwd: &Path, id: String, run: Option<String>) -> CliResult<Report> {
-    let m = queue_call("queue.ack", queue_scope(cwd, run), json!({ "id": id }))?;
+pub fn ack(cwd: &Path, id: String, run: Option<String>, bus: &Option<Shared>) -> CliResult<Report> {
+    let m = queue_call("queue.ack", queue_scope(cwd, run, bus), json!({ "id": id }))?;
     let human = format!("message {} acked", m["id"]);
     Ok(Report::new(m, human))
 }
 
 /// `tome queue close <q>`
-pub fn close(cwd: &Path, queue: String, run: Option<String>) -> CliResult<Report> {
+pub fn close(
+    cwd: &Path,
+    queue: String,
+    run: Option<String>,
+    bus: &Option<Shared>,
+) -> CliResult<Report> {
     let q = queue_call(
         "queue.close",
-        queue_scope(cwd, run),
+        queue_scope(cwd, run, bus),
         json!({ "queue": queue }),
     )?;
     let human = format!("queue {} closed ({} pending)", s(&q["name"]), q["pending"]);
@@ -364,8 +390,8 @@ pub fn close(cwd: &Path, queue: String, run: Option<String>) -> CliResult<Report
 }
 
 /// `tome queue ls`
-pub fn ls(cwd: &Path, run: Option<String>) -> CliResult<Report> {
-    let all = queue_call("queue.ls", queue_scope(cwd, run), json!({}))?;
+pub fn ls(cwd: &Path, run: Option<String>, bus: &Option<Shared>) -> CliResult<Report> {
+    let all = queue_call("queue.ls", queue_scope(cwd, run, bus), json!({}))?;
     let rows = all["queues"]
         .as_array()
         .map(Vec::as_slice)

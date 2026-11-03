@@ -41,6 +41,21 @@ tome events retry <event> --hub release     # retry and remove take it too
 - Hub and global events aren't delivered to workflows yet, and `--on` can't
   publish to another node's hub yet.
 
+## Hub and global queues
+
+`tome queue` takes `--hub`/`--global` too, with the same attachment check. A
+hub's queues are shared by the agents of every attached project:
+
+```sh
+tome queue push jobs "build web" --hub release   # from ~/src/api
+tome queue pull jobs --hub release               # from ~/src/web
+tome queue ls --global
+```
+
+Claims, acks and closing work as for project queues, and a claimed message
+goes back on the queue when the worker that claimed it ends. Queues are never
+copied to another node.
+
 ## Inspect
 
 ```sh

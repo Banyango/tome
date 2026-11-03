@@ -97,7 +97,7 @@ tome queue close tasks                          # no more messages; pulls report
 tome queue ls                                   # the project's queues and their counts
 ```
 
-Outside a run, `tome queue` uses the project of the directory you are in. Inside a run it uses the run's project.
+Outside a run, `tome queue` uses the project of the directory you are in. Inside a run it uses the run's project. Every `tome queue` command also takes `--hub <name>` or `--global`, for a queue shared by every project attached to that hub (or to global); see [Hubs](hubs.md).
 
 A message is text up to about 1 MiB. Put bigger data in a file and send its path. A claimed message that is never acked goes back on the queue when the worker that claimed it finishes, so another worker can pick it up.
 

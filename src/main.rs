@@ -572,6 +572,8 @@ enum QueueCommand {
         text: String,
         #[command(flatten)]
         run: RunArg,
+        #[command(flatten)]
+        bus: BusArgs,
     },
     /// Claim the next message (exit 3 if there's none).
     Pull {
@@ -581,6 +583,8 @@ enum QueueCommand {
         wait: Option<String>,
         #[command(flatten)]
         run: RunArg,
+        #[command(flatten)]
+        bus: BusArgs,
     },
     /// Show a queue's oldest messages without claiming any.
     Peek {
@@ -590,23 +594,31 @@ enum QueueCommand {
         limit: usize,
         #[command(flatten)]
         run: RunArg,
+        #[command(flatten)]
+        bus: BusArgs,
     },
     /// Remove a message you've claimed.
     Ack {
         id: String,
         #[command(flatten)]
         run: RunArg,
+        #[command(flatten)]
+        bus: BusArgs,
     },
     /// Stop a queue taking messages; pulls say `closed` once it's drained.
     Close {
         queue: String,
         #[command(flatten)]
         run: RunArg,
+        #[command(flatten)]
+        bus: BusArgs,
     },
-    /// List the project's queues.
+    /// List the project's queues (or a hub's or global's).
     Ls {
         #[command(flatten)]
         run: RunArg,
+        #[command(flatten)]
+        bus: BusArgs,
     },
 }
 
@@ -789,13 +801,13 @@ impl BusArgs {
     }
 }
 
-/// Which bus: the project's own, a hub's, or global's.
+/// Which bus or queues: the project's own, a hub's, or global's.
 #[derive(clap::Args, Clone, Default)]
 struct BusArgs {
-    /// Use this hub's bus (the project must be attached to it).
+    /// Use this hub's (the project must be attached to it).
     #[arg(long, conflicts_with = "global")]
     hub: Option<String>,
-    /// Use the global bus (the project must be attached to global).
+    /// Use global's (the project must be attached to global).
     #[arg(long)]
     global: bool,
 }
@@ -1328,20 +1340,31 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
                 },
         } => primitives::worktree_create(name, base, branch, run.run),
         Command::Queue { command } => match command {
-            QueueCommand::Push { queue, text, run } => {
-                primitives::push(&current_dir()?, queue, text, run.run)
+            QueueCommand::Push {
+                queue,
+                text,
+                run,
+                bus,
+            } => primitives::push(&current_dir()?, queue, text, run.run, &bus.cmd()?),
+            QueueCommand::Pull {
+                queue,
+                wait,
+                run,
+                bus,
+            } => primitives::pull(&current_dir()?, queue, wait, run.run, &bus.cmd()?),
+            QueueCommand::Peek {
+                queue,
+                limit,
+                run,
+                bus,
+            } => primitives::peek(&current_dir()?, queue, limit, run.run, &bus.cmd()?),
+            QueueCommand::Ack { id, run, bus } => {
+                primitives::ack(&current_dir()?, id, run.run, &bus.cmd()?)
             }
-            QueueCommand::Pull { queue, wait, run } => {
-                primitives::pull(&current_dir()?, queue, wait, run.run)
+            QueueCommand::Close { queue, run, bus } => {
+                primitives::close(&current_dir()?, queue, run.run, &bus.cmd()?)
             }
-            QueueCommand::Peek { queue, limit, run } => {
-                primitives::peek(&current_dir()?, queue, limit, run.run)
-            }
-            QueueCommand::Ack { id, run } => primitives::ack(&current_dir()?, id, run.run),
-            QueueCommand::Close { queue, run } => {
-                primitives::close(&current_dir()?, queue, run.run)
-            }
-            QueueCommand::Ls { run } => primitives::ls(&current_dir()?, run.run),
+            QueueCommand::Ls { run, bus } => primitives::ls(&current_dir()?, run.run, &bus.cmd()?),
         },
         Command::Runs { command } => match command {
             RunsCommand::List {

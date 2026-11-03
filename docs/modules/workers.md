@@ -13,7 +13,8 @@ message queues.
   through `--run <id>` / `TOME_RUN_ID`; a worker is `TOME_WORKER_ID`.
 - `src/store/workers.rs`: `workers`, `worker_groups`, `worker_events` tables.
 - `src/store/queues.rs`: `queues` and `queue_messages`. Queues belong to the
-  project, not a run; a claimed message returns to the queue if its worker ends.
+  project, not a run; a claimed message returns to the queue if its worker ends. With `hub`/`global`
+  params a queue call uses that scope's key instead, after `hubs::require_attached`.
 - `src/worktree.rs`: creating a run's git worktree/branch (`tome/<run>/<name>`).
 
 ## Notes
