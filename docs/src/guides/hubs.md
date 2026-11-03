@@ -104,7 +104,13 @@ tome hub show                  # what the current project is attached to
 ```sh
 tome hub detach release
 tome hub detach --global
-tome hub rm release            # refused while any project is attached
+tome hub rm release            # refused while projects are attached or work is pending
+tome hub rm release --force    # detach everyone and delete the hub's events, queues and files
 ```
+
+Detaching drops the project's pending deliveries of that hub's events and
+returns any messages it had pulled from the hub's queues but not acked, so
+another project can pull them. `tome hub rm` names the attached projects and
+the pending deliveries and queued messages that stop it.
 
 All `tome hub` commands take `--on <node>` to act on another machine's hubs.

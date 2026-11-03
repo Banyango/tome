@@ -52,12 +52,18 @@ pub fn create(hub: &str) -> CliResult<Report> {
     Ok(Report::new(out, human))
 }
 
-pub fn rm(hub: &str) -> CliResult<Report> {
+pub fn rm(hub: &str, force: bool) -> CliResult<Report> {
     let hub = name(hub)?;
-    let out = call("hub.rm", json!({ "name": hub.as_str() }))?;
+    let out = call("hub.rm", json!({ "name": hub.as_str(), "force": force }))?;
+    let detached = out["detached"].as_array().map_or(0, Vec::len);
+    let note = if detached > 0 {
+        format!(" (detached {detached} project(s))")
+    } else {
+        String::new()
+    };
     Ok(Report::new(
         out,
-        format!("removed hub {hub}{}", node::on_suffix()),
+        format!("removed hub {hub}{note}{}", node::on_suffix()),
     ))
 }
 
@@ -72,7 +78,19 @@ pub fn attach(cwd: &Path, hub: Option<&str>, global: bool, on: bool) -> CliResul
     let human = match (on, changed) {
         (true, true) => format!("attached {project} to {}", to.label()),
         (true, false) => format!("{project} was already attached to {}", to.label()),
-        (false, true) => format!("detached {project} from {}", to.label()),
+        (false, true) => {
+            let mut s = format!("detached {project} from {}", to.label());
+            for (k, what) in [
+                ("dropped", "pending deliveries dropped"),
+                ("released", "claimed messages returned"),
+            ] {
+                let n = out[k].as_u64().unwrap_or(0);
+                if n > 0 {
+                    s += &format!("\n{n} {what}");
+                }
+            }
+            s
+        }
         (false, false) => format!("{project} wasn't attached to {}", to.label()),
     };
     Ok(Report::new(out, human + &node::on_suffix()))

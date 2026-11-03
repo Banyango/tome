@@ -27,6 +27,13 @@ once it's attached.
 - A hub exists while its directory does; there's no hubs table.
 - The attachments table is the truth. The mirror is rewritten on every
   attach/detach and whenever the store opens.
+- Detach calls `Store::detach_cleanup`: pending deliveries of the hub's events
+  into that project are deleted, and messages it claimed are returned. Claims
+  carry `queue_messages.claimer_project` (set on pull from a hub or global
+  queue), since the claimer itself can be just `user`.
+- `hub.rm` checks `attached_projects` and `shared_pending`; `force` runs
+  `purge_shared` (attachments, deliveries, events, queues) before removing the
+  directory.
 - Layers: `workflow::Library.hubs` adds `Scope::Hub` entries (checked like project
   ones), `arming::scan` arms them once per attached project (the project's own name
   wins, and two hubs with one name are a broken trigger), and `config::Config::load`

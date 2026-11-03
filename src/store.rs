@@ -275,6 +275,9 @@ const MIGRATIONS: &[&str] = &[
     // 18: the project that published an event; its `project_path` is the
     // bus it's on (a project, or a `scope::Shared` key)
     "ALTER TABLE bus_events ADD COLUMN publisher VARCHAR;",
+    // 19: the project a hub's or global's message was claimed from, so
+    // detaching returns that project's claims
+    "ALTER TABLE queue_messages ADD COLUMN claimer_project VARCHAR;",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.

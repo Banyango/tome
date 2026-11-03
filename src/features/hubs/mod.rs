@@ -129,25 +129,41 @@ impl Engine {
         Ok(json!({ "hub": hub.as_str(), "path": dir(&hub), "created": true }))
     }
 
-    /// `hub.rm {name}`: refused while any project is attached.
+    /// `hub.rm {name, force?}`: refused while projects are attached or work
+    /// is pending, unless `force`, which detaches them and deletes it all.
     fn hub_rm(&self, p: &Value) -> CliResult<Value> {
         let hub = hub_param(p)?;
         if !exists(&hub) {
             return Err(missing(&hub));
         }
+        let force = p["force"].as_bool().unwrap_or(false);
         let shared = Shared::Hub(hub.clone());
-        let attached = self.with_store(|store| store.attached_projects(&shared))?;
-        if !attached.is_empty() {
-            return Err(CliError::conflict(format!(
-                "hub `{hub}` has attached projects: {}",
-                attached.join(", ")
+        let (attached, pending) = self.with_store(|store| {
+            Ok((
+                store.attached_projects(&shared)?,
+                store.shared_pending(&shared)?,
             ))
-            .with_hint(format!(
-                "detach them first (`tome hub detach {hub}` in each)"
-            )));
+        })?;
+        if !force && !(attached.is_empty() && pending.is_empty()) {
+            let mut busy = Vec::new();
+            if !attached.is_empty() {
+                busy.push(format!("attached projects: {}", attached.join(", ")));
+            }
+            if !pending.is_empty() {
+                let work: Vec<String> = pending.iter().map(|(w, n)| format!("{w} ({n})")).collect();
+                busy.push(format!("pending work: {}", work.join(", ")));
+            }
+            return Err(CliError::conflict(format!("hub `{hub}` has {}", busy.join("; ")))
+                .with_hint(format!(
+                    "detach the projects (`tome hub detach {hub}` in each) and let the work drain, or use `tome hub rm {hub} --force`"
+                )));
         }
+        self.with_store(|store| {
+            store.purge_shared(&shared)?;
+            store.mirror_attachments()
+        })?;
         std::fs::remove_dir_all(dir(&hub))?;
-        Ok(json!({ "hub": hub.as_str(), "removed": true }))
+        Ok(json!({ "hub": hub.as_str(), "removed": true, "detached": attached }))
     }
 
     /// `hub.attach|hub.detach {project_path, hub? | global?}`
@@ -159,15 +175,20 @@ impl Engine {
                 return Err(missing(h));
             }
         }
-        let changed = self.with_store(|store| {
+        let (changed, (dropped, released)) = self.with_store(|store| {
             let changed = if attach {
                 store.register_project(project)?;
                 store.attach(project, &to)
             } else {
                 store.detach(project, &to)
             }?;
+            let cleaned = if attach {
+                (0, 0)
+            } else {
+                store.detach_cleanup(project, &to)?
+            };
             store.mirror_attachments()?;
-            Ok(changed)
+            Ok((changed, cleaned))
         })?;
         Ok(json!({
             "project": project,
@@ -176,6 +197,8 @@ impl Engine {
             "global": to == Shared::Global,
             "attached": attach,
             "changed": changed,
+            "dropped": dropped,
+            "released": released,
         }))
     }
 

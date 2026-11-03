@@ -768,8 +768,14 @@ enum TriggersCommand {
 enum HubCommand {
     /// Create a hub on this machine.
     Create { name: String },
-    /// Remove a hub (refused while projects are attached).
-    Rm { name: String },
+    /// Remove a hub (refused while projects are attached or work is pending).
+    Rm {
+        name: String,
+        /// Detach every project and delete the hub's events, deliveries,
+        /// queues and files.
+        #[arg(long)]
+        force: bool,
+    },
     /// Attach the current project to a hub, or to global.
     Attach {
         #[arg(required_unless_present = "global", conflicts_with = "global")]
@@ -1415,7 +1421,7 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
         Command::Notify { title, message } => features::plugins::cmd::notify(&title, &message),
         Command::Hub { command } => match command {
             HubCommand::Create { name } => features::hubs::cmd::create(&name),
-            HubCommand::Rm { name } => features::hubs::cmd::rm(&name),
+            HubCommand::Rm { name, force } => features::hubs::cmd::rm(&name, force),
             HubCommand::Attach { name, global } => {
                 features::hubs::cmd::attach(&current_dir()?, name.as_deref(), global, true)
             }

@@ -142,8 +142,15 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(internal)
     }
 
-    /// Claim the oldest unclaimed message for `claimer`.
-    pub fn pull_message(&mut self, project: &str, queue: &str, claimer: &str) -> CliResult<Pulled> {
+    /// Claim the oldest unclaimed message for `claimer`, pulling from
+    /// `from` (the attached project, for a hub's or global's queue).
+    pub fn pull_message(
+        &mut self,
+        project: &str,
+        queue: &str,
+        claimer: &str,
+        from: Option<&str>,
+    ) -> CliResult<Pulled> {
         check_name("queue", queue)?;
         let next: Option<i64> = self
             .conn
@@ -158,8 +165,8 @@ impl Store {
             Some(id) => {
                 self.conn
                     .execute(
-                        "UPDATE queue_messages SET claimed_by = ?, claimed_at = ? WHERE id = ?",
-                        params![claimer, now(), id],
+                        "UPDATE queue_messages SET claimed_by = ?, claimed_at = ?, claimer_project = ? WHERE id = ?",
+                        params![claimer, now(), from, id],
                     )
                     .map_err(internal)?;
                 Ok(Pulled::Message(
@@ -232,7 +239,7 @@ impl Store {
     pub fn release_claims(&mut self, claimer: &str) -> CliResult<usize> {
         self.conn
             .execute(
-                "UPDATE queue_messages SET claimed_by = NULL, claimed_at = NULL WHERE claimed_by = ?",
+                "UPDATE queue_messages SET claimed_by = NULL, claimed_at = NULL, claimer_project = NULL WHERE claimed_by = ?",
                 params![claimer],
             )
             .map_err(internal)
@@ -257,21 +264,21 @@ mod tests {
     fn claim_ack_release_and_close() {
         let (_d, mut store) = store();
         assert!(matches!(
-            store.pull_message(P, "q", "a").unwrap(),
+            store.pull_message(P, "q", "a", None).unwrap(),
             Pulled::Empty
         ));
         let m1 = store.push_message(P, "q", "one", "user").unwrap();
         let m2 = store.push_message(P, "q", "two", "user").unwrap();
         assert_eq!(
-            pulled_id(store.pull_message(P, "q", "a").unwrap()),
+            pulled_id(store.pull_message(P, "q", "a", None).unwrap()),
             Some(m1.id)
         );
         assert_eq!(
-            pulled_id(store.pull_message(P, "q", "b").unwrap()),
+            pulled_id(store.pull_message(P, "q", "b", None).unwrap()),
             Some(m2.id)
         );
         assert!(matches!(
-            store.pull_message(P, "q", "c").unwrap(),
+            store.pull_message(P, "q", "c", None).unwrap(),
             Pulled::Empty
         ));
 
@@ -292,12 +299,12 @@ mod tests {
             .message
             .contains("closed"));
         assert_eq!(
-            pulled_id(store.pull_message(P, "q", "c").unwrap()),
+            pulled_id(store.pull_message(P, "q", "c", None).unwrap()),
             Some(m1.id),
             "closed queues still drain"
         );
         assert!(matches!(
-            store.pull_message(P, "q", "c").unwrap(),
+            store.pull_message(P, "q", "c", None).unwrap(),
             Pulled::Closed
         ));
     }
@@ -310,7 +317,7 @@ mod tests {
         store
             .push_message("/other", "q", "elsewhere", "user")
             .unwrap();
-        store.pull_message(P, "q", "a").unwrap();
+        store.pull_message(P, "q", "a", None).unwrap();
 
         let seen = store.peek_messages(P, "q", 10).unwrap();
         assert_eq!(

@@ -854,12 +854,12 @@ fn queue(store: &mut Store, method: &str, p: &Value) -> CliResult<Value> {
         }
     };
     let shared = crate::features::hubs::bus_param(p)?;
-    let project = match &shared {
+    let (project, from) = match &shared {
         Some(to) => {
             crate::features::hubs::require_attached(store, Some(&project), to)?;
-            to.key()
+            (to.key(), Some(project))
         }
-        None => project,
+        None => (project, None),
     };
     let me = match &run {
         Some(run) => crate::ids::run_sender(run.id, caller(p)),
@@ -873,7 +873,7 @@ fn queue(store: &mut Store, method: &str, p: &Value) -> CliResult<Value> {
             &me
         )?)),
         "queue.pull" => Ok(
-            match store.pull_message(&project, req_str(p, "queue")?, &me)? {
+            match store.pull_message(&project, req_str(p, "queue")?, &me, from.as_deref())? {
                 Pulled::Message(m) => json!({ "status": "message", "message": m }),
                 Pulled::Empty => json!({ "status": "empty" }),
                 Pulled::Closed => json!({ "status": "closed" }),

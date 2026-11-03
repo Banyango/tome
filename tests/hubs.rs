@@ -313,3 +313,35 @@ fn hub_config_layers_between_global_and_project() {
         "hub forwarding rules are read: {v}"
     );
 }
+
+#[test]
+fn detach_returns_claims_and_rm_refuses_pending_work() {
+    let env = env_with_project();
+    assert_eq!(env.json(&["hub", "create", "release"]).0, 0);
+    assert_eq!(env.json(&["hub", "attach", "release"]).0, 0);
+    assert_eq!(
+        env.json(&["queue", "push", "jobs", "a", "--hub", "release"])
+            .0,
+        0
+    );
+    assert_eq!(
+        env.json(&["queue", "pull", "jobs", "--hub", "release"]).0,
+        0
+    );
+
+    let (code, v) = env.json(&["hub", "detach", "release"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["released"], 1, "{v}");
+
+    let (code, v) = env.json(&["hub", "rm", "release"]);
+    assert_ne!(code, 0, "refused while a message is queued: {v}");
+    assert!(v.to_string().contains("queue jobs (1)"), "{v}");
+
+    assert_eq!(env.json(&["hub", "attach", "release"]).0, 0);
+    let (code, v) = env.json(&["hub", "rm", "release", "--force"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["detached"].as_array().unwrap().len(), 1, "{v}");
+    assert!(!env.home().join("hubs/release").exists());
+    let (_, v) = env.json(&["hub", "show"]);
+    assert_eq!(v["attached"], serde_json::json!([]), "{v}");
+}
