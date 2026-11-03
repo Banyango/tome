@@ -167,6 +167,7 @@ impl Engine {
             || triggers::METHODS.contains(&method)
             || handshake::METHODS.contains(&method)
             || crate::features::bus::METHODS.contains(&method)
+            || crate::features::hubs::METHODS.contains(&method)
     }
 
     pub fn dispatch(&self, method: &str, p: &Value) -> CliResult<Value> {
@@ -191,6 +192,7 @@ impl Engine {
             m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
             m if triggers::METHODS.contains(&m) => self.dispatch_triggers(m, p),
             m if crate::features::bus::METHODS.contains(&m) => self.dispatch_bus(m, p),
+            m if crate::features::hubs::METHODS.contains(&m) => self.dispatch_hubs(m, p),
             "agent.ready" => self.ready(p),
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }

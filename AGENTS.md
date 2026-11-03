@@ -12,7 +12,7 @@ Rust CLI and daemon for repeatable agentic workflows (Markdown workflows started
 
 ## Architecture and navigation
 
-One binary crate; the daemon owns the only DuckDB connection and CLI commands reach it over JSON-RPC. Start from the feature doc, not a crate-wide search. Features are moving into `src/features/<name>/` one at a time (done: bus, plugins, nodes); the rest are flat files in `src/`. Update the docs when you move or add modules. Overview and known coupling: `docs/modules/architecture.md`.
+One binary crate; the daemon owns the only DuckDB connection and CLI commands reach it over JSON-RPC. Start from the feature doc, not a crate-wide search. Features are moving into `src/features/<name>/` one at a time (done: bus, plugins, nodes, hubs); the rest are flat files in `src/`. Update the docs when you move or add modules. Overview and known coupling: `docs/modules/architecture.md`.
 
 - Workflow files, `tome workflow`, `tome validate`: `docs/modules/workflows.md`
 - Cron, file, topic and manual triggers; arming; file watching: `docs/modules/triggers.md`
@@ -20,6 +20,7 @@ One binary crate; the daemon owns the only DuckDB connection and CLI commands re
 - `tome worker|group|worktree|queue`: `docs/modules/workers.md`
 - Terminals (cmux/tmux/herdr), placement, harnesses: `docs/modules/sessions.md`
 - Message bus, `tome publish|events`: `docs/modules/bus.md`
+- Hubs, attachments, hub/global scopes, `tome hub`: `docs/modules/hubs.md`
 - Nodes over SSH, node providers: `docs/modules/nodes.md`
 - Plugins and hooks: `docs/modules/plugins.md`
 - Daemon process, RPC protocol, service install: `docs/modules/daemon.md`

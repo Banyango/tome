@@ -2,5 +2,6 @@
 //! its tests together. See `docs/modules/` for what each owns.
 
 pub mod bus;
+pub mod hubs;
 pub mod nodes;
 pub mod plugins;

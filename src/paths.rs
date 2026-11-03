@@ -44,6 +44,12 @@ pub fn plugins_dir() -> PathBuf {
     tome_home().join("plugins")
 }
 
+/// Where hubs live: one folder per hub, holding its `workflows/` and
+/// `config.yaml`.
+pub fn hubs_dir() -> PathBuf {
+    tome_home().join("hubs")
+}
+
 /// Whether `a` and `b` are the same location, following symlinks when both exist.
 pub fn same_path(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {

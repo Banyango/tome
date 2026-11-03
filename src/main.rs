@@ -29,6 +29,7 @@ mod role;
 mod rpc;
 mod runcmd;
 mod scaffold;
+mod scope;
 mod service;
 mod session;
 mod stop;
@@ -190,6 +191,11 @@ enum Command {
         title: String,
         /// The message.
         message: String,
+    },
+    /// Hubs: groups of projects sharing a bus, queues, workflows and config.
+    Hub {
+        #[command(subcommand)]
+        command: HubCommand,
     },
     /// Inspect and repair the project's message bus.
     Events {
@@ -740,6 +746,38 @@ enum TriggersCommand {
         /// Show what would happen, with the resolved params, without doing it.
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HubCommand {
+    /// Create a hub on this machine.
+    Create { name: String },
+    /// Remove a hub (refused while projects are attached).
+    Rm { name: String },
+    /// Attach the current project to a hub, or to global.
+    Attach {
+        #[arg(required_unless_present = "global", conflicts_with = "global")]
+        name: Option<String>,
+        /// Attach to the global bus and queues.
+        #[arg(long)]
+        global: bool,
+    },
+    /// Detach the current project from a hub, or from global.
+    Detach {
+        #[arg(required_unless_present = "global", conflicts_with = "global")]
+        name: Option<String>,
+        #[arg(long)]
+        global: bool,
+    },
+    /// List the hubs, with how many projects are attached.
+    Ls,
+    /// Show a hub (or global); with neither, what this project is attached to.
+    Show {
+        #[arg(conflicts_with = "global")]
+        name: Option<String>,
+        #[arg(long)]
+        global: bool,
     },
 }
 
@@ -1322,6 +1360,20 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
             dry_run,
         } => features::bus::cmd::publish(&current_dir()?, &topic, text, dry_run),
         Command::Notify { title, message } => features::plugins::cmd::notify(&title, &message),
+        Command::Hub { command } => match command {
+            HubCommand::Create { name } => features::hubs::cmd::create(&name),
+            HubCommand::Rm { name } => features::hubs::cmd::rm(&name),
+            HubCommand::Attach { name, global } => {
+                features::hubs::cmd::attach(&current_dir()?, name.as_deref(), global, true)
+            }
+            HubCommand::Detach { name, global } => {
+                features::hubs::cmd::attach(&current_dir()?, name.as_deref(), global, false)
+            }
+            HubCommand::Ls => features::hubs::cmd::ls(),
+            HubCommand::Show { name, global } => {
+                features::hubs::cmd::show(&current_dir()?, name.as_deref(), global)
+            }
+        },
         Command::Events { command } => match command {
             EventsCommand::Ls => features::bus::cmd::ls(&current_dir()?),
             EventsCommand::Show { topic, all } => {

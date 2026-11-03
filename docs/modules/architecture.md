@@ -4,7 +4,7 @@ A map for agents and new contributors: where each feature lives today, so a
 change can start from one feature doc instead of a crate-wide search. These
 docs follow the code as it moves: features are being moved one at a time into
 `src/features/<name>/` (daemon code, `cmd.rs` CLI adapter, tests together). Done:
-bus, plugins, nodes. The rest are still flat files in `src/`.
+bus, plugins, nodes, hubs. The rest are still flat files in `src/`.
 
 tome is one binary crate. A CLI process parses a command (`src/main.rs`,
 `dispatch`) and either does local work or sends a JSON-RPC request to the
@@ -21,6 +21,7 @@ read or write of run state goes through it.
 | Workers | [workers.md](workers.md) | `tome worker/group/worktree/queue`, worker monitor, queues |
 | Sessions | [sessions.md](sessions.md) | Terminals (cmux/tmux/herdr), placement, harnesses, git worktrees |
 | Bus | [bus.md](bus.md) | Project message bus: publish, deliveries, forwarding, lifecycle events |
+| Hubs | [hubs.md](hubs.md) | Hubs, attachments, hub/global scopes |
 | Nodes | [nodes.md](nodes.md) | Remote machines over SSH, node providers |
 | Plugins | [plugins.md](plugins.md) | Plugin install/manage, hook host, `run.before_start` gate |
 | Daemon | [daemon.md](daemon.md) | Daemon process, RPC protocol, service install, lifecycle |
@@ -34,7 +35,8 @@ read or write of run state goes through it.
   them: `src/ids.rs` (`RunId` and friends, `run_sender`), `src/paths.rs`
   (everything under `~/.tome`, overridable with `TOME_HOME`; `same_path`),
   `src/role.rs` (`Mode`, the `orchestrator`/`agent` roles, `is_main`),
-  `src/text.rs` (`is_identifier`, `shell_quote`), `src/params.rs` (`req_*`/`opt_*`
+  `src/text.rs` (`is_identifier`, `shell_quote`), `src/scope.rs` (`Scope`, `Shared`,
+  `HubName`), `src/params.rs` (`req_*`/`opt_*`
   readers for RPC params, `internal`), `src/provider_opts.rs` (`--provider-opt`
   and `provider_opts:` parsing). `ids.rs` also holds the node name rules
   (`LOCAL`, `check_node_name`).

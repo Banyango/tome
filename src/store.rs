@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+mod attachments;
 mod events;
 mod queues;
 mod triggers;
@@ -261,6 +262,16 @@ const MIGRATIONS: &[&str] = &[
     // 16: custom statuses set with `tome step status`, on each step and on
     // the run (following its active step)
     "ALTER TABLE steps ADD COLUMN custom_status VARCHAR; ALTER TABLE runs ADD COLUMN custom_status VARCHAR;",
+    // 17: which hubs (and whether global) each project is attached to;
+    // `scope` is a `scope::Shared` key
+    "
+    CREATE TABLE attachments (
+        project_path VARCHAR NOT NULL,
+        scope        VARCHAR NOT NULL,
+        attached_at  TIMESTAMP NOT NULL,
+        PRIMARY KEY (project_path, scope)
+    );
+    ",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.

@@ -18,6 +18,7 @@
 - [Create workflows with an agent](guides/create-with-an-agent.md)
 - [Write a workflow](guides/write-a-workflow.md)
 - [Triggers and the message bus](guides/triggers.md)
+- [Hubs](guides/hubs.md)
 - [Workers, worktrees and fan-out](guides/workers.md)
 - [Sessions and backends](guides/sessions.md)
 - [Operating tome](guides/operating.md)
