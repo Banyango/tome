@@ -135,7 +135,7 @@ pub fn create(base: &Base, run_id: RunId, name: &str, branch: Option<&str>) -> C
 }
 
 /// `branch` if git accepts it as a new branch name.
-fn check_branch(repo: &Path, branch: &str) -> CliResult<String> {
+pub(crate) fn check_branch(repo: &Path, branch: &str) -> CliResult<String> {
     match git(repo, &["check-ref-format", "--branch", branch]) {
         Ok(b) if b.trim() == branch => Ok(branch.to_string()),
         _ => Err(
@@ -147,7 +147,7 @@ fn check_branch(repo: &Path, branch: &str) -> CliResult<String> {
 
 /// Add `.tome/worktrees/` to the repo's `.gitignore` unless it's already
 /// ignored.
-fn ensure_ignored(repo: &Path) -> CliResult<()> {
+pub(crate) fn ensure_ignored(repo: &Path) -> CliResult<()> {
     let probe = format!("{DIR}/probe");
     let ignored = Command::new("git")
         .arg("-C")

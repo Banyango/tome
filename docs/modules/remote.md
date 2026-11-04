@@ -20,7 +20,10 @@ Two daemons are involved: the **run's daemon** (owns the worker) and the
   `node_unreachable`.
 - `src/features/remote/spawn.rs`: `remote_node` (refuses providers and
   unknown nodes, opens the link, checks the capability) and
-  `launch_remote` (locates the project on the node, calls `hosted.spawn`).
+  `launch_remote` (locates the project on the node, pushes the base as the
+  worker's branch in a git project, calls `hosted.spawn`), and `fetch_back`
+  (fetches the branch back when the worker ends; a failure becomes a run
+  note).
 - `src/features/remote/host.rs`: the node's side. `Host` queues hosted
   workers' calls per origin and wakes the waiting poll; `hosted_spawn`,
   `hosted_poll`, `hosted_close`, and `check_hosted` (from the monitor:
@@ -31,8 +34,14 @@ Two daemons are involved: the **run's daemon** (owns the worker) and the
 
 ## Flow
 
-1. The run's daemon reserves the worker, records its node and calls
-   `hosted.spawn {origin, run_id, name, command, project, ...}`.
+1. The run's daemon reserves the worker, records its node and, in a git
+   project, pushes the base commit to `<node.ssh>:<project>` as
+   `refs/heads/<branch>` (`git push` with `GIT_SSH_COMMAND` set to tome's
+   ssh). It then calls `hosted.spawn {origin, run_id, name, command, project,
+   worktree: {branch}, ...}`; the node adds a worktree at
+   `.tome/worktrees/hosted-<tag>-<run>-<name>` and returns its path, which
+   the run records as the worker's worktree (`<node>:<path>`). It isn't in
+   the run side's `worktrees` table.
 2. The node launches the session with `TOME_RUN_ID`, `TOME_WORKER_ID` and
    `TOME_HOSTED=<origin>`. `rpc::caller()` adds `hosted` to every call the
    worker makes; `Daemon::handle` sends those to `Host::relay` instead of
@@ -41,7 +50,8 @@ Two daemons are involved: the **run's daemon** (owns the worker) and the
    the replies to earlier calls. The run's daemon dispatches relayed calls
    (only worker/step/agent methods, only from a live worker on that node)
    and ends exited workers through `Engine::end_exited`.
-4. When a worker ends, `after_end` sends `hosted.close`; cancelling the run
+4. When a worker ends, `after_end` sends `hosted.close` and fetches its
+   branch back; cancelling the run
    (`Engine::kill_sessions`) closes all of its hosted workers.
 
 The node's daemon notices its upstream is gone when the poll connection

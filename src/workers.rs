@@ -330,11 +330,6 @@ impl Engine {
         // Check the node before recording anything, so a bad one spawns nothing.
         let remote = match opt_str(p, "node") {
             Some(node) => {
-                if with_worktree {
-                    return Err(CliError::invalid(
-                        "--worktree doesn't apply with --node yet",
-                    ));
-                }
                 if !matches!(task, Task::Command(_)) {
                     return Err(CliError::invalid(
                         "only command workers (after `--`) can run on a node yet",
@@ -437,6 +432,8 @@ impl Engine {
                 command: cmd,
                 keep_open: worker.keep_open,
                 placement: p.get("placement").filter(|v| !v.is_null()),
+                base: opt_str(p, "base"),
+                branch,
             };
             return self.spawn_on(&run, node, &remote);
         }
@@ -493,9 +490,12 @@ impl Engine {
         let (run_id, name) = (run.id, task.name);
         self.with_store(|store| store.set_worker_node(run_id, name, &node.name))?;
         match self.launch_remote(run, node, task) {
-            Ok(session) => {
+            Ok(launched) => {
                 let started = self.with_store(|store| {
-                    let started = store.start_worker(run_id, name, &session)?;
+                    if let Some((path, branch, base)) = &launched.worktree {
+                        store.set_worker_worktree(run_id, name, path, branch, base)?;
+                    }
+                    let started = store.start_worker(run_id, name, &launched.session)?;
                     self.sync(store, run_id);
                     Ok(started)
                 });
@@ -801,6 +801,7 @@ impl Engine {
         // A remote worker's session is its node's to close.
         if let Some(node) = &end.worker.node {
             self.node_close(node, run_id, Some(&end.worker.name), !end.worker.keep_open);
+            self.fetch_back(run_id, &end.worker);
         }
         let running = self
             .with_store(|store| store.require_run(run_id))

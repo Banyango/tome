@@ -18,6 +18,7 @@ use crate::rpc::Response;
 use crate::session::{self, Backend, Kind, Launch, Split, Target};
 use crate::store::{self, HostedStatus, HostedWorker, NewHosted};
 use crate::workers::{self, SUMMARY_LINES};
+use crate::worktree;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -147,6 +148,44 @@ fn session_of(h: &HostedWorker) -> Option<store::Session> {
     serde_json::from_value(h.session.clone()?).ok()
 }
 
+/// Check out `branch` (just pushed by the run's daemon) in a worktree of
+/// `repo` for a hosted worker. One left by an earlier spawn is replaced.
+fn add_worktree(
+    repo: &Path,
+    origin: &str,
+    run_id: i64,
+    name: &str,
+    branch: &str,
+) -> CliResult<PathBuf> {
+    let path = repo
+        .join(".tome/worktrees")
+        .join(format!("hosted-{}-{run_id}-{name}", tag(origin)));
+    worktree::ensure_ignored(repo)?;
+    if path.exists() {
+        let _ = worktree::git(
+            repo,
+            &["worktree", "remove", "--force", &path.to_string_lossy()],
+        );
+    }
+    worktree::git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            &path.to_string_lossy(),
+            branch,
+        ],
+    )
+    .map_err(|e| {
+        CliError::invalid(format!(
+            "couldn't add a worktree for {branch} in {}: {e}",
+            repo.display()
+        ))
+    })?;
+    Ok(path)
+}
+
 impl Engine {
     /// `hosted.spawn {origin, run_id, name, workflow, command, keep_open,
     /// project, placement?}`: start a worker's session here for a run on
@@ -161,8 +200,15 @@ impl Engine {
         let workflow = opt_str(p, "workflow").unwrap_or("run");
         let keep_open = p["keep_open"].as_bool().unwrap_or(false);
         let project = opt_str(p, "project").map(PathBuf::from);
-        let cwd = opt_str(p, "cwd")
-            .map(PathBuf::from)
+        let branch = p["worktree"]["branch"].as_str();
+        let worktree = match (branch, &project) {
+            (Some(branch), Some(repo)) => Some(add_worktree(repo, origin, run_id, name, branch)?),
+            (Some(_), None) => return Err(CliError::invalid("a worktree needs a project")),
+            _ => None,
+        };
+        let cwd = worktree
+            .clone()
+            .or_else(|| opt_str(p, "cwd").map(PathBuf::from))
             .or_else(|| project.clone())
             .unwrap_or_else(paths::user_home);
         let argv: Vec<String> = p["command"]
@@ -193,8 +239,8 @@ impl Engine {
                 keep_open,
                 dir: &dir_str,
                 repo: project.as_deref().and_then(Path::to_str),
-                worktree: None,
-                branch: None,
+                worktree: worktree.as_deref().and_then(Path::to_str),
+                branch,
             })
         })?;
         let launched = self.launch_hosted(
@@ -217,7 +263,7 @@ impl Engine {
             }
         };
         self.with_store(|store| store.set_hosted_session(origin, run_id, name, &json!(s)))?;
-        Ok(json!({ "session": s.name, "backend": s.backend }))
+        Ok(json!({ "session": s.name, "backend": s.backend, "worktree": worktree }))
     }
 
     #[allow(clippy::too_many_arguments)]

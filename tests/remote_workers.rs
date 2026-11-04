@@ -229,3 +229,82 @@ fn cancelling_the_run_closes_hosted_sessions() {
         n.hosted_sessions().is_empty()
     });
 }
+
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Make `here`'s project a git repo with one commit, and mini's a clone.
+fn git_projects(n: &Nodes) {
+    let here = n.here.project();
+    git(&here, &["init", "-q", "-b", "main"]);
+    git(&here, &["add", "-A"]);
+    git(&here, &["commit", "-qm", "init"]);
+    let mini = n.mini.project();
+    fs::remove_dir_all(&mini).unwrap();
+    git(
+        n.mini.dir.path(),
+        &[
+            "clone",
+            "-q",
+            &here.to_string_lossy(),
+            &mini.to_string_lossy(),
+        ],
+    );
+}
+
+#[test]
+fn remote_workers_get_a_worktree_and_their_branch_comes_back() {
+    let n = Nodes::new();
+    git_projects(&n);
+    // Uncommitted changes stay here.
+    fs::write(n.here.project().join("dirty.txt"), "x").unwrap();
+    let run = n.start();
+    let w = n.ok(
+        &run,
+        &[
+            "worker", "spawn", "--node", "mini", "--name", "edit", "--", "sh", "-c",
+            "test ! -e dirty.txt && echo hi > made.txt && git add made.txt && git -c user.name=t -c user.email=t@t commit -qm made",
+        ],
+    );
+    assert!(w["worktree"].as_str().unwrap().starts_with("mini:"), "{w}");
+    let w = n.ok(&run, &["worker", "wait", "edit"]);
+    assert_eq!(w["status"], "done", "{w}");
+    let branch = format!("tome/{run}/edit");
+    let here = n.here.project();
+    eventually("the branch is fetched back", || {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&here)
+            .args(["cat-file", "-e", &format!("{branch}:made.txt")])
+            .status()
+            .is_ok_and(|s| s.success())
+    });
+    let shown = n.here.json(&["runs", "show", &run]).1;
+    assert!(shown.to_string().contains("uncommitted changes"), "{shown}");
+}
+
+#[test]
+fn a_node_copy_that_isnt_a_repo_spawns_nothing() {
+    let n = Nodes::new();
+    let here = n.here.project();
+    git(&here, &["init", "-q", "-b", "main"]);
+    git(&here, &["add", "-A"]);
+    git(&here, &["commit", "-qm", "init"]);
+    let run = n.start();
+    let (code, err) = n.tome(&run, &["worker", "spawn", "--node", "mini", "--", "true"]);
+    assert_eq!(code, 4, "{err}");
+    assert!(err.to_string().contains("nodes.mini.projects"), "{err}");
+}

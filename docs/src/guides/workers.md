@@ -36,7 +36,11 @@ Sessions are closed when a worker finishes. `--keep-open` keeps one open so you 
 tome worker spawn --node mini --name tests -- cargo test
 ```
 
-The run stays here. While the run has workers on a node, tome keeps one SSH link to it; the worker's `tome worker done|fail` calls and its exit code come back over that link, so it reports like any other worker. It runs in the node's copy of the project. For now only command workers run on nodes, without a worktree.
+The run stays here. While the run has workers on a node, tome keeps one SSH link to it; the worker's `tome worker done|fail` calls and its exit code come back over that link, so it reports like any other worker. It runs in the node's copy of the project (see [project paths](nodes.md)). For now only command workers run on nodes.
+
+When the project is a git repo, a remote worker always gets a worktree on the node, whether or not you pass `--worktree`. tome pushes the base commit (`--base`, or `HEAD`) over SSH into the node's copy as the worker's branch (`--branch`, or `tome/<run>/<name>`), and the worker works in a worktree of it under `.tome/worktrees/` there. When the worker ends, its branch is fetched back into your repo under the same name, so you merge it like any other worker's branch. Uncommitted changes aren't sent; the run gets a note saying so. If the fetch fails, the run gets a note naming the branch on the node.
+
+The node's copy must be a git repo. If it isn't, the spawn fails with exit 4 and says which `nodes.<node>.projects.<dir>` setting points tome at the right clone.
 
 The spawn fails with exit 2 if the node isn't configured, names a provider, or runs a tome too old to host workers, and with exit 3 if the node can't be reached.
 
