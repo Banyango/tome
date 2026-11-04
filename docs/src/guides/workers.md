@@ -30,7 +30,7 @@ Sessions are closed when a worker finishes. `--keep-open` keeps one open so you 
 
 ### Workers on other machines
 
-`--node <name>` runs a worker on a [node](nodes.md) instead of this machine:
+`--node <name>` runs a worker on a [node](nodes.md) instead of this machine (a workflow can also [set a default node per worker](sessions.md#setting-placement)):
 
 ```sh
 tome worker spawn --node mini --name tests -- cargo test

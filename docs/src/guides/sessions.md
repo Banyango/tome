@@ -170,6 +170,20 @@ After that, all of them use `defaults.layout` and its preset, then `TOME_LAYOUT`
 
 `from: caller` is for the run's agent or orchestrator only. A worker's rule can't set it, and `tome worker spawn` refuses it.
 
+The `workers` block and its rules also take `node:`, the [node](nodes.md) a worker runs on unless `tome worker spawn --node` says otherwise. The first matching rule's `node` wins, then the block's; `node: local` (or `--node local`) keeps a worker on this machine. See [workers on other machines](workers.md#workers-on-other-machines).
+
+```yaml
+defaults:
+  layout:
+    workers:
+      node: mini            # every worker runs on mini...
+      rules:
+        - match: "ui-*"
+          node: local       # ...except ui-* workers, which stay here
+```
+
+`tome validate` warns about a `node` that isn't configured under `nodes:`, including a provider name, since only configured nodes can host workers.
+
 `tome runs show <id>` shows where each session ended up, and which source each setting came from, plus any warnings. Split sizes are best effort.
 
 ### Moving a session

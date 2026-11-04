@@ -32,6 +32,11 @@ Two daemons are involved: the **run's daemon** (owns the worker) and the
 - `src/store/hosted.rs`: the node's `hosted_workers` table. The run's
   `workers` table has a `node` column.
 
+The node a worker runs on comes from `--node`, else
+`placement::Spec::node_for` (`defaults.layout.workers` rules' and block's
+`node`); `local` means this machine. `tome validate` warns about nodes that
+aren't configured (`validate::warnings_json`).
+
 ## Flow
 
 1. The run's daemon reserves the worker, records its node and, in a git

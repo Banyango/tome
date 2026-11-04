@@ -168,7 +168,32 @@ fn warnings_json(wf: &Workflow, cwd: &Path) -> Value {
             "message": format!("layout preset `{name}` isn't defined here (known: built-in presets and `layout_presets` in the tome config)"),
         }));
     }
+    // So do nodes: a provider or an unconfigured name can't host workers.
+    if let Some(spec) = wf.frontmatter().defaults.layout.as_ref() {
+        let known = crate::features::nodes::all().unwrap_or_default();
+        for node in spec.nodes() {
+            if node != crate::ids::LOCAL && !known.contains_key(node) {
+                all.push(json!({
+                    "line": node_line(wf, node),
+                    "message": format!("node `{node}` isn't a configured node; workers can only run on nodes under `nodes:` in the tome config, not providers"),
+                }));
+            }
+        }
+    }
     json!(all)
+}
+
+/// The file line naming a node, or the frontmatter's first.
+fn node_line(wf: &Workflow, name: &str) -> usize {
+    wf.source()
+        .lines()
+        .position(|l| {
+            l.split("node:")
+                .nth(1)
+                .is_some_and(|v| v.trim().trim_matches(['"', '\'', '}', ',', ' ']) == name)
+        })
+        .map(|i| i + 1)
+        .unwrap_or(1)
 }
 
 /// The file line naming a preset, or the frontmatter's first.

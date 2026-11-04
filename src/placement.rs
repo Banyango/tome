@@ -506,6 +506,9 @@ pub struct Rule {
     pub glob: Option<Glob>,
     #[serde(flatten)]
     pub settings: Settings,
+    /// The node its workers run on, unless `--node` says otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 impl Rule {
@@ -528,9 +531,33 @@ pub struct Spec {
     pub workers: Option<Settings>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<Rule>,
+    /// `workers.node`: the node workers run on by default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workers_node: Option<String>,
 }
 
 impl Spec {
+    /// The node a worker named `name` runs on by default: the first
+    /// matching rule's, else the `workers` block's.
+    pub fn node_for(&self, name: Option<&str>) -> Option<&str> {
+        let rule = name.and_then(|n| self.rules.iter().find(|r| r.matches(n)));
+        rule.and_then(|r| r.node.as_deref())
+            .or(self.workers_node.as_deref())
+    }
+
+    /// Every node it names.
+    pub fn nodes(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = self
+            .rules
+            .iter()
+            .filter_map(|r| r.node.as_deref())
+            .chain(self.workers_node.as_deref())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Every preset it names.
     pub fn presets(&self) -> Vec<&str> {
         let mut out: Vec<&str> = [
@@ -596,10 +623,11 @@ pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
                     m,
                     &at,
                     "`defaults.layout.workers`",
-                    &["rules"],
+                    &["rules", "node"],
                     true,
                     problems,
                 );
+                spec.workers_node = parse_node(m, &at, "`defaults.layout.workers`", problems);
                 no_caller(&workers, &at, "`defaults.layout.workers`", problems);
                 spec.workers = Some(workers);
                 match m.get("rules") {
@@ -646,16 +674,39 @@ pub fn parse_spec(v: &Yaml, problems: &mut Vec<Problem>) -> Option<Spec> {
                     None
                 }
             };
-            let settings = parse_settings(m, &at, &what, &["match"], true, problems);
+            let settings = parse_settings(m, &at, &what, &["match", "node"], true, problems);
             no_caller(&settings, &at, &what, problems);
+            let node = parse_node(m, &at, &what, problems);
             spec.rules.push(Rule {
                 pattern,
                 glob,
                 settings,
+                node,
             });
         }
     }
     Some(spec)
+}
+
+/// A worker block's `node`: a node name.
+fn parse_node(
+    m: &serde_yaml::Mapping,
+    at: &[&str],
+    what: &str,
+    problems: &mut Vec<Problem>,
+) -> Option<String> {
+    match m.get("node")? {
+        Yaml::String(n) if !n.trim().is_empty() => Some(n.clone()),
+        _ => {
+            let mut path = at.to_vec();
+            path.push("node");
+            problems.push(Problem::new(
+                &path,
+                format!("{what}: `node` must be a node name"),
+            ));
+            None
+        }
+    }
 }
 
 /// `from: caller` in a worker's block: an error, since only a run's agent

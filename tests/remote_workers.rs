@@ -360,3 +360,33 @@ fn agent_workers_run_with_the_nodes_harness() {
     assert_eq!(code, 2, "{err}");
     assert!(err.to_string().contains("on this node"), "{err}");
 }
+
+#[test]
+fn workflows_set_a_default_node_per_worker() {
+    let n = Nodes::new();
+    fs::write(
+        n.here.project().join(".tome/workflows/build.md"),
+        "---\nname: build\nmode: orchestrated\ndefaults:\n  layout:\n    workers:\n      node: mini\n      rules:\n        - match: \"here-*\"\n          node: local\n---\n## Build\nBuild it.\n",
+    )
+    .unwrap();
+    let run = n.start();
+    let w = n.ok(&run, &["worker", "spawn", "--name", "far", "--", "true"]);
+    assert_eq!(w["node"], "mini", "{w}");
+    let w = n.ok(&run, &["worker", "spawn", "--name", "here-1", "--", "true"]);
+    assert!(w["node"].is_null(), "{w}");
+    let w = n.ok(
+        &run,
+        &[
+            "worker", "spawn", "--name", "x", "--node", "local", "--", "true",
+        ],
+    );
+    assert!(w["node"].is_null(), "{w}");
+
+    fs::write(
+        n.here.project().join(".tome/workflows/odd.md"),
+        "---\nname: odd\nmode: orchestrated\ndefaults:\n  layout:\n    workers:\n      node: nowhere\n---\n## Go\nGo.\n",
+    )
+    .unwrap();
+    let (_, out) = n.here.json(&["validate", "odd"]);
+    assert!(out.to_string().contains("node `nowhere`"), "{out}");
+}

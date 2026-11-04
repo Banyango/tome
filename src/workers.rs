@@ -271,8 +271,15 @@ impl Engine {
             )));
         }
         let wf = orchestrator::snapshot(&run)?;
+        // `--node`, else the workflow's default for this worker; `local`
+        // runs it here.
+        let fm = wf.frontmatter();
+        let node = opt_str(p, "node")
+            .or_else(|| fm.defaults.layout.as_ref()?.node_for(opt_str(p, "name")))
+            .filter(|n| *n != crate::ids::LOCAL)
+            .map(str::to_string);
         let task = match (prompt, command) {
-            (Some(prompt), None) if opt_str(p, "node").is_some() => {
+            (Some(prompt), None) if node.is_some() => {
                 let d = &wf.frontmatter().defaults;
                 let harness = opt_str(p, "harness")
                     .or(d.harness.as_deref())
@@ -349,7 +356,7 @@ impl Engine {
             )?;
         }
         // Check the node before recording anything, so a bad one spawns nothing.
-        let remote = match opt_str(p, "node") {
+        let remote = match &node {
             Some(node) => Some(self.remote_node(node)?),
             None => None,
         };
