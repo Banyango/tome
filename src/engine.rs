@@ -219,6 +219,7 @@ impl Engine {
             "agent.ready" => self.ready(p),
             "hosted.spawn" => self.hosted_spawn(p),
             "hosted.close" => self.hosted_close(p),
+            "hosted.attach" => self.hosted_attach(p),
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
     }
@@ -658,6 +659,26 @@ impl Engine {
                 .ok_or_else(|| CliError::not_found(format!("run {run_id} not found")))
         })?;
         let name = opt_str(p, "worker").unwrap_or(orchestrator::role(mode));
+        // A remote worker's session is on its node: ask the node.
+        if let Some(worker) = opt_str(p, "worker") {
+            let w = self.with_store(|store| store.worker(run_id, worker))?;
+            if let Some(node) = w.and_then(|w| w.node) {
+                let n = crate::features::nodes::get(&node)?;
+                let att = self.node_call(
+                    &n,
+                    "hosted.attach",
+                    json!({ "origin": self.links.origin(), "run_id": run_id.get(), "name": worker }),
+                )?;
+                return Ok(json!({
+                    "run_id": run_id,
+                    "session": name,
+                    "node": node,
+                    "name": att["name"],
+                    "backend": att["backend"],
+                    "command": att["command"],
+                }));
+            }
+        }
         let (_, _, s) = self.find_session(run_id, name)?;
         if session::is_alive(&s) == Some(false) {
             return Err(CliError::invalid(format!(

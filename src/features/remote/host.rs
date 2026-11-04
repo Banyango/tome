@@ -428,6 +428,31 @@ impl Engine {
 
     /// `hosted.close {origin, run_id, name?, kill}`: the run's daemon is done
     /// with a hosted worker (or all of a run's); `kill` closes its session.
+    /// `hosted.attach {origin, run_id, name}` → `{name, backend, command}`:
+    /// how to attach to a hosted worker's live session on this machine.
+    pub(crate) fn hosted_attach(&self, p: &Value) -> CliResult<Value> {
+        let origin = req_str(p, "origin")?;
+        let run_id = p["run_id"]
+            .as_i64()
+            .ok_or_else(|| CliError::invalid("missing `run_id`"))?;
+        let name = req_str(p, "name")?;
+        let h = self
+            .with_store(|store| store.hosted(origin, run_id, name))?
+            .ok_or_else(|| {
+                CliError::not_found(format!("no hosted worker {name} of run {run_id}"))
+            })?;
+        let s = h
+            .session
+            .and_then(|s| serde_json::from_value::<store::Session>(s).ok())
+            .filter(|s| session::is_alive(s) != Some(false))
+            .ok_or_else(|| CliError::invalid(format!("worker {name}'s session isn't running")))?;
+        Ok(json!({
+            "name": s.name,
+            "backend": s.backend,
+            "command": session::attach_command(&s),
+        }))
+    }
+
     pub(crate) fn hosted_close(&self, p: &Value) -> CliResult<Value> {
         let origin = req_str(p, "origin")?;
         let run_id = p["run_id"].as_i64();

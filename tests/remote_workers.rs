@@ -441,3 +441,29 @@ fn gc_on_the_node_removes_hosted_workers_and_their_branches() {
     assert!(branches.is_empty(), "{branches}");
     assert!(!git(&mini, &["worktree", "list"]).contains("hosted-"));
 }
+
+#[test]
+fn a_remote_workers_session_attaches_on_its_node() {
+    let n = Nodes::new();
+    let run = n.start();
+    n.ok(
+        &run,
+        &[
+            "worker", "spawn", "--node", "mini", "--name", "v", "--", "sleep", "30",
+        ],
+    );
+    eventually("the hosted session starts", || {
+        n.hosted_sessions().len() == 1
+    });
+    let att = n.here.rpc_ok(
+        "session.attach_command",
+        serde_json::json!({ "run_id": run.parse::<i64>().unwrap(), "worker": "v" }),
+    );
+    assert_eq!(
+        (att["node"].as_str(), att["backend"].as_str()),
+        (Some("mini"), Some("tmux")),
+        "{att}"
+    );
+    let command = att["command"].as_str().unwrap();
+    assert!(command.contains(&n.hosted_sessions()[0]), "{att}");
+}

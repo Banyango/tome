@@ -457,7 +457,17 @@ pub fn view(session_ref: &str, placement: &Settings) -> CliResult<Report> {
         Some(w) => format!("run {run_id}{} / {w}", node::on_suffix()),
         None => format!("run {run_id}{}", node::on_suffix()),
     };
-    let Some(node) = node::target() else {
+    // A remote worker's session is on its node, even when its run is here.
+    let node = match (node::target(), att["node"].as_str()) {
+        (Some(n), _) => Some(n.clone()),
+        (None, Some(n)) => Some(node::get(n)?),
+        (None, None) => None,
+    };
+    let label = match (&node, att["node"].as_str()) {
+        (_, Some(n)) => format!("{label} on {n}"),
+        _ => label,
+    };
+    let Some(node) = node else {
         return Ok(match backend {
             Some(Kind::Cmux) | Some(Kind::Herdr) => {
                 let ok = std::process::Command::new("sh")

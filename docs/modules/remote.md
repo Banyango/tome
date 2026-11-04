@@ -7,7 +7,7 @@ Two daemons are involved: the **run's daemon** (owns the worker) and the
 
 ## Files
 
-- `src/features/remote/mod.rs`: `METHODS` (`hosted.spawn`, `hosted.close`),
+- `src/features/remote/mod.rs`: `METHODS` (`hosted.spawn`, `hosted.close`, `hosted.attach`),
   the `hosted_workers` ping capability, `TOME_HOSTED`, `node_unreachable`,
   and hosted session names (`tome-hosted-<origin tag>-<run>-<name>`, which a
   node run's own `tome-<id>-` cleanup never matches).
@@ -29,6 +29,9 @@ Two daemons are involved: the **run's daemon** (owns the worker) and the
   `hosted_poll`, `hosted_close`, and `check_hosted` (from the monitor:
   marks ended sessions, drops upstreams that stopped polling and orphans
   their workers).
+- Viewing: `session.attach_command` for a worker with a `node` asks that
+  node (`hosted.attach`) and returns `{node, backend, command}`;
+  `tome session view` (`nodes::cmd::view`) then runs it over `ssh -t`.
 - `src/store/hosted.rs`: the node's `hosted_workers` table. The run's
   `workers` table has a `node` column.
 

@@ -15,7 +15,7 @@ pub mod spawn;
 use std::time::Duration;
 
 /// The node RPCs a run's daemon calls over a link.
-pub const METHODS: &[&str] = &["hosted.spawn", "hosted.close"];
+pub const METHODS: &[&str] = &["hosted.spawn", "hosted.close", "hosted.attach"];
 
 /// What `daemon.ping` lists for a node that can host workers.
 pub const CAPABILITY: &str = "hosted_workers";
