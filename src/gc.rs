@@ -71,6 +71,14 @@ pub fn run(older_than: &str, dry_run: bool) -> CliResult<Report> {
             plural(bus.1 as usize)
         ));
     }
+    let hosted = data["hosted"].as_array().map_or(0, Vec::len);
+    if hosted > 0 {
+        let verb = if dry_run { "would remove" } else { "removed" };
+        out.push_str(&format!(
+            "\n{verb} {hosted} hosted worker{} (sessions run here for other machines' runs)",
+            plural(hosted)
+        ));
+    }
     let code = if kept.is_empty() {
         crate::output::exit::OK
     } else {
@@ -185,6 +193,8 @@ pub fn collect(store: &mut Store, p: &Value) -> CliResult<Value> {
             Err(error) => kept.extend(chain.iter().map(|r| json!({ "id": r.id, "error": error }))),
         }
     }
+    // Workers this machine hosted for runs elsewhere.
+    let hosted = crate::features::remote::host::gc_hosted(store, cutoff, dry_run)?;
     // Settled deliveries, and events nothing is waiting on any more.
     let (deliveries, events) = store.gc_bus(dry_run)?;
     Ok(json!({
@@ -192,6 +202,7 @@ pub fn collect(store: &mut Store, p: &Value) -> CliResult<Value> {
         "cutoff": store::fmt_ts(cutoff),
         "deleted": deleted,
         "kept": kept,
+        "hosted": hosted,
         "bus": { "deliveries": deliveries, "events": events },
     }))
 }

@@ -189,6 +189,44 @@ fn add_worktree(
     Ok(path)
 }
 
+/// `tome gc` on a node: drop hosted workers that ended before `cutoff`,
+/// with their files, worktrees and branches (fetched back by then, or named
+/// in the run's notes). One whose session is still open (kept open) stays.
+pub fn gc_hosted(
+    store: &mut store::Store,
+    cutoff: chrono::NaiveDateTime,
+    dry_run: bool,
+) -> CliResult<Vec<Value>> {
+    let mut out = Vec::new();
+    for h in store.hosted_ended_before(cutoff)? {
+        let open = h
+            .session
+            .clone()
+            .and_then(|s| serde_json::from_value::<store::Session>(s).ok())
+            .is_some_and(|s| session::is_alive(&s) == Some(true));
+        if h.status.is_live() || open {
+            continue;
+        }
+        out.push(json!({
+            "origin": h.origin, "run_id": h.run_id, "name": h.name,
+            "worktree": h.worktree, "branch": h.branch,
+        }));
+        if dry_run {
+            continue;
+        }
+        if let (Some(repo), Some(wt)) = (&h.repo, &h.worktree) {
+            let repo = Path::new(repo);
+            let _ = worktree::git(repo, &["worktree", "remove", "--force", wt]);
+            if let Some(branch) = &h.branch {
+                let _ = worktree::git(repo, &["branch", "-D", branch]);
+            }
+        }
+        let _ = fs::remove_dir_all(&h.dir);
+        store.delete_hosted(&h.origin, h.run_id, &h.name)?;
+    }
+    Ok(out)
+}
+
 impl Engine {
     /// `hosted.spawn {origin, run_id, name, workflow, command, keep_open,
     /// project, placement?}`: start a worker's session here for a run on

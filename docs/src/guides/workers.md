@@ -42,7 +42,9 @@ When the project is a git repo, a remote worker always gets a worktree on the no
 
 The node's copy must be a git repo. If it isn't, the spawn fails with exit 4 and says which `nodes.<node>.projects.<dir>` setting points tome at the right clone.
 
-The spawn fails with exit 2 if the node isn't configured, names a provider, or runs a tome too old to host workers, and with exit 3 if the node can't be reached.
+The spawn fails with exit 2 if the node isn't configured, names a provider, or runs a tome too old to host workers, and with exit 3 if the node can't be reached, with the fix for the first [`tome node check`](nodes.md) step that fails.
+
+If the link to a node drops (your laptop sleeps, the network changes, a daemon restarts), the run's workers on it fail at once with `node_unreachable`, so the orchestrator can start them again elsewhere. A node that loses its link closes those sessions unless they were spawned with `--keep-open`. Cancelling the run closes them too. Their worktrees and branches stay on the node; `tome gc` run on the node removes them, with its records of them, once they're older than `--older-than`.
 
 Workers get these environment variables: `TOME_RUN_ID`, `TOME_WORKER_ID`, `TOME_OUTPUT=json` and, with a worktree, `TOME_WORKTREE`. That is why the commands above need no ids.
 

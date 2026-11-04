@@ -202,6 +202,7 @@ fn bad_nodes_spawn_nothing() {
     assert_eq!(code, 2, "{err}");
     let (code, err) = n.tome(&run, &["worker", "spawn", "--node", "down", "--", "true"]);
     assert_eq!(code, 3, "{err}");
+    assert!(err.to_string().contains("can't take workers"), "{err}");
     let status = n.ok(&run, &["worker", "status"]);
     assert_eq!(
         status["workers"].as_array().map(Vec::len),
@@ -389,4 +390,54 @@ fn workflows_set_a_default_node_per_worker() {
     .unwrap();
     let (_, out) = n.here.json(&["validate", "odd"]);
     assert!(out.to_string().contains("node `nowhere`"), "{out}");
+}
+
+#[test]
+fn a_lost_link_fails_the_nodes_workers() {
+    let n = Nodes::new();
+    let run = n.start();
+    n.ok(
+        &run,
+        &[
+            "worker", "spawn", "--node", "mini", "--name", "s", "--", "sleep", "30",
+        ],
+    );
+    let (code, out) = n.mini.json(&["daemon", "stop"]);
+    assert_eq!(code, 0, "{out}");
+    let w = n.ok(&run, &["worker", "wait", "s"]);
+    assert_eq!(
+        (
+            w["status"].as_str(),
+            w["exit_reason"].as_str().or(w["reason"].as_str())
+        ),
+        (Some("failed"), Some("node_unreachable")),
+        "{w}"
+    );
+}
+
+#[test]
+fn gc_on_the_node_removes_hosted_workers_and_their_branches() {
+    let n = Nodes::new();
+    git_projects(&n);
+    let run = n.start();
+    n.ok(
+        &run,
+        &[
+            "worker", "spawn", "--node", "mini", "--name", "g", "--", "true",
+        ],
+    );
+    let w = n.ok(&run, &["worker", "wait", "g"]);
+    assert_eq!(w["status"], "done", "{w}");
+    let branch = format!("tome/{run}/g");
+    let mini = n.mini.project();
+    eventually("the hosted session is closed", || {
+        n.hosted_sessions().is_empty()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let (code, out) = n.mini.json(&["gc", "--older-than", "1s"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["hosted"].as_array().map(Vec::len), Some(1), "{out}");
+    let branches = git(&mini, &["branch", "--list", &branch]);
+    assert!(branches.is_empty(), "{branches}");
+    assert!(!git(&mini, &["worktree", "list"]).contains("hosted-"));
 }

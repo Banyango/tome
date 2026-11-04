@@ -208,6 +208,20 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(internal)
     }
 
+    /// Hosted workers that ended before `cutoff`, for gc.
+    pub fn hosted_ended_before(&self, cutoff: NaiveDateTime) -> CliResult<Vec<HostedWorker>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {COLUMNS} FROM hosted_workers WHERE ended_at IS NOT NULL AND ended_at < ? ORDER BY ended_at"
+            ))
+            .map_err(internal)?;
+        let rows = stmt
+            .query_map(params![cutoff], from_row)
+            .map_err(internal)?;
+        rows.collect::<Result<_, _>>().map_err(internal)
+    }
+
     pub fn delete_hosted(&mut self, origin: &str, run_id: i64, name: &str) -> CliResult<()> {
         self.conn
             .execute(

@@ -74,8 +74,23 @@ impl Engine {
             .with_hint("add one with `tome node add <name> <ssh-destination>`"));
         }
         let node = nodes::get(name)?;
-        self.open_link(&node)?;
-        Ok(node)
+        match self.open_link(&node) {
+            Ok(()) => Ok(node),
+            // Say what `tome node check` would: the first failing step's fix.
+            Err(e) if e.kind == ErrorKind::Unreachable => {
+                let first = nodes::cmd::check_steps(&node, None)
+                    .into_iter()
+                    .find_map(|s| s.error);
+                Err(first
+                    .map(|f| {
+                        let msg = format!("node {} can't take workers: {}", node.name, f.message);
+                        let hint = f.hint.unwrap_or_else(|| node.check_hint());
+                        CliError::new(ErrorKind::Unreachable, msg).with_hint(hint)
+                    })
+                    .unwrap_or(e))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Start a worker's session on `node`, in a worktree when the run's

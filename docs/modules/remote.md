@@ -60,6 +60,11 @@ aren't configured (`validate::warnings_json`).
    branch back; cancelling the run
    (`Engine::kill_sessions`) closes all of its hosted workers.
 
+`gc::collect` calls `host::gc_hosted` on every daemon: hosted workers that
+ended before the cutoff lose their row, files, worktree and branch (unless
+their session is still open). On the run's side, an unreachable node at
+spawn reports the first failing `nodes::cmd::check_steps` step.
+
 The node's daemon notices its upstream is gone when the poll connection
 closes (`Connection` guard in `daemon.rs`) or after `LOST_AFTER` without a
 poll; it kills those sessions unless they were kept open.
