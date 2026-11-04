@@ -206,6 +206,6 @@ tome runs show cloud-vm-i-0abc:12
 
 ### Records of released machines
 
-tome writes one JSON file per released machine into `~/.tome/released/`: the run's status, summary and the last 40 lines of each step's log. `tome runs list` shows them after the live runs as `<provider>:<id> (released)`, and the `released` array in `--json` output has the details. `--status`, `--workflow` and `--limit` apply to them. They aren't listed when you use `--on`.
+tome writes one JSON file per released machine into `~/.tome/released/`: the run's status, summary and the last 40 lines of each step's log. `tome runs list` shows them after the live runs as `<provider>:<id> (released)`, and the `released` array in `--json` output has the details. `--status`, `--workflow` and `--limit` apply to them; with `--project` they are left out, since they don't record their project. They aren't listed when you use `--on`.
 
 Ephemeral nodes live in `~/.tome/ephemeral/` while a machine exists.

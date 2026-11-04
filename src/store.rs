@@ -520,6 +520,7 @@ pub struct NewRun<'a> {
 pub struct RunFilter {
     pub status: Option<RunStatus>,
     pub workflow: Option<String>,
+    pub project: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -738,6 +739,10 @@ impl Store {
         if let Some(wf) = &filter.workflow {
             clauses.push("workflow_name = ?");
             args.push(wf.clone());
+        }
+        if let Some(project) = &filter.project {
+            clauses.push("project_path = ?");
+            args.push(project.clone());
         }
         if !clauses.is_empty() {
             sql.push_str(" WHERE ");
@@ -1726,6 +1731,20 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert_eq!(beta[0].workflow_name, "beta");
+        let elsewhere = store
+            .list_runs(&RunFilter {
+                project: Some("/nowhere".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(elsewhere.is_empty());
+        let here = store
+            .list_runs(&RunFilter {
+                project: Some("/proj".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(here.len(), 2);
         assert_eq!(store.in_progress_runs().unwrap().len(), 1);
     }
 

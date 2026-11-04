@@ -274,7 +274,7 @@ fn worktree_add(store: &mut Store, p: &Value) -> CliResult<Value> {
     Ok(json!({ "run_id": run_id, "path": path }))
 }
 
-/// `runs.list {status?, workflow?, limit?}`: newest first.
+/// `runs.list {status?, workflow?, project?, limit?}`: newest first.
 fn runs_list(store: &mut Store, p: &Value) -> CliResult<Value> {
     let status = match opt_str(p, "status") {
         None => None,
@@ -287,6 +287,7 @@ fn runs_list(store: &mut Store, p: &Value) -> CliResult<Value> {
     let filter = RunFilter {
         status,
         workflow: opt_str(p, "workflow").map(str::to_string),
+        project: opt_str(p, "project").map(str::to_string),
         limit: p.get("limit").and_then(Value::as_u64).map(|n| n as usize),
     };
     Ok(json!({ "runs": store.list_runs(&filter).map_err(internal)? }))

@@ -53,15 +53,22 @@ fn params(v: &Value) -> String {
         .join("  ")
 }
 
-pub fn list(status: Option<String>, workflow: Option<String>, limit: usize) -> CliResult<Report> {
+pub fn list(
+    status: Option<String>,
+    workflow: Option<String>,
+    project: Option<std::path::PathBuf>,
+    limit: usize,
+) -> CliResult<Report> {
     let mut data = call(
         "runs.list",
-        json!({ "status": status, "workflow": workflow, "limit": limit }),
+        json!({ "status": status, "workflow": workflow, "project": project, "limit": limit }),
     )?;
     let runs = data["runs"].as_array().cloned().unwrap_or_default();
     // Runs on machines a provider made and released: only their record is left.
     let released = match node::target() {
+        // Stubs don't record their project.
         Some(_) => Vec::new(),
+        None if project.is_some() => Vec::new(),
         None => provider::load_stubs(),
     };
     let released = provider::filter(&released, status.as_deref(), workflow.as_deref(), limit);

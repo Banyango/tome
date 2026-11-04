@@ -69,6 +69,8 @@ A run has its own status (`queued`, `running`, `succeeded`, `failed` or `cancell
 tome runs list                            # newest first
 tome runs list --status running
 tome runs list --workflow my-workflow --limit 50
+tome runs list --project                  # only this project's runs
+tome runs list --project ~/code/other     # or another project's
 tome runs show <id>                       # status, custom status, steps, history, workers, worktrees, sessions, resume links
 tome runs show <id> --snapshot            # the workflow as it was when the run started
 tome runs logs <id> --tail 100            # each session's log

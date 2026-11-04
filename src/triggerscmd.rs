@@ -151,7 +151,7 @@ fn on_node(
     Ok((path, project, local))
 }
 
-fn project_arg(cwd: &Path, project: Option<PathBuf>) -> CliResult<PathBuf> {
+pub(crate) fn project_arg(cwd: &Path, project: Option<PathBuf>) -> CliResult<PathBuf> {
     match project {
         Some(p) => {
             let p = cwd.join(p);

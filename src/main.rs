@@ -633,6 +633,9 @@ enum RunsCommand {
         /// Only runs of this workflow.
         #[arg(long)]
         workflow: Option<String>,
+        /// Only runs of this project (bare `--project`: the current one).
+        #[arg(long, value_name = "PATH", num_args = 0..=1, conflicts_with = "nodes")]
+        project: Option<Option<std::path::PathBuf>>,
         /// Maximum number of runs to show (per node with --nodes).
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -1389,13 +1392,20 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
             RunsCommand::List {
                 status,
                 workflow,
+                project,
                 limit,
                 nodes,
             } => {
                 if nodes {
                     nodecmd::runs_everywhere(status, workflow, limit)
                 } else {
-                    inspect::list(status, workflow, limit)
+                    let project = match project {
+                        None => None,
+                        Some(p) => Some(crate::features::nodes::map_project(
+                            &triggerscmd::project_arg(&current_dir()?, p)?,
+                        )?),
+                    };
+                    inspect::list(status, workflow, project, limit)
                 }
             }
             RunsCommand::Show { id, snapshot } => inspect::show(&id, snapshot),
