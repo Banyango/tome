@@ -738,3 +738,26 @@ fn queues_belong_to_the_project_not_a_run() {
     assert_eq!(pulled["message"]["body"], "PR 2");
     assert_eq!(pulled["message"]["claimed_by"], "user");
 }
+
+#[test]
+fn agents_report_being_blocked() {
+    let env = setup(&[], "claude");
+    let run = start(&env);
+    ok(
+        &env,
+        &run,
+        &["worker", "spawn", "--name", "b", "--", "sleep", "30"],
+    );
+    let blocked = ok(&env, &run, &["worker", "blocked", "--name", "b"]);
+    assert_eq!(blocked["blocked"], true);
+    let b = ok(&env, &run, &["worker", "status", "b"]);
+    assert_eq!(b["agent_status"], "blocked", "{b}");
+    assert!(b["blocked_at"].is_string(), "{b}");
+    ok(&env, &run, &["worker", "unblocked", "--name", "b"]);
+    let b = ok(&env, &run, &["worker", "status", "b"]);
+    assert_eq!(b["agent_status"], "working", "{b}");
+    assert!(b["blocked_at"].is_null(), "{b}");
+    assert_eq!(ok(&env, &run, &["step", "blocked"])["blocked"], true);
+    let (code, _) = tome(&env, &run, &["worker", "blocked", "--name", "nope"]);
+    assert_ne!(code, 0);
+}

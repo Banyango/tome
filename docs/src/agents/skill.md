@@ -29,6 +29,17 @@ claude plugin marketplace add banyango/tome --scope project
 claude plugin install tome@tome --scope project
 ```
 
+The plugin also adds hooks that tell tome when an agent is waiting for you. They run `tome worker blocked` (or `tome step blocked` for the run's own agent) and, once the agent works again, `unblocked`, and do nothing outside a tome run. The agent then shows as `blocked since <time>` in `tome runs show`, `tome worker status` and tome-view, on any backend, and tome publishes `tome.run.<workflow>.blocked` and notifies you.
+
+| Agent CLI | Blocked on | Unblocked on |
+|---|---|---|
+| Claude Code | permission, idle and question prompts | the next prompt or tool call |
+| Codex | permission requests, the end of a turn | the next prompt or tool call |
+| Cursor | the end of a turn | the next prompt or tool call |
+| Kimi Code | permission requests, the end of a turn | the next prompt, approval or tool call |
+
+An agent CLI without these hooks can call the same commands from its own hooks; `plugin/hooks/tome-blocked.sh blocked|unblocked` works from any of them.
+
 ## Updates
 
 The plugin follows the tome repository, so each change to the skill is a new version. To update:

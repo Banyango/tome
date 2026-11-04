@@ -89,6 +89,7 @@ const METHODS: &[&str] = &[
     "runs.rm",
     "step.report",
     "step.status",
+    "agent.blocked",
     "session.move",
     "session.attach_command",
 ];
@@ -189,6 +190,7 @@ impl Engine {
             "runs.rm" => self.remove_run(p),
             "step.report" => self.step(p),
             "step.status" => self.step_status(p),
+            "agent.blocked" => self.report_blocked(p),
             "session.move" => self.move_session(p),
             "session.attach_command" => self.attach_session(p),
             m if workers::METHODS.contains(&m) => self.dispatch_primitive(m, p),
@@ -865,17 +867,26 @@ impl Engine {
         }
     }
 
+    /// Track a session's agent status: herdr's, polled, or else the one its
+    /// agent reported (`tome worker blocked`), so a lasting block notifies.
     fn track_agent_status(&self, s: &store::Session) {
-        if session::Kind::parse(&s.backend) != Some(session::Kind::Herdr) {
-            return;
-        }
-        let Some(pane) = s.pane.as_deref() else {
-            return;
+        let status = if session::Kind::parse(&s.backend) == Some(session::Kind::Herdr) {
+            // Herdr isn't answering: keep what we know.
+            match session::agent_status(s) {
+                Some(status) => status,
+                None => return,
+            }
+        } else {
+            match &s.agent_status {
+                Some(status) => status.clone(),
+                None => return,
+            }
         };
-        // Herdr isn't answering: keep what we know.
-        let Some(status) = session::agent_status(s) else {
-            return;
-        };
+        self.apply_agent_status(s, &status);
+    }
+
+    fn apply_agent_status(&self, s: &store::Session, status: &str) {
+        let pane = s.pane.as_deref().unwrap_or("");
         let now = Instant::now();
         let key = (s.run_id, s.name.clone());
         let blocked = status == "blocked";
@@ -888,10 +899,10 @@ impl Engine {
                     .map_err(internal)
             });
             self.announce_blocked(s.run_id, &status_subject(self, s), pane, &at);
-        } else if !blocked && s.agent_status.as_deref() != Some(status.as_str()) {
+        } else if !blocked && s.agent_status.as_deref() != Some(status) {
             let _ = self.with_store(|store| {
                 store
-                    .set_session_agent_status(s.run_id, &s.name, Some(&status), None)
+                    .set_session_agent_status(s.run_id, &s.name, Some(status), None)
                     .map_err(internal)
             });
         }
@@ -938,6 +949,35 @@ impl Engine {
             };
             orchestrator::notify_blocked(&run, &who);
         }
+    }
+
+    /// `agent.blocked {run_id, worker?, blocked}`: an agent (through its
+    /// harness's hooks) reports that it's waiting for input, or no longer
+    /// is. Without a worker it's the run's own agent.
+    fn report_blocked(&self, p: &Value) -> CliResult<Value> {
+        let run_id = req_id_at(p, "run_id")?;
+        let blocked = p["blocked"].as_bool().unwrap_or(true);
+        let worker = opt_str(p, "worker");
+        let s = self.with_store(|store| {
+            let name = match worker {
+                Some(w) => store.require_worker(run_id, w)?.session,
+                None => None,
+            };
+            let sessions = store.sessions(run_id).map_err(internal)?;
+            Ok(sessions.into_iter().find(|s| match (worker, &name) {
+                (Some(_), Some(name)) => &s.name == name,
+                (Some(_), None) => false,
+                (None, _) => s.role == "orchestrator" || s.role == "agent",
+            }))
+        })?;
+        let Some(s) = s else {
+            return Err(CliError::not_found(match worker {
+                Some(w) => format!("worker {w} of run {run_id} has no session"),
+                None => format!("run {run_id} has no agent session"),
+            }));
+        };
+        self.apply_agent_status(&s, if blocked { "blocked" } else { "working" });
+        Ok(json!({ "run_id": run_id, "worker": worker, "session": s.name, "blocked": blocked }))
     }
 
     /// `step.status {run_id, step?, status}`: set a step's custom status

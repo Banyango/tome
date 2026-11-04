@@ -147,6 +147,19 @@ pub fn report(
     Ok(Report::new(w, human))
 }
 
+/// `tome worker|step blocked|unblocked`: a worker (or, without a name, the
+/// run's agent) is waiting for input, or isn't any more.
+pub fn blocked(blocked: bool, worker: Option<String>, run: Option<String>) -> CliResult<Report> {
+    let run = run_id(run)?;
+    let v = call(
+        "agent.blocked",
+        json!({ "run_id": run, "worker": worker, "blocked": blocked }),
+    )?;
+    let who = worker.map_or("agent".to_string(), |w| format!("worker {w}"));
+    let human = format!("{who} {}", if blocked { "blocked" } else { "unblocked" });
+    Ok(Report::new(v, human))
+}
+
 /// `tome worker status [<name>]`, or with `wait`, block until it finishes.
 pub fn worker_status(name: Option<String>, wait: bool, run: Option<String>) -> CliResult<Report> {
     let run = run_id(run)?;

@@ -14,5 +14,6 @@
     "displayName": "tome",
     "shortDescription": "Write, run and debug tome workflows",
     "longDescription": "Create and manage repeatable agentic workflows triggered by file changes, schedules, messages, or other workflows."
-  }
+  },
+  "hooks": "./hooks/codex.json"
 }

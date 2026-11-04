@@ -415,6 +415,16 @@ enum StepCommand {
         #[arg(long = "run", env = "TOME_RUN_ID", value_name = "ID")]
         run: Option<String>,
     },
+    /// Report that the run's agent is waiting for input (used by harness hooks).
+    Blocked {
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Report that the run's agent is working again (used by harness hooks).
+    Unblocked {
+        #[command(flatten)]
+        run: RunArg,
+    },
 }
 
 #[derive(clap::Args)]
@@ -481,6 +491,22 @@ enum WorkerCommand {
         /// A line or two on what was done.
         #[arg(long, short)]
         summary: Option<String>,
+        /// Worker name (defaults to TOME_WORKER_ID).
+        #[arg(long, env = "TOME_WORKER_ID", hide_env_values = true)]
+        name: Option<String>,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Report that this worker is waiting for input (used by harness hooks).
+    Blocked {
+        /// Worker name (defaults to TOME_WORKER_ID).
+        #[arg(long, env = "TOME_WORKER_ID", hide_env_values = true)]
+        name: Option<String>,
+        #[command(flatten)]
+        run: RunArg,
+    },
+    /// Report that this worker is working again (used by harness hooks).
+    Unblocked {
         /// Worker name (defaults to TOME_WORKER_ID).
         #[arg(long, env = "TOME_WORKER_ID", hide_env_values = true)]
         name: Option<String>,
@@ -1287,6 +1313,8 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
                 runcmd::step("fail", name, report.message, report.run)
             }
             StepCommand::Status { status, step, run } => runcmd::step_status(status, step, run),
+            StepCommand::Blocked { run } => primitives::blocked(true, None, run.run),
+            StepCommand::Unblocked { run } => primitives::blocked(false, None, run.run),
         },
         Command::Worker { command } => match command {
             WorkerCommand::Spawn {
@@ -1321,6 +1349,8 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
             WorkerCommand::Done { summary, name, run } => {
                 primitives::report("done", summary, name, run.run)
             }
+            WorkerCommand::Blocked { name, run } => primitives::blocked(true, name, run.run),
+            WorkerCommand::Unblocked { name, run } => primitives::blocked(false, name, run.run),
             WorkerCommand::Fail { summary, name, run } => {
                 primitives::report("fail", summary, name, run.run)
             }

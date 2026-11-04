@@ -13,5 +13,32 @@
   "sessionStart": {
     "skill": "tome"
   },
-  "skillInstructions": "Tome skill tool mapping for Kimi Code:\n\n- When a skill says to ask the user, use Kimi Code's AskUserQuestion tool if available; otherwise ask directly in chat.\n- When a skill refers to task tracking, use Kimi Code's TodoList tool if available.\n- When a skill refers to a subagent, use Kimi Code's Agent tool if available.\n- Use Kimi Code's file, shell, search, and web tools by their actual exposed names."
+  "skillInstructions": "Tome skill tool mapping for Kimi Code:\n\n- When a skill says to ask the user, use Kimi Code's AskUserQuestion tool if available; otherwise ask directly in chat.\n- When a skill refers to task tracking, use Kimi Code's TodoList tool if available.\n- When a skill refers to a subagent, use Kimi Code's Agent tool if available.\n- Use Kimi Code's file, shell, search, and web tools by their actual exposed names.",
+  "hooks": [
+    {
+      "event": "PermissionRequest",
+      "command": "sh ./hooks/tome-blocked.sh blocked",
+      "timeout": 10
+    },
+    {
+      "event": "Stop",
+      "command": "sh ./hooks/tome-blocked.sh blocked",
+      "timeout": 10
+    },
+    {
+      "event": "UserPromptSubmit",
+      "command": "sh ./hooks/tome-blocked.sh unblocked",
+      "timeout": 10
+    },
+    {
+      "event": "PermissionResult",
+      "command": "sh ./hooks/tome-blocked.sh unblocked",
+      "timeout": 10
+    },
+    {
+      "event": "PostToolUse",
+      "command": "sh ./hooks/tome-blocked.sh unblocked",
+      "timeout": 10
+    }
+  ]
 }

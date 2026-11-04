@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      { "hooks": [{ "type": "command", "command": "sh \"${PLUGIN_ROOT}/hooks/tome-blocked.sh\" blocked" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "sh \"${PLUGIN_ROOT}/hooks/tome-blocked.sh\" blocked" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "sh \"${PLUGIN_ROOT}/hooks/tome-blocked.sh\" unblocked" }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "sh \"${PLUGIN_ROOT}/hooks/tome-blocked.sh\" unblocked" }] }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "stop": [{ "command": "sh ./hooks/tome-blocked.sh blocked --json" }],
+    "beforeSubmitPrompt": [{ "command": "sh ./hooks/tome-blocked.sh unblocked --json" }],
+    "postToolUse": [{ "command": "sh ./hooks/tome-blocked.sh unblocked --json" }]
+  }
+}
