@@ -5,3 +5,4 @@ pub mod bus;
 pub mod hubs;
 pub mod nodes;
 pub mod plugins;
+pub mod remote;

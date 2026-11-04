@@ -263,8 +263,18 @@ impl Client {
     }
 
     pub fn call(&mut self, method: &str, params: Value) -> CliResult<Value> {
+        self.call_within(method, params, CALL_TIMEOUT)
+    }
+
+    /// [`Client::call`], waiting at most `timeout` for the answer.
+    pub fn call_within(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> CliResult<Value> {
         self.send(method, params)?;
-        match self.conn.read(CALL_TIMEOUT)? {
+        match self.conn.read(timeout)? {
             Got::Line(line) => parse_response(&line),
             Got::Idle => Err(CliError::internal(
                 "timed out waiting for the daemon's response",
@@ -337,7 +347,12 @@ fn caller() -> Option<Value> {
             .filter(|v: &String| !v.trim().is_empty())
     };
     let run_id = var("TOME_RUN_ID")?;
-    Some(json!({ "run_id": run_id, "worker": var("TOME_WORKER_ID") }))
+    let mut caller = json!({ "run_id": run_id, "worker": var("TOME_WORKER_ID") });
+    // A worker hosted for another machine's run: its calls go up there.
+    if let Some(origin) = var(crate::features::remote::HOSTED_ENV) {
+        caller["hosted"] = json!(origin);
+    }
+    Some(caller)
 }
 
 fn parse_response(line: &[u8]) -> CliResult<Value> {

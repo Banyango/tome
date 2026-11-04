@@ -28,6 +28,18 @@ tome worker kill <name>      # stop it; it is marked cancelled
 
 Sessions are closed when a worker finishes. `--keep-open` keeps one open so you can read the output.
 
+### Workers on other machines
+
+`--node <name>` runs a worker on a [node](nodes.md) instead of this machine:
+
+```sh
+tome worker spawn --node mini --name tests -- cargo test
+```
+
+The run stays here. While the run has workers on a node, tome keeps one SSH link to it; the worker's `tome worker done|fail` calls and its exit code come back over that link, so it reports like any other worker. It runs in the node's copy of the project. For now only command workers run on nodes, without a worktree.
+
+The spawn fails with exit 2 if the node isn't configured, names a provider, or runs a tome too old to host workers, and with exit 3 if the node can't be reached.
+
 Workers get these environment variables: `TOME_RUN_ID`, `TOME_WORKER_ID`, `TOME_OUTPUT=json` and, with a worktree, `TOME_WORKTREE`. That is why the commands above need no ids.
 
 Here is a workflow that runs the tests as a command worker and starts an agent only if they fail:

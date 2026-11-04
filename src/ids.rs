@@ -19,6 +19,10 @@ macro_rules! id {
             pub const fn new(n: i64) -> $name {
                 $name(n)
             }
+
+            pub const fn get(self) -> i64 {
+                self.0
+            }
         }
 
         impl fmt::Display for $name {

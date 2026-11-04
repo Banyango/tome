@@ -472,6 +472,9 @@ enum WorkerCommand {
         /// Keep the worker's session open after it finishes.
         #[arg(long)]
         keep_open: bool,
+        /// Run the worker on this node (see `tome node ls`).
+        #[arg(long)]
+        node: Option<String>,
         #[command(flatten)]
         placement: PlacementArgs,
         /// The agent worker's task.
@@ -1326,12 +1329,14 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
                 harness,
                 model,
                 keep_open,
+                node,
                 placement,
                 prompt,
                 prompt_file,
                 run,
                 command,
             } => primitives::spawn(primitives::Spawn {
+                node,
                 placement: placement.settings()?,
                 run: run.run,
                 name,

@@ -12,6 +12,7 @@ message queues.
 - `src/primitives.rs`: CLI client for those commands. Agents find their run
   through `--run <id>` / `TOME_RUN_ID`; a worker is `TOME_WORKER_ID`.
 - `src/store/workers.rs`: `workers`, `worker_groups`, `worker_events` tables.
+  A worker with `node` set runs on that node; see [remote.md](remote.md).
 - `src/store/queues.rs`: `queues` and `queue_messages`. Queues belong to the
   project, not a run; a claimed message returns to the queue if its worker ends. With `hub`/`global`
   params a queue call uses that scope's key instead, after `hubs::require_attached`.

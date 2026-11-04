@@ -20,11 +20,13 @@ use std::path::{Path, PathBuf};
 
 mod attachments;
 mod events;
+mod hosted;
 mod queues;
 mod triggers;
 mod workers;
 
 pub use events::{check_payload, BusEvent, Delivery, DeliveryState, NewEvent, Subscriber};
+pub use hosted::{HostedStatus, HostedWorker, NewHosted};
 pub use queues::Pulled;
 pub use triggers::{Fire, NewFire, Project};
 pub use workers::{check_name, Group, NewWorker, Worker, WorkerEnd, WorkerHistory, WorkerStatus};
@@ -278,6 +280,29 @@ const MIGRATIONS: &[&str] = &[
     // 19: the project a hub's or global's message was claimed from, so
     // detaching returns that project's claims
     "ALTER TABLE queue_messages ADD COLUMN claimer_project VARCHAR;",
+    // 20: remote workers: the node a run's worker runs on, and the workers
+    // this daemon hosts for other machines' runs
+    "
+    ALTER TABLE workers ADD COLUMN node VARCHAR;
+    CREATE TABLE hosted_workers (
+        origin      VARCHAR NOT NULL,
+        run_id      BIGINT NOT NULL,
+        name        VARCHAR NOT NULL,
+        kind        VARCHAR NOT NULL,
+        status      VARCHAR NOT NULL,
+        session     VARCHAR,
+        keep_open   BOOLEAN NOT NULL,
+        dir         VARCHAR NOT NULL,
+        repo        VARCHAR,
+        worktree    VARCHAR,
+        branch      VARCHAR,
+        exit_code   INTEGER,
+        summary     VARCHAR,
+        created_at  TIMESTAMP NOT NULL,
+        ended_at    TIMESTAMP,
+        PRIMARY KEY (origin, run_id, name)
+    );
+    ",
 ];
 
 /// How much of a log file is kept in the index as its tail excerpt.
@@ -470,9 +495,9 @@ pub struct NewWorktree<'a> {
     pub worker: Option<&'a str>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Session {
-    #[serde(skip)]
+    #[serde(skip, default = "no_run")]
     pub run_id: RunId,
     pub name: String,
     pub role: String,
@@ -498,6 +523,11 @@ pub struct Session {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_at: Option<String>,
     pub created_at: String,
+}
+
+/// A session read back from its JSON (a hosted worker's) has no run here.
+fn no_run() -> RunId {
+    RunId::new(0)
 }
 
 pub struct NewRun<'a> {

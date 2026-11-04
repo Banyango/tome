@@ -1,0 +1,231 @@
+//! Remote workers (`tome worker spawn --node`), with a fake `ssh`
+//! (`TOME_SSH`) that runs the command on this machine as another tome home:
+//! `mini` is a second [`Env`] and `down` can't be reached.
+
+mod common;
+
+use common::{eventually, Env};
+use serde_json::Value;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::process::Stdio;
+
+struct Nodes {
+    here: Env,
+    mini: Env,
+}
+
+impl Nodes {
+    /// `here` runs `build` and knows `mini` and `down`; both have a project
+    /// at `~/p`. Both daemons are started.
+    fn new() -> Nodes {
+        let mut here = Env::new();
+        let mini = Env::new();
+        for env in [&here, &mini] {
+            fs::create_dir_all(env.project().join(".tome/workflows")).unwrap();
+        }
+        fs::write(
+            here.project().join(".tome/workflows/build.md"),
+            "---\nname: build\nmode: orchestrated\n---\n## Build\nBuild it.\n",
+        )
+        .unwrap();
+        let mut vars = String::new();
+        for (k, v) in &mini.vars {
+            vars.push_str(&format!("{k}='{v}' "));
+        }
+        let script = format!(
+            r#"#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) shift 2 ;;
+    -t|-tt) shift ;;
+    *) break ;;
+  esac
+done
+dest="$1"; shift
+case "$dest" in
+  down) echo "ssh: connect to host down port 22: Connection refused" >&2; exit 255 ;;
+  me@mini) ;;
+  *) echo "ssh: Could not resolve hostname $dest" >&2; exit 255 ;;
+esac
+cd '{home}' || exit 1
+exec env -u TOME_RUN_ID -u TOME_WORKER_ID -u TOME_NODE HOME='{home}' TOME_HOME='{tome}' TOME_TMUX_SOCKET='{tmux}' {vars} sh -c "$*"
+"#,
+            home = mini.dir.path().display(),
+            tome = mini.home().display(),
+            tmux = mini.tmux_socket(),
+        );
+        let ssh = here.dir.path().join("ssh");
+        fs::write(&ssh, script).unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        here.set_var("TOME_SSH", &ssh.display().to_string());
+        let tome = env!("CARGO_BIN_EXE_tome");
+        here.set_config(&format!(
+            "{}nodes:\n  mini:\n    ssh: me@mini\n    tome: {tome}\n  down:\n    ssh: down\n    tome: {tome}\n",
+            common::IDLE_CONFIG
+        ));
+        mini.start_daemon();
+        here.start_daemon();
+        Nodes { here, mini }
+    }
+
+    fn start(&self) -> String {
+        let (code, run) = self.here.json(&["run", "build", "--detach"]);
+        assert_eq!(code, 0, "{run}");
+        run["id"].to_string()
+    }
+
+    /// A tome command as the run's orchestrator, `--json`.
+    fn tome(&self, run: &str, args: &[&str]) -> (i32, Value) {
+        let mut full = vec!["--json"];
+        full.extend_from_slice(args);
+        let out = self
+            .here
+            .cmd(&full)
+            .env("TOME_RUN_ID", run)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!(
+                "not JSON ({e}): {stdout}\nstderr: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        (out.status.code().unwrap(), value)
+    }
+
+    fn ok(&self, run: &str, args: &[&str]) -> Value {
+        let (code, v) = self.tome(run, args);
+        assert_eq!(code, 0, "tome {args:?}: {v}");
+        v
+    }
+
+    /// The hosted sessions on mini.
+    fn hosted_sessions(&self) -> Vec<String> {
+        let out = self.mini.tmux(&["ls", "-F", "#{session_name}"]);
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.starts_with("tome-hosted-"))
+            .map(str::to_string)
+            .collect()
+    }
+}
+
+#[test]
+fn command_workers_run_on_a_node_and_report_back() {
+    let n = Nodes::new();
+    let run = n.start();
+    let w = n.ok(
+        &run,
+        &[
+            "worker",
+            "spawn",
+            "--node",
+            "mini",
+            "--name",
+            "ok",
+            "--",
+            "sh",
+            "-c",
+            "echo hi from mini",
+        ],
+    );
+    assert_eq!(w["node"], "mini", "{w}");
+    n.ok(
+        &run,
+        &[
+            "worker",
+            "spawn",
+            "--node",
+            "mini",
+            "--name",
+            "bad",
+            "--",
+            "sh",
+            "-c",
+            "echo boom; exit 7",
+        ],
+    );
+    // A worker's own tome calls go up the link.
+    n.ok(
+        &run,
+        &[
+            "worker",
+            "spawn",
+            "--node",
+            "mini",
+            "--name",
+            "rep",
+            "--",
+            "sh",
+            "-c",
+            "tome worker done --summary relayed; sleep 30",
+        ],
+    );
+
+    let w = n.ok(&run, &["worker", "wait", "ok"]);
+    assert_eq!(w["status"], "done", "{w}");
+    assert!(
+        w["summary"].as_str().unwrap().contains("hi from mini"),
+        "{w}"
+    );
+    let w = n.ok(&run, &["worker", "wait", "bad"]);
+    assert_eq!(
+        (w["status"].as_str(), w["exit_code"].as_i64()),
+        (Some("failed"), Some(7)),
+        "{w}"
+    );
+    assert!(w["summary"].as_str().unwrap().contains("boom"), "{w}");
+    let w = n.ok(&run, &["worker", "wait", "rep"]);
+    assert_eq!(
+        (w["status"].as_str(), w["summary"].as_str()),
+        (Some("done"), Some("relayed")),
+        "{w}"
+    );
+
+    // Ended workers' sessions are closed on the node.
+    eventually("hosted sessions closed", || n.hosted_sessions().is_empty());
+    let pong = n.mini.rpc_ok("daemon.ping", serde_json::json!({}));
+    assert!(
+        pong["capabilities"].to_string().contains("hosted_workers"),
+        "{pong}"
+    );
+}
+
+#[test]
+fn bad_nodes_spawn_nothing() {
+    let n = Nodes::new();
+    let run = n.start();
+    let (code, err) = n.tome(&run, &["worker", "spawn", "--node", "nope", "--", "true"]);
+    assert_eq!(code, 2, "{err}");
+    let (code, err) = n.tome(&run, &["worker", "spawn", "--node", "down", "--", "true"]);
+    assert_eq!(code, 3, "{err}");
+    let status = n.ok(&run, &["worker", "status"]);
+    assert_eq!(
+        status["workers"].as_array().map(Vec::len),
+        Some(0),
+        "{status}"
+    );
+}
+
+#[test]
+fn cancelling_the_run_closes_hosted_sessions() {
+    let n = Nodes::new();
+    let run = n.start();
+    n.ok(
+        &run,
+        &[
+            "worker", "spawn", "--node", "mini", "--name", "s", "--", "sleep", "30",
+        ],
+    );
+    eventually("the hosted session starts", || {
+        n.hosted_sessions().len() == 1
+    });
+    let (code, out) = n.here.json(&["run", "cancel", &run]);
+    assert_eq!(code, 0, "{out}");
+    eventually("the hosted session closes", || {
+        n.hosted_sessions().is_empty()
+    });
+}

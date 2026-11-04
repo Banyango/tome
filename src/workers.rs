@@ -8,6 +8,8 @@
 //! session that's already gone.
 
 use crate::engine::Engine;
+use crate::features::nodes::Node;
+use crate::features::remote::spawn::RemoteTask;
 use crate::handshake::{self, Agent};
 use crate::harness::{self, Vars};
 use crate::ids::RunId;
@@ -45,7 +47,7 @@ pub const EXIT_CODE: &str = "exit_code";
 pub const KILLED: &str = "killed";
 
 /// Lines of a command worker's output kept in its summary.
-const SUMMARY_LINES: usize = 10;
+pub(crate) const SUMMARY_LINES: usize = 10;
 /// How long a worker that reported has to get the reply before its session
 /// is closed.
 const REPORT_GRACE: Duration = Duration::from_secs(1);
@@ -105,7 +107,7 @@ fn recorded_exit(run_id: RunId, name: &str) -> Option<i32> {
 
 /// Run `argv`, record its exit code in `exit`, then (with `keep_open`)
 /// leave a shell in the session.
-fn wrap(argv: &[String], exit: &Path, keep_open: bool) -> Vec<String> {
+pub(crate) fn wrap(argv: &[String], exit: &Path, keep_open: bool) -> Vec<String> {
     let mut script = format!("\"$@\"; echo $? > {}", shell_quote(&exit.to_string_lossy()));
     if keep_open {
         script.push_str("; exec \"${SHELL:-sh}\"");
@@ -325,6 +327,23 @@ impl Engine {
                 orchestrator::run_project(&run).as_deref(),
             )?;
         }
+        // Check the node before recording anything, so a bad one spawns nothing.
+        let remote = match opt_str(p, "node") {
+            Some(node) => {
+                if with_worktree {
+                    return Err(CliError::invalid(
+                        "--worktree doesn't apply with --node yet",
+                    ));
+                }
+                if !matches!(task, Task::Command(_)) {
+                    return Err(CliError::invalid(
+                        "only command workers (after `--`) can run on a node yet",
+                    ));
+                }
+                Some(self.remote_node(node)?)
+            }
+            None => None,
+        };
         // Resolve the base before recording anything, so a bad one spawns nothing.
         let base = if with_worktree {
             Some(worktree::resolve_base(&repo_dir(&run, p), base)?)
@@ -412,6 +431,15 @@ impl Engine {
             Ok(())
         })?;
 
+        if let (Some(node), Task::Command(cmd)) = (&remote, &task) {
+            let remote = RemoteTask {
+                name: &name,
+                command: cmd,
+                keep_open: worker.keep_open,
+                placement: p.get("placement").filter(|v| !v.is_null()),
+            };
+            return self.spawn_on(&run, node, &remote);
+        }
         let cwd = created
             .as_ref()
             .map(|c| c.path.clone())
@@ -452,26 +480,55 @@ impl Engine {
             }
             Err(e) => {
                 self.forget_start(&agent);
-                let end = self.with_store(|store| {
-                    let end = store.finish_worker(
-                        run_id,
-                        &name,
-                        WorkerStatus::Failed,
-                        Some(LAUNCH_FAILED),
-                        Some(&e.message),
-                        None,
-                        true,
-                    );
-                    self.sync(store, run_id);
-                    end
-                });
-                if let Ok(end) = end {
-                    self.after_end(run_id, &end, None);
-                }
+                self.fail_launch(run_id, &name, &e);
                 return Err(e);
             }
         }
         self.with_store(|store| Ok(json!(store.require_worker(run_id, &name)?)))
+    }
+
+    /// Start a reserved worker on `node`; the worker ends `launch_failed`
+    /// if it can't be.
+    fn spawn_on(&self, run: &Run, node: &Node, task: &RemoteTask) -> CliResult<Value> {
+        let (run_id, name) = (run.id, task.name);
+        self.with_store(|store| store.set_worker_node(run_id, name, &node.name))?;
+        match self.launch_remote(run, node, task) {
+            Ok(session) => {
+                let started = self.with_store(|store| {
+                    let started = store.start_worker(run_id, name, &session)?;
+                    self.sync(store, run_id);
+                    Ok(started)
+                });
+                // Ended while it was starting (e.g. the run was cancelled).
+                if !started.unwrap_or(false) {
+                    self.node_close(&node.name, run_id, Some(name), true);
+                }
+            }
+            Err(e) => {
+                self.fail_launch(run_id, name, &e);
+                return Err(e);
+            }
+        }
+        self.with_store(|store| Ok(json!(store.require_worker(run_id, name)?)))
+    }
+
+    fn fail_launch(&self, run_id: RunId, name: &str, e: &CliError) {
+        let end = self.with_store(|store| {
+            let end = store.finish_worker(
+                run_id,
+                name,
+                WorkerStatus::Failed,
+                Some(LAUNCH_FAILED),
+                Some(&e.message),
+                None,
+                true,
+            );
+            self.sync(store, run_id);
+            end
+        });
+        if let Ok(end) = end {
+            self.after_end(run_id, &end, None);
+        }
     }
 
     /// Start a worker's session on the run's backend (where its orchestrator
@@ -627,6 +684,9 @@ impl Engine {
         if let Some(s) = self.worker_session(run_id, &end.worker) {
             session::kill(&s);
         }
+        if let Some(node) = &end.worker.node {
+            self.node_close(node, run_id, Some(name), true);
+        }
         self.after_end(run_id, &end, None);
         Ok(json!(end.worker))
     }
@@ -734,6 +794,13 @@ impl Engine {
             if let Some(s) = session_of(w) {
                 session::kill(&s);
             }
+            if let Some(node) = &w.node {
+                self.node_close(node, run_id, Some(&w.name), true);
+            }
+        }
+        // A remote worker's session is its node's to close.
+        if let Some(node) = &end.worker.node {
+            self.node_close(node, run_id, Some(&end.worker.name), !end.worker.keep_open);
         }
         let running = self
             .with_store(|store| store.require_run(run_id))
@@ -783,51 +850,67 @@ impl Engine {
             }
             // It may have written its exit code as it went.
             let exited = exited.or_else(|| recorded_exit(w.run_id, &w.name));
-            let (status, reason, summary) = match (w.kind.as_str(), exited) {
-                ("command", Some(code)) => {
-                    let tail = store::read_tail(&log_file(w.run_id, &w.name), SUMMARY_LINES);
-                    let tail = strip_ansi(&tail);
-                    let mut summary = format!("exit code {code}");
-                    if !tail.trim().is_empty() {
-                        summary.push_str(&format!("\n{}", tail.trim_end()));
-                    }
-                    if code == 0 {
-                        (WorkerStatus::Done, None, summary)
-                    } else {
-                        (WorkerStatus::Failed, Some(EXIT_CODE), summary)
-                    }
-                }
-                (_, code) => {
-                    let summary = match code {
-                        Some(code) => format!("exited (code {code}) without reporting"),
-                        None => "its session ended without reporting".to_string(),
-                    };
-                    (WorkerStatus::Failed, Some(EXITED), summary)
-                }
-            };
-            let end = self.with_store(|store| {
-                let end = store.finish_worker(
-                    w.run_id,
-                    &w.name,
-                    status,
-                    reason,
-                    Some(&summary),
-                    exited,
-                    true,
-                )?;
-                self.sync(store, w.run_id);
-                Ok(end)
-            });
-            // Err: it reported (or was ended) meanwhile; that stands.
-            if let Ok(end) = end {
-                eprintln!(
-                    "tome daemon: run {} worker {} {}",
-                    w.run_id,
-                    w.name,
-                    status.as_str()
-                );
-                self.after_end(w.run_id, &end, None);
+            let tail = store::read_tail(&log_file(w.run_id, &w.name), SUMMARY_LINES);
+            self.end_exited(&w, exited, &tail);
+        }
+    }
+
+    /// End a worker whose session is over: a command worker by its exit
+    /// code (`tail` is the end of its output), anything else as
+    /// `worker_exited`. A worker that reported meanwhile keeps its result.
+    pub(crate) fn end_exited(&self, w: &Worker, exited: Option<i32>, tail: &str) {
+        let (status, reason, summary) = outcome(&w.kind, exited, tail);
+        let end = self.with_store(|store| {
+            let end = store.finish_worker(
+                w.run_id,
+                &w.name,
+                status,
+                reason,
+                Some(&summary),
+                exited,
+                true,
+            )?;
+            self.sync(store, w.run_id);
+            Ok(end)
+        });
+        // Err: it reported (or was ended) meanwhile; that stands.
+        if let Ok(end) = end {
+            eprintln!(
+                "tome daemon: run {} worker {} {}",
+                w.run_id,
+                w.name,
+                status.as_str()
+            );
+            self.after_end(w.run_id, &end, None);
+        }
+    }
+}
+
+/// How a worker whose session ended without a report ends.
+fn outcome(
+    kind: &str,
+    exited: Option<i32>,
+    tail: &str,
+) -> (WorkerStatus, Option<&'static str>, String) {
+    match (kind, exited) {
+        ("command", Some(code)) => {
+            let tail = strip_ansi(tail);
+            let mut summary = format!("exit code {code}");
+            if !tail.trim().is_empty() {
+                summary.push_str(&format!("\n{}", tail.trim_end()));
             }
+            if code == 0 {
+                (WorkerStatus::Done, None, summary)
+            } else {
+                (WorkerStatus::Failed, Some(EXIT_CODE), summary)
+            }
+        }
+        (_, code) => {
+            let summary = match code {
+                Some(code) => format!("exited (code {code}) without reporting"),
+                None => "its session ended without reporting".to_string(),
+            };
+            (WorkerStatus::Failed, Some(EXITED), summary)
         }
     }
 }
@@ -897,7 +980,7 @@ fn queue(store: &mut Store, method: &str, p: &Value) -> CliResult<Value> {
 
 /// Drop terminal escape sequences (colours, cursor moves) from captured
 /// output.
-fn strip_ansi(s: &str) -> String {
+pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {

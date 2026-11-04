@@ -456,6 +456,7 @@ pub fn ping() -> Value {
         "version": env!("CARGO_PKG_VERSION"),
         "protocol": PROTOCOL,
         "host": host_name(),
+        "capabilities": [crate::features::remote::CAPABILITY],
     })
 }
 

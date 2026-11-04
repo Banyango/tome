@@ -344,7 +344,7 @@ impl Engine {
             run.id, run.workflow_name
         );
         let recorded = self.recorded_sessions(run_id);
-        orchestrator::kill_sessions(run_id, &recorded);
+        self.kill_sessions(run_id);
         orchestrator::notify(&run, &recorded, &cut);
         self.promote(&run.workflow_name);
     }

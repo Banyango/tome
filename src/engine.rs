@@ -118,6 +118,12 @@ pub struct Engine {
     pub(crate) plugins: Arc<crate::features::plugins::host::Host>,
     /// Set when the daemon starts shutting down.
     pub(crate) stop: Stop,
+    /// Workers this daemon hosts for other machines' runs.
+    pub(crate) host: crate::features::remote::host::Host,
+    /// Links to the nodes this daemon's remote workers run on.
+    pub(crate) links: crate::features::remote::link::Links,
+    /// The `Arc` the daemon holds this in, for threads it starts.
+    me: std::sync::OnceLock<std::sync::Weak<Engine>>,
 }
 
 impl Engine {
@@ -135,7 +141,19 @@ impl Engine {
             blocked_notified: Mutex::new(HashMap::new()),
             plugins: Arc::new(crate::features::plugins::host::Host::new()),
             stop: Stop::default(),
+            host: Default::default(),
+            links: Default::default(),
+            me: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Record the `Arc` this engine lives in.
+    pub fn set_me(self: &Arc<Self>) {
+        let _ = self.me.set(Arc::downgrade(self));
+    }
+
+    pub(crate) fn me(&self) -> Option<Arc<Engine>> {
+        self.me.get().and_then(std::sync::Weak::upgrade)
     }
 
     pub fn with_store<T>(&self, f: impl FnOnce(&mut Store) -> CliResult<T>) -> CliResult<T> {
@@ -170,6 +188,7 @@ impl Engine {
             || handshake::METHODS.contains(&method)
             || crate::features::bus::METHODS.contains(&method)
             || crate::features::hubs::METHODS.contains(&method)
+            || crate::features::remote::METHODS.contains(&method)
     }
 
     pub fn dispatch(&self, method: &str, p: &Value) -> CliResult<Value> {
@@ -198,6 +217,8 @@ impl Engine {
             m if crate::features::bus::METHODS.contains(&m) => self.dispatch_bus(m, p),
             m if crate::features::hubs::METHODS.contains(&m) => self.dispatch_hubs(m, p),
             "agent.ready" => self.ready(p),
+            "hosted.spawn" => self.hosted_spawn(p),
+            "hosted.close" => self.hosted_close(p),
             _ => Err(CliError::invalid(format!("unknown method `{method}`"))),
         }
     }
@@ -775,6 +796,7 @@ impl Engine {
 
     pub(crate) fn kill_sessions(&self, run_id: RunId) {
         orchestrator::kill_sessions(run_id, &self.recorded_sessions(run_id));
+        self.close_remote(run_id);
     }
 
     /// Fail running runs whose orchestrator or agent has exited without
@@ -784,6 +806,7 @@ impl Engine {
     pub fn monitor(self: Arc<Self>) {
         while self.stop.sleep(MONITOR_POLL) {
             self.check_workers();
+            self.check_hosted();
             let Ok(sessions) = self.with_store(|store| store.running_sessions().map_err(internal))
             else {
                 return;
@@ -826,7 +849,7 @@ impl Engine {
                     );
                     // Its workers have no one to report to.
                     let recorded = self.recorded_sessions(run.id);
-                    orchestrator::kill_sessions(run.id, &recorded);
+                    self.kill_sessions(run.id);
                     orchestrator::notify(&run, &recorded, &cut);
                     self.promote(&run.workflow_name);
                 }

@@ -62,7 +62,17 @@ impl Daemon {
     /// Dispatch one request. Returns `None` for an unknown method, otherwise
     /// the result plus whether the daemon should shut down after the response
     /// has been written.
-    fn handle(&self, req: &Request) -> Option<(CliResult<Value>, bool)> {
+    fn handle(&self, req: &Request, conn: u64) -> Option<(CliResult<Value>, bool)> {
+        // A worker hosted here for another machine's run: its run is there.
+        if let Some(origin) = hosted_origin(req) {
+            let caller = req.caller.clone().unwrap_or_default();
+            return Some((
+                self.engine
+                    .host
+                    .relay(origin, &req.method, &req.params, &caller),
+                false,
+            ));
+        }
         let handled = match req.method.as_str() {
             "daemon.ping" => (Ok(crate::features::nodes::ping()), false),
             "project.locate" => (crate::features::nodes::locate_rpc(&req.params), false),
@@ -84,6 +94,9 @@ impl Daemon {
                 )
             }
             "notify" => (notify(&req.params), false),
+            "hosted.poll" if !self.engine.stop.is_set() => {
+                (self.engine.hosted_poll(&req.params, conn), false)
+            }
             "provider.release" if !self.engine.stop.is_set() => {
                 (self.engine.release(&req.params), false)
             }
@@ -213,6 +226,7 @@ pub fn run_foreground() -> anyhow::Result<()> {
         std::process::id()
     );
     let engine = &daemon.engine;
+    engine.set_me();
     engine.plugins.reload();
     let background = vec![
         std::thread::spawn({
@@ -271,9 +285,33 @@ fn acquire_lock() -> anyhow::Result<File> {
     Ok(file)
 }
 
+fn hosted_origin(req: &Request) -> Option<&str> {
+    req.caller.as_ref()?.get("hosted")?.as_str()
+}
+
+/// Numbers connections, so a node knows when its upstream's poll
+/// connection closes.
+static CONNECTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Tells the engine when a connection closes.
+struct Connection<'a> {
+    engine: &'a Engine,
+    id: u64,
+}
+
+impl Drop for Connection<'_> {
+    fn drop(&mut self) {
+        self.engine.hosted_conn_closed(self.id);
+    }
+}
+
 fn serve_connection(daemon: &Daemon, stream: UnixStream) {
     let Ok(mut writer) = stream.try_clone() else {
         return;
+    };
+    let conn = Connection {
+        engine: &daemon.engine,
+        id: CONNECTIONS.fetch_add(1, Ordering::SeqCst),
     };
     let reader = BufReader::new(stream);
     for line in reader.lines() {
@@ -285,6 +323,7 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
         if let Some(agent) = req
             .as_ref()
             .ok()
+            .filter(|r| hosted_origin(r).is_none())
             .and_then(|r| r.caller.as_ref())
             .and_then(crate::handshake::caller_of)
         {
@@ -302,7 +341,7 @@ fn serve_connection(daemon: &Daemon, stream: UnixStream) {
                 // The caller went away mid-stream.
                 None => return,
             },
-            Ok(req) => match daemon.handle(&req) {
+            Ok(req) => match daemon.handle(&req, conn.id) {
                 Some((Ok(value), shutdown)) => (Response::ok(req.id, value), shutdown),
                 Some((Err(err), shutdown)) => (Response::from_cli_error(req.id, &err), shutdown),
                 None => {

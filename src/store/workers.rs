@@ -71,6 +71,9 @@ pub struct Worker {
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    /// The node it runs on, when it isn't this machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 pub struct NewWorker<'a> {
@@ -120,7 +123,7 @@ pub const FAIL_FAST: &str = "fail_fast";
 
 const WORKER_COLUMNS: &str =
     "run_id, name, kind, status, reason, summary, group_name, harness, command, session, \
-     worktree, branch, base, keep_open, exit_code, created_at, started_at, finished_at";
+     worktree, branch, base, keep_open, exit_code, created_at, started_at, finished_at, node";
 
 /// Worker, group and queue names: letters, digits, `_` and `-`.
 pub fn check_name(what: &str, name: &str) -> CliResult<()> {
@@ -163,6 +166,7 @@ fn worker_from_row(r: &Row<'_>) -> duckdb::Result<Worker> {
         created_at: fmt_ts(r.get(15)?),
         started_at: ts(r, 16)?,
         finished_at: ts(r, 17)?,
+        node: r.get(18)?,
     })
 }
 
@@ -286,6 +290,25 @@ impl Store {
 
     /// A pending worker's session started. Returns false if it isn't pending
     /// any more (it was ended meanwhile).
+    /// Record that a worker runs on `node`.
+    pub fn set_worker_node(&mut self, run_id: RunId, name: &str, node: &str) -> CliResult<()> {
+        self.conn
+            .execute(
+                "UPDATE workers SET node = ? WHERE run_id = ? AND name = ?",
+                params![node, run_id, name],
+            )
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    /// Running workers on `node`, in running runs.
+    pub fn running_workers_on(&self, node: &str) -> CliResult<Vec<Worker>> {
+        self.query_workers(
+            "WHERE status IN ('pending', 'running') AND node = ? AND run_id IN (SELECT id FROM runs WHERE status = 'running') ORDER BY run_id, name",
+            params![node],
+        )
+    }
+
     pub fn start_worker(&mut self, run_id: RunId, name: &str, session: &str) -> CliResult<bool> {
         let n = self
             .conn
