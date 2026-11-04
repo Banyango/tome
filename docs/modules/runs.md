@@ -19,7 +19,8 @@ orchestrator, and the commands to resume, cancel, inspect and clean up.
 - `src/recovery.rs`: crash recovery once at daemon start (`RecoveryHooks`).
 - `src/handshake.rs`: the start handshake: a launched agent must make a tome
   call carrying its identity before `start-timeout`.
-- `src/gc.rs`: `tome gc --older-than`; `src/stop.rs`: daemon shutdown signal.
+- `src/gc.rs`: `tome gc --older-than` and `tome runs rm` (`runs.rm`, routed
+  through `Engine::remove_run` so a live run is cancelled first); `src/stop.rs`: daemon shutdown signal.
 - `src/inspect.rs`, `src/query.rs`: `tome runs list|show|logs`, `tome query`.
 - `src/store.rs`: schema and migrations (all tables), `Run`, `Step`, `Session`,
   `RunStatus`, `StepEvent`; `Store` is the DB handle.

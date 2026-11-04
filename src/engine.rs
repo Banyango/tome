@@ -86,6 +86,7 @@ const METHODS: &[&str] = &[
     "run.resume",
     "run.finish",
     "run.cancel",
+    "runs.rm",
     "step.report",
     "step.status",
     "session.move",
@@ -185,6 +186,7 @@ impl Engine {
                     opt_str(p, "reason").unwrap_or(reason::USER_CANCELLED),
                 )
                 .map(|run| json!(run)),
+            "runs.rm" => self.remove_run(p),
             "step.report" => self.step(p),
             "step.status" => self.step_status(p),
             "session.move" => self.move_session(p),
@@ -533,6 +535,39 @@ impl Engine {
         self.kill_sessions(id);
         self.promote(&run.workflow_name);
         Ok(run)
+    }
+
+    /// `runs.rm {id, force?, dry_run?}`: remove one run (see
+    /// [`gc::remove_one`](crate::gc::remove_one)), cancelling it first if
+    /// it's queued or running. If the cancel fails, nothing is removed.
+    fn remove_run(&self, p: &Value) -> CliResult<Value> {
+        let id = req_id(p)?;
+        let flag = |k: &str| p.get(k).and_then(Value::as_bool).unwrap_or(false);
+        let (force, dry_run) = (flag("force"), flag("dry_run"));
+        let get = || {
+            self.with_store(|store| {
+                store
+                    .get_run(id, false)
+                    .map_err(internal)?
+                    .ok_or_else(|| CliError::not_found(format!("run {id} not found")))
+            })
+        };
+        let mut run = get()?;
+        let live = !run.status.is_finished();
+        if live && !dry_run {
+            if let Err(e) = self.cancel(id, reason::USER_CANCELLED) {
+                // Finished meanwhile is fine; anything else stops here.
+                run = get()?;
+                if !run.status.is_finished() {
+                    return Err(e);
+                }
+            } else {
+                run = get()?;
+            }
+        }
+        let mut v = self.with_store(|store| crate::gc::remove_one(store, &run, force, dry_run))?;
+        v["cancelled"] = json!(live);
+        Ok(v)
     }
 
     pub(crate) fn recorded_sessions(&self, run_id: RunId) -> Vec<store::Session> {

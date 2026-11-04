@@ -50,3 +50,4 @@
 - [019 - Rust architecture alignment](features/019-rust-architecture-alignment/feature.md)
 - [020 - Plugin system](features/020-plugin-system/feature.md)
 - [021 - Hubs: shared buses, queues, workflows and config](features/021-hubs/feature.md)
+- [022 - Remove a run](features/022-runs-rm/feature.md)

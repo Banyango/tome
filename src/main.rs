@@ -659,6 +659,17 @@ enum RunsCommand {
         #[arg(long, value_name = "N")]
         tail: Option<usize>,
     },
+    /// Remove a run with its logs, worktrees and merged branches (cancelling it if live).
+    Rm {
+        /// Run id.
+        id: String,
+        /// Also delete the run's unmerged tome branches.
+        #[arg(long)]
+        force: bool,
+        /// Show what would be removed without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Where a session goes; each flag overrides the workflow and config.
@@ -1033,7 +1044,8 @@ fn reach(command: &Command) -> Reach {
 fn take_ref(command: &mut Command) -> Option<String> {
     let id = match command {
         Command::Runs {
-            command: RunsCommand::Show { id, .. } | RunsCommand::Logs { id, .. },
+            command:
+                RunsCommand::Show { id, .. } | RunsCommand::Logs { id, .. } | RunsCommand::Rm { id, .. },
         } => id,
         Command::Run {
             command: Some(RunCommand::Cancel { id: Some(id) }),
@@ -1388,6 +1400,7 @@ fn dispatch(command: Command, mode: Mode, provider: Option<String>) -> CliResult
             }
             RunsCommand::Show { id, snapshot } => inspect::show(&id, snapshot),
             RunsCommand::Logs { id, step, tail } => inspect::logs(&id, step, tail),
+            RunsCommand::Rm { id, force, dry_run } => gc::rm(&id, force, dry_run),
         },
         Command::Triggers { command } => match command {
             TriggersCommand::Ls => triggerscmd::ls(),

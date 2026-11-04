@@ -14,6 +14,10 @@
 //! The branch tome made for a worktree (`tome/<run>/<name>`) is deleted with
 //! it only if it's merged into the base it was made from; otherwise it's
 //! kept and listed, so no work is lost silently.
+//!
+//! `tome runs rm <id>` removes one run the same way (cancelling it first if
+//! it's still live, see `Engine::remove_run`). Only that run goes, even in a
+//! resume chain; `--force` deletes its unmerged branches too.
 
 use crate::duration;
 use crate::output::{CliError, CliResult, Report};
@@ -39,36 +43,7 @@ pub fn run(older_than: &str, dry_run: bool) -> CliResult<Report> {
     let mut out = String::new();
     let verb = if dry_run { "would delete" } else { "deleted" };
     for r in &deleted {
-        out.push_str(&format!(
-            "{verb} run {} ({}, {})\n",
-            r["id"],
-            r["workflow_name"].as_str().unwrap_or("?"),
-            r["status"].as_str().unwrap_or("?")
-        ));
-        for w in r["worktrees"].as_array().into_iter().flatten() {
-            out.push_str(&format!(
-                "  worktree {}\n",
-                w["path"].as_str().unwrap_or("?")
-            ));
-        }
-        for b in r["branches"].as_array().into_iter().flatten() {
-            let (name, base) = (
-                b["branch"].as_str().unwrap_or("?"),
-                b["base"].as_str().unwrap_or("?"),
-            );
-            match (b["deleted"].as_bool(), dry_run) {
-                (Some(true), true) => {
-                    out.push_str(&format!("  branch {name} (merged into {base})\n"))
-                }
-                (Some(true), false) => {
-                    out.push_str(&format!("  deleted branch {name} (merged into {base})\n"))
-                }
-                _ => out.push_str(&format!(
-                    "  kept branch {name}: {}\n",
-                    b["note"].as_str().unwrap_or("?")
-                )),
-            }
-        }
+        render_run(&mut out, verb, r, dry_run);
     }
     for r in &kept {
         out.push_str(&format!(
@@ -104,6 +79,70 @@ pub fn run(older_than: &str, dry_run: bool) -> CliResult<Report> {
     Ok(Report::new(data, out).with_exit(code))
 }
 
+/// `tome runs rm <id> [--force] [--dry-run]`
+pub fn rm(id: &str, force: bool, dry_run: bool) -> CliResult<Report> {
+    let data = rpc::call(
+        &paths::socket_path(),
+        "runs.rm",
+        json!({ "id": id, "force": force, "dry_run": dry_run }),
+    )?;
+    let run = &data["run"];
+    let cancel = data["cancelled"] == true;
+    let verb = match (dry_run, cancel) {
+        (true, true) => "would cancel and remove",
+        (true, false) => "would remove",
+        (false, true) => "cancelled and removed",
+        (false, false) => "removed",
+    };
+    let mut out = String::new();
+    if let Some(error) = data["error"].as_str() {
+        if cancel {
+            out.push_str(&format!("cancelled run {}\n", run["id"]));
+        }
+        out.push_str(&format!("kept run {}: {error}", run["id"]));
+        return Ok(Report::new(data, out).with_exit(crate::output::exit::FAILURE));
+    }
+    render_run(&mut out, verb, run, dry_run);
+    if dry_run {
+        out.push_str("dry run: nothing removed");
+    }
+    Ok(Report::new(data, out.trim_end().to_string()))
+}
+
+/// One removed (or to-be-removed) run with its worktrees and branches.
+fn render_run(out: &mut String, verb: &str, r: &Value, dry_run: bool) {
+    out.push_str(&format!(
+        "{verb} run {} ({}, {})\n",
+        r["id"],
+        r["workflow_name"].as_str().unwrap_or("?"),
+        r["status"].as_str().unwrap_or("?")
+    ));
+    for w in r["worktrees"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "  worktree {}\n",
+            w["path"].as_str().unwrap_or("?")
+        ));
+    }
+    for b in r["branches"].as_array().into_iter().flatten() {
+        let (name, base) = (
+            b["branch"].as_str().unwrap_or("?"),
+            b["base"].as_str().unwrap_or("?"),
+        );
+        let why = match b["note"].as_str() {
+            Some(note) => format!("{note}, --force"),
+            None => format!("merged into {base}"),
+        };
+        match (b["deleted"].as_bool(), dry_run) {
+            (Some(true), true) => out.push_str(&format!("  branch {name} ({why})\n")),
+            (Some(true), false) => out.push_str(&format!("  deleted branch {name} ({why})\n")),
+            _ => out.push_str(&format!(
+                "  kept branch {name}: {}\n",
+                b["note"].as_str().unwrap_or("?")
+            )),
+        }
+    }
+}
+
 fn plural(n: usize) -> &'static str {
     if n == 1 {
         ""
@@ -136,45 +175,14 @@ pub fn collect(store: &mut Store, p: &Value) -> CliResult<Value> {
             continue;
         }
         let chain = chain_of(store, newest).map_err(internal)?;
-        let mut entries = Vec::new();
-        let mut worktrees = Vec::new();
-        for (run, own) in owned_worktrees(store, &chain).map_err(internal)? {
-            let branches: Vec<Value> = own.iter().filter_map(branch_plan).collect();
-            entries.push(json!({
-                "id": run.id,
-                "workflow_name": run.workflow_name,
-                "status": run.status,
-                "finished_at": run.finished_at,
-                "resumed_from": run.resumed_from,
-                "worktrees": own,
-                "branches": branches,
-            }));
-            worktrees.push(own);
-        }
+        let owned = owned_worktrees(store, &chain).map_err(internal)?;
         if dry_run {
-            deleted.extend(entries);
+            deleted.extend(owned.iter().map(|(run, own)| entry(run, own, false)));
             continue;
         }
-        let errors: Vec<String> = worktrees
-            .iter()
-            .flatten()
-            .filter_map(|w| remove_worktree(w).err())
-            .collect();
-        if !errors.is_empty() {
-            let error = errors.join("; ");
-            kept.extend(chain.iter().map(|r| json!({ "id": r.id, "error": error })));
-            continue;
-        }
-        for ((run, mut entry), own) in chain.iter().zip(entries).zip(&worktrees) {
-            // Worktrees are gone, so their branches can be deleted now.
-            entry["branches"] = json!(own.iter().filter_map(delete_branch).collect::<Vec<_>>());
-            let dir = store.run_dir(run.id);
-            if dir.exists() {
-                std::fs::remove_dir_all(&dir)
-                    .map_err(|e| CliError::internal(format!("removing {}: {e}", dir.display())))?;
-            }
-            store.delete_run(run.id).map_err(internal)?;
-            deleted.push(entry);
+        match remove(store, &owned, false)? {
+            Ok(entries) => deleted.extend(entries),
+            Err(error) => kept.extend(chain.iter().map(|r| json!({ "id": r.id, "error": error }))),
         }
     }
     // Settled deliveries, and events nothing is waiting on any more.
@@ -186,6 +194,89 @@ pub fn collect(store: &mut Store, p: &Value) -> CliResult<Value> {
         "kept": kept,
         "bus": { "deliveries": deliveries, "events": events },
     }))
+}
+
+/// `runs.rm {id, force?, dry_run?}` for a finished run (the engine cancels
+/// a live one first): remove just that run. A worktree a newer run in its
+/// resume chain adopted stays with that run.
+pub fn remove_one(store: &mut Store, run: &Run, force: bool, dry_run: bool) -> CliResult<Value> {
+    let internal = |e: anyhow::Error| CliError::internal(format!("{e:#}"));
+    let mut newer = Vec::new();
+    let mut next = store.resumed_as(run.id).map_err(internal)?;
+    while let Some(id) = next {
+        newer.extend(
+            store
+                .worktrees(id)
+                .map_err(internal)?
+                .into_iter()
+                .map(|w| w.path),
+        );
+        next = store.resumed_as(id).map_err(internal)?;
+    }
+    let own: Vec<Worktree> = store
+        .worktrees(run.id)
+        .map_err(internal)?
+        .into_iter()
+        .filter(|w| !newer.contains(&w.path))
+        .collect();
+    if dry_run {
+        return Ok(json!({ "dry_run": true, "run": entry(run, &own, force) }));
+    }
+    Ok(match remove(store, &[(run, own)], force)? {
+        Ok(mut entries) => json!({ "dry_run": false, "run": entries.remove(0) }),
+        Err(error) => json!({ "dry_run": false, "run": entry(run, &[], force), "error": error }),
+    })
+}
+
+/// What removing `run` (with the worktrees it owns) involves.
+fn entry(run: &Run, own: &[Worktree], force: bool) -> Value {
+    let branches: Vec<Value> = own.iter().filter_map(|w| branch_plan(w, force)).collect();
+    json!({
+        "id": run.id,
+        "workflow_name": run.workflow_name,
+        "status": run.status,
+        "finished_at": run.finished_at,
+        "resumed_from": run.resumed_from,
+        "worktrees": own,
+        "branches": branches,
+    })
+}
+
+/// Remove runs with the worktrees each owns: the worktrees through git
+/// first, and if any can't be removed, nothing else (the git errors are
+/// the `Err`). Then their branches, log directories and records.
+fn remove(
+    store: &mut Store,
+    owned: &[(&Run, Vec<Worktree>)],
+    force: bool,
+) -> CliResult<Result<Vec<Value>, String>> {
+    let errors: Vec<String> = owned
+        .iter()
+        .flat_map(|(_, own)| own)
+        .filter_map(|w| remove_worktree(w).err())
+        .collect();
+    if !errors.is_empty() {
+        return Ok(Err(errors.join("; ")));
+    }
+    let mut out = Vec::new();
+    for (run, own) in owned {
+        let mut entry = entry(run, own, force);
+        // Worktrees are gone, so their branches can be deleted now.
+        entry["branches"] = json!(own
+            .iter()
+            .filter_map(|w| delete_branch(w, force))
+            .collect::<Vec<_>>());
+        let dir = store.run_dir(run.id);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)
+                .map_err(|e| CliError::internal(format!("removing {}: {e}", dir.display())))?;
+        }
+        store
+            .delete_run(run.id)
+            .map_err(|e| CliError::internal(format!("{e:#}")))?;
+        out.push(entry);
+    }
+    Ok(Ok(out))
 }
 
 /// `newest` and the runs it resumed, oldest first.
@@ -223,9 +314,10 @@ fn owned_worktrees<'a>(
 }
 
 /// What gc would do with the branch tome made for a worktree: delete it
-/// only if it's merged into its base. `None` for worktrees without one (a
-/// worktree tome only recorded).
-fn branch_plan(w: &Worktree) -> Option<Value> {
+/// only if it's merged into its base, or anyway with `force` (the note
+/// still says why it wouldn't otherwise be). `None` for worktrees without
+/// one (a worktree tome only recorded).
+fn branch_plan(w: &Worktree, force: bool) -> Option<Value> {
     let (branch, base) = (w.branch.as_deref()?, w.base.as_deref()?);
     let repo = PathBuf::from(w.repo_path.as_deref()?);
     let (deleted, note) = match worktree::merged(&repo, branch, base) {
@@ -236,14 +328,15 @@ fn branch_plan(w: &Worktree) -> Option<Value> {
             Some(format!("can't tell whether it's merged into {base}")),
         ),
     };
+    let deleted = deleted || force;
     Some(
         json!({ "branch": branch, "base": base, "worker": w.worker, "deleted": deleted, "note": note }),
     )
 }
 
 /// Delete a removed worktree's branch if it's merged; report what happened.
-fn delete_branch(w: &Worktree) -> Option<Value> {
-    let mut plan = branch_plan(w)?;
+fn delete_branch(w: &Worktree, force: bool) -> Option<Value> {
+    let mut plan = branch_plan(w, force)?;
     if plan["deleted"] == true {
         let repo = PathBuf::from(w.repo_path.as_deref()?);
         if let Err(e) = git(&repo, &["branch", "-D", w.branch.as_deref()?]) {
@@ -380,6 +473,50 @@ mod tests {
         let v = collect(&mut store, &p).unwrap();
         assert_eq!(ids(&v, "deleted"), [first.id, second.id]);
         assert!(store.get_run(first.id, false).unwrap().is_none());
+        assert!(store.get_run(second.id, false).unwrap().is_none());
+    }
+
+    #[test]
+    fn rm_takes_one_run_of_a_chain_and_leaves_adopted_worktrees() {
+        let (_dir, mut store) = store();
+        let first = new_run(&mut store, "build");
+        let path = Path::new("/nowhere/.tome/worktrees/1-api");
+        let wt = NewWorktree {
+            path,
+            repo_path: None,
+            branch: None,
+            base: None,
+            worker: None,
+        };
+        store.add_worktree(first.id, &wt).unwrap();
+        store
+            .finish_run(first.id, RunStatus::Failed, None, None)
+            .unwrap();
+        let first = store.get_run(first.id, true).unwrap().unwrap();
+        let origin = crate::api::Origin {
+            focused: json!({}),
+            caller: json!({}),
+        };
+        let second = crate::resume::create(
+            &mut store,
+            &first,
+            "s",
+            None,
+            None,
+            &origin,
+            RunStatus::Running,
+        )
+        .unwrap();
+        store.add_worktree(second.id, &wt).unwrap();
+
+        let v = remove_one(&mut store, &first, false, false).unwrap();
+        assert_eq!(v["run"]["worktrees"], json!([]), "{v}");
+        assert!(store.get_run(first.id, false).unwrap().is_none());
+        assert_eq!(store.worktrees(second.id).unwrap().len(), 1);
+
+        // The newest holder takes the worktree with it.
+        let v = remove_one(&mut store, &second, false, false).unwrap();
+        assert_eq!(v["run"]["worktrees"][0]["path"], path.to_str().unwrap());
         assert!(store.get_run(second.id, false).unwrap().is_none());
     }
 }

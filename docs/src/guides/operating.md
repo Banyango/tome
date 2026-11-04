@@ -100,6 +100,16 @@ tome gc --older-than 14d
 
 Ages look like `12h`, `7d` or `2w`. A resume chain (a run and the runs that resumed it) is collected as one: only once its newest run is finished and older than the age, and then all of it. A worker's branch is deleted only if it was merged into its base. Unmerged branches are kept, and gc lists them. Bus events are cleared once all their deliveries are settled.
 
+To remove one run now, whatever its age, use `tome runs rm`:
+
+```sh
+tome runs rm 42 --dry-run    # show what would go
+tome runs rm 42              # the run, its logs, worktrees and merged branches
+tome runs rm 42 --force      # its unmerged tome/42/… branches too
+```
+
+A queued or running run is cancelled first, closing its sessions; if the cancel fails, nothing is removed. Only that run goes, even in a resume chain: a worktree a later run adopted stays with the later run. If git can't remove a worktree, the run is kept and the error is shown, so you can fix it and run `rm` again. There's no prompt, and it works with `--on <node>`.
+
 ## Removing workflows
 
 ```sh
