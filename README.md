@@ -15,7 +15,7 @@
 </p>
 
 
-Connect your harnesses together. Build an army of agents. Tome gives you the tools to build it.
+Tome orchestrates agent harnesses. Go from having a single harness working on your project to an army of harnesses all coordinating together! Tome gives you the primitives to build your agentic factories.
 
 
 ## Features
