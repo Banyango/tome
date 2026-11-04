@@ -308,3 +308,55 @@ fn a_node_copy_that_isnt_a_repo_spawns_nothing() {
     assert_eq!(code, 4, "{err}");
     assert!(err.to_string().contains("nodes.mini.projects"), "{err}");
 }
+
+#[test]
+fn agent_workers_run_with_the_nodes_harness() {
+    let n = Nodes::new();
+    // Only mini knows `far`.
+    n.mini.set_config(&format!(
+        "{}  far: [sh, \"-c\", \"grep -q fix-it {{{{prompt_file}}}} && tome worker done --summary from-far; sleep 30\"]\n",
+        common::IDLE_CONFIG
+    ));
+    let run = n.start();
+    n.ok(
+        &run,
+        &[
+            "worker",
+            "spawn",
+            "--node",
+            "mini",
+            "--name",
+            "a",
+            "--harness",
+            "far",
+            "--prompt",
+            "fix-it",
+        ],
+    );
+    let w = n.ok(&run, &["worker", "wait", "a"]);
+    assert_eq!(
+        (
+            w["status"].as_str(),
+            w["summary"].as_str(),
+            w["kind"].as_str()
+        ),
+        (Some("done"), Some("from-far"), Some("agent")),
+        "{w}"
+    );
+
+    let (code, err) = n.tome(
+        &run,
+        &[
+            "worker",
+            "spawn",
+            "--node",
+            "mini",
+            "--harness",
+            "nope",
+            "--prompt",
+            "x",
+        ],
+    );
+    assert_eq!(code, 2, "{err}");
+    assert!(err.to_string().contains("on this node"), "{err}");
+}

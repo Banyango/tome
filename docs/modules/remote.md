@@ -38,7 +38,8 @@ Two daemons are involved: the **run's daemon** (owns the worker) and the
    project, pushes the base commit to `<node.ssh>:<project>` as
    `refs/heads/<branch>` (`git push` with `GIT_SSH_COMMAND` set to tome's
    ssh). It then calls `hosted.spawn {origin, run_id, name, command, project,
-   worktree: {branch}, ...}`; the node adds a worktree at
+   worktree: {branch}, agent: {harness, model, prompt}, ...}` (`command` or
+   `agent`; the node resolves the harness from its own config); the node adds a worktree at
    `.tome/worktrees/hosted-<tag>-<run>-<name>` and returns its path, which
    the run records as the worker's worktree (`<node>:<path>`). It isn't in
    the run side's `worktrees` table.

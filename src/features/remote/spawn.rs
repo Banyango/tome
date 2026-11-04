@@ -19,13 +19,24 @@ use std::process::Command;
 /// What a remote worker runs.
 pub struct RemoteTask<'a> {
     pub name: &'a str,
-    pub command: &'a [String],
+    pub work: RemoteWork<'a>,
     pub keep_open: bool,
     /// The placement flags it was spawned with.
     pub placement: Option<&'a Value>,
     /// `--base` and `--branch`, for its worktree.
     pub base: Option<&'a str>,
     pub branch: Option<&'a str>,
+}
+
+/// A command, or an agent the node starts with its own harness config.
+pub enum RemoteWork<'a> {
+    Command(&'a [String]),
+    Agent {
+        harness: &'a str,
+        model: Option<&'a str>,
+        /// The full prompt, preamble included.
+        prompt: &'a str,
+    },
 }
 
 /// What a remote worker was started with.
@@ -115,7 +126,16 @@ impl Engine {
                 "run_id": run.id.get(),
                 "name": task.name,
                 "workflow": run.workflow_name,
-                "command": task.command,
+                "command": match &task.work {
+                    RemoteWork::Command(cmd) => json!(cmd),
+                    RemoteWork::Agent { .. } => Value::Null,
+                },
+                "agent": match &task.work {
+                    RemoteWork::Agent { harness, model, prompt } => {
+                        json!({ "harness": harness, "model": model, "prompt": prompt })
+                    }
+                    RemoteWork::Command(_) => Value::Null,
+                },
                 "keep_open": task.keep_open,
                 "project": project,
                 "worktree": worktree,

@@ -6,7 +6,10 @@
 //! the replies to earlier calls. Nothing here owns a worker's status.
 
 use super::{session_name, tag, LOST_AFTER, RELAY_TIMEOUT};
+use crate::config;
 use crate::engine::Engine;
+use crate::features::plugins::harnesses;
+use crate::harness::Vars;
 use crate::ids::RunId;
 use crate::orchestrator;
 use crate::output::{CliError, CliResult, ErrorKind};
@@ -200,6 +203,22 @@ impl Engine {
         let workflow = opt_str(p, "workflow").unwrap_or("run");
         let keep_open = p["keep_open"].as_bool().unwrap_or(false);
         let project = opt_str(p, "project").map(PathBuf::from);
+        let agent = &p["agent"];
+        // Check the harness before touching the repo.
+        let harness = match agent["harness"].as_str() {
+            Some(h) => {
+                let harness = harnesses::resolve(h, project.as_deref()).map_err(|e| {
+                    let hint = format!(
+                        "configure harness `{h}` on this node under `harnesses:` in {}",
+                        config::global_path().display()
+                    );
+                    e.with_hint(hint)
+                })?;
+                harness.check_model(agent["model"].as_str())?;
+                Some(harness)
+            }
+            None => None,
+        };
         let branch = p["worktree"]["branch"].as_str();
         let worktree = match (branch, &project) {
             (Some(branch), Some(repo)) => Some(add_worktree(repo, origin, run_id, name, branch)?),
@@ -211,22 +230,39 @@ impl Engine {
             .or_else(|| opt_str(p, "cwd").map(PathBuf::from))
             .or_else(|| project.clone())
             .unwrap_or_else(paths::user_home);
-        let argv: Vec<String> = p["command"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
+        let dir = hosted_dir(origin, run_id, name);
+        fs::create_dir_all(&dir)?;
+        let argv: Vec<String> = match &harness {
+            Some(harness) => {
+                let prompt = agent["prompt"].as_str().unwrap_or_default();
+                let prompt_file = dir.join("prompt.md");
+                fs::write(&prompt_file, prompt)?;
+                harness.command(&Vars {
+                    prompt,
+                    prompt_file: &prompt_file.to_string_lossy(),
+                    run_id: RunId::new(run_id),
+                    session: &session_name(origin, run_id, name),
+                    cwd: &cwd.to_string_lossy(),
+                    model: agent["model"].as_str(),
+                })
+            }
+            None => p["command"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+        };
         if argv.is_empty() {
-            return Err(CliError::invalid("a hosted worker needs a command"));
+            return Err(CliError::invalid(
+                "a hosted worker needs a command or an agent",
+            ));
         }
         let flags = p
             .get("placement")
             .filter(|v| !v.is_null())
             .map(Settings::from_json)
             .transpose()?;
-        let dir = hosted_dir(origin, run_id, name);
-        fs::create_dir_all(&dir)?;
         let exit = dir.join("exit");
         let _ = fs::remove_file(&exit);
         let dir_str = dir.to_string_lossy().into_owned();
@@ -235,7 +271,11 @@ impl Engine {
                 origin,
                 run_id,
                 name,
-                kind: "command",
+                kind: if harness.is_some() {
+                    "agent"
+                } else {
+                    "command"
+                },
                 keep_open,
                 dir: &dir_str,
                 repo: project.as_deref().and_then(Path::to_str),

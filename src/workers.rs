@@ -9,7 +9,7 @@
 
 use crate::engine::Engine;
 use crate::features::nodes::Node;
-use crate::features::remote::spawn::RemoteTask;
+use crate::features::remote::spawn::{RemoteTask, RemoteWork};
 use crate::handshake::{self, Agent};
 use crate::harness::{self, Vars};
 use crate::ids::RunId;
@@ -141,6 +141,12 @@ enum Task {
         prompt: String,
     },
     Command(Vec<String>),
+    /// An agent on a node, whose harness the node resolves.
+    Hosted {
+        harness: String,
+        model: Option<String>,
+        prompt: String,
+    },
 }
 
 impl Engine {
@@ -266,6 +272,21 @@ impl Engine {
         }
         let wf = orchestrator::snapshot(&run)?;
         let task = match (prompt, command) {
+            (Some(prompt), None) if opt_str(p, "node").is_some() => {
+                let d = &wf.frontmatter().defaults;
+                let harness = opt_str(p, "harness")
+                    .or(d.harness.as_deref())
+                    .or(d.orchestrator_harness.as_deref())
+                    .unwrap_or(harness::DEFAULT)
+                    .to_string();
+                Task::Hosted {
+                    harness,
+                    model: opt_str(p, "model")
+                        .or(d.model.as_deref())
+                        .map(str::to_string),
+                    prompt: format!("{}\n\n{}\n", PROMPT.trim_end(), prompt.trim()),
+                }
+            }
             (Some(prompt), None) => {
                 let project = orchestrator::run_project(&run);
                 // Without an explicit choice, workers run the harness their
@@ -329,18 +350,11 @@ impl Engine {
         }
         // Check the node before recording anything, so a bad one spawns nothing.
         let remote = match opt_str(p, "node") {
-            Some(node) => {
-                if !matches!(task, Task::Command(_)) {
-                    return Err(CliError::invalid(
-                        "only command workers (after `--`) can run on a node yet",
-                    ));
-                }
-                Some(self.remote_node(node)?)
-            }
+            Some(node) => Some(self.remote_node(node)?),
             None => None,
         };
         // Resolve the base before recording anything, so a bad one spawns nothing.
-        let base = if with_worktree {
+        let base = if with_worktree && remote.is_none() {
             Some(worktree::resolve_base(&repo_dir(&run, p), base)?)
         } else {
             None
@@ -349,6 +363,7 @@ impl Engine {
         let (kind, harness_name, cmd) = match &task {
             Task::Agent { harness, .. } => ("agent", Some(harness.name.as_str()), None),
             Task::Command(cmd) => ("command", None, Some(cmd.as_slice())),
+            Task::Hosted { harness, .. } => ("agent", Some(harness.as_str()), None),
         };
         let worker = self.with_store(|store| {
             store.reserve_worker(
@@ -426,10 +441,23 @@ impl Engine {
             Ok(())
         })?;
 
-        if let (Some(node), Task::Command(cmd)) = (&remote, &task) {
+        if let Some(node) = &remote {
+            let work = match &task {
+                Task::Command(cmd) => RemoteWork::Command(cmd),
+                Task::Hosted {
+                    harness,
+                    model,
+                    prompt,
+                } => RemoteWork::Agent {
+                    harness,
+                    model: model.as_deref(),
+                    prompt,
+                },
+                Task::Agent { .. } => return Err(CliError::internal("a local agent on a node")),
+            };
             let remote = RemoteTask {
                 name: &name,
-                command: cmd,
+                work,
                 keep_open: worker.keep_open,
                 placement: p.get("placement").filter(|v| !v.is_null()),
                 base: opt_str(p, "base"),
@@ -597,6 +625,7 @@ impl Engine {
                 (argv, Some(harness.name.clone()))
             }
             Task::Command(cmd) => (cmd.clone(), None),
+            Task::Hosted { .. } => return Err(CliError::internal("a hosted agent launched here")),
         };
         let mut env = orchestrator::run_env(run);
         env.push(("TOME_WORKER_ID".to_string(), name.to_string()));
