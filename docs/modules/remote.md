@@ -52,7 +52,7 @@ aren't configured (`validate::warnings_json`).
    the run records as the worker's worktree (`<node>:<path>`). It isn't in
    the run side's `worktrees` table.
 2. The node launches the session with `TOME_RUN_ID`, `TOME_WORKER_ID` and
-   `TOME_HOSTED=<origin>`. `rpc::caller()` adds `hosted` to every call the
+   `TOME_HOSTED=<origin>`, plus `TOME_WORKTREE` when it has a worktree. `rpc::caller()` adds `hosted` to every call the
    worker makes; `Daemon::handle` sends those to `Host::relay` instead of
    dispatching them.
 3. Each `hosted.poll` returns queued calls and ended sessions, and carries

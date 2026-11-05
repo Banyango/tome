@@ -48,7 +48,7 @@ The spawn fails with exit 2 if the node isn't configured, names a provider, or r
 
 If the link to a node drops (your laptop sleeps, the network changes, a daemon restarts), the run's workers on it fail at once with `node_unreachable`, so the orchestrator can start them again elsewhere. A node that loses its link closes those sessions unless they were spawned with `--keep-open`. Cancelling the run closes them too. Their worktrees and branches stay on the node; `tome gc` run on the node removes them, with its records of them, once they're older than `--older-than`.
 
-Workers get these environment variables: `TOME_RUN_ID`, `TOME_WORKER_ID`, `TOME_OUTPUT=json` and, with a worktree, `TOME_WORKTREE`. That is why the commands above need no ids.
+Workers get these environment variables: `TOME_RUN_ID`, `TOME_WORKER_ID`, `TOME_OUTPUT=json` and, with a worktree, `TOME_WORKTREE` (on a node, the worktree there). That is why the commands above need no ids.
 
 Here is a workflow that runs the tests as a command worker and starts an agent only if they fail:
 

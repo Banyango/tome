@@ -277,7 +277,7 @@ fn remote_workers_get_a_worktree_and_their_branch_comes_back() {
         &run,
         &[
             "worker", "spawn", "--node", "mini", "--name", "edit", "--", "sh", "-c",
-            "test ! -e dirty.txt && echo hi > made.txt && git add made.txt && git -c user.name=t -c user.email=t@t commit -qm made",
+            "test \"$(cd \"$TOME_WORKTREE\" && pwd -P)\" = \"$(pwd -P)\" && test ! -e dirty.txt && echo hi > made.txt && git add made.txt && git -c user.name=t -c user.email=t@t commit -qm made",
         ],
     );
     assert!(w["worktree"].as_str().unwrap().starts_with("mini:"), "{w}");

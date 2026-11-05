@@ -331,6 +331,7 @@ impl Engine {
             &dir,
             keep_open,
             project.as_deref(),
+            worktree.as_deref(),
             flags.as_ref(),
         );
         let s = match launched {
@@ -356,6 +357,7 @@ impl Engine {
         dir: &Path,
         keep_open: bool,
         project: Option<&Path>,
+        worktree: Option<&Path>,
         flags: Option<&Settings>,
     ) -> CliResult<store::Session> {
         let kind = Kind::choose(None, project)?;
@@ -373,6 +375,12 @@ impl Engine {
         let mut env = orchestrator::session_env(RunId::new(run_id));
         env.push(("TOME_WORKER_ID".to_string(), name.to_string()));
         env.push((super::HOSTED_ENV.to_string(), origin.to_string()));
+        if let Some(wt) = worktree {
+            env.push((
+                "TOME_WORKTREE".to_string(),
+                wt.to_string_lossy().into_owned(),
+            ));
+        }
         let (s, _) = Backend::new(kind).launch(&Launch {
             name: &session_name(origin, run_id, name),
             title: &format!("tome: {workflow} #{run_id} / {name}"),
