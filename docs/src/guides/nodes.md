@@ -73,6 +73,16 @@ If neither has a `.tome/` directory, the command exits `4` and says what to set.
 
 An attached remote run keeps going if the SSH connection drops. Check on it with `tome runs show mini:<id>`.
 
+## Running workers on a node
+
+A run on this machine can also put individual workers on a node, so the run stays here while the work happens there:
+
+```sh
+tome worker spawn --node mini --name tests -- cargo test
+```
+
+In a git project, each remote worker gets a worktree in the node's copy of the project, and tome fetches its branch back when it finishes. Agent workers use the node's own `harnesses:` config. A workflow can set a default node per worker. See [workers on other machines](workers.md#workers-on-other-machines).
+
 ## Watching a remote run
 
 ```sh
