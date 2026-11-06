@@ -2,15 +2,19 @@
 
 Tome gives you the primitives you need to build agentic workflows and meets you where you're already building.
 
+<video src="assets/tome-launch.mp4" controls muted playsinline style="width: 100%; border-radius: 8px;"></video>
 
-You get powerful primitives 
+
+You get powerful features 
 - **Triggers** - Run a workflow on a file change/ a cron job/ +more
+- **Mix and match Harnesses** - Create a workflow that uses Claude and Codex, or whatever you want.
 - **Workers** - Spin off any number of agents to work on something. Orchestrate them together.
 - **Queues** - Push work to a queue and have workers pull it off. 
 - **Event Buses** - Broadcast an event to any workflows listening.
 - **Named Steps** - Know exactly where you are in the workflow.
-- **Hubs** - Link together multiple code projects in tome and orchestrate them together.
+- **Hubs** - Link together multiple projects in tome and orchestrate them together.
 - **Remote Nodes** - Send work to remote machines. 
+- **Remote Workers** - Do work on a docker container or a remote box through ssh.
 
 Using these you can build anything from a single repeatable workflow to a whole agentic software factory.
 
