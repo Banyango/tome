@@ -17,7 +17,7 @@
 
 Tome orchestrates agent harnesses. Go from having a single harness working on your project to an army of harnesses all coordinating together! Tome gives you the primitives to build your agentic factories.
 
-https://github.com/Banyango/tome/raw/main/docs/src/assets/tome-launch.mp4
+https://github.com/user-attachments/assets/399d61d6-1433-4986-be00-c02a3e481492
 
 
 ## Features
