@@ -14,6 +14,9 @@ CLI ↔ daemon protocol.
 - `src/lifecycle.rs`: `tome daemon start|stop|status`.
 - `src/service.rs`: `tome daemon install|uninstall` (launchd on macOS, systemd
   `--user` on Linux).
+- `src/update.rs`: new-release notices. A daemon thread checks GitHub's latest
+  release once a day (via `curl`) and saves it in `~/.tome/update.json`; the CLI
+  reads that file after human-mode commands and prints a line to stderr.
 
 ## Notes
 

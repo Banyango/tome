@@ -245,6 +245,10 @@ pub fn run_foreground() -> anyhow::Result<()> {
             let engine = Arc::clone(engine);
             move || engine.trigger_loop()
         }),
+        std::thread::spawn({
+            let engine = Arc::clone(engine);
+            move || crate::update::check_loop(&engine.stop)
+        }),
     ];
 
     for stream in listener.incoming() {

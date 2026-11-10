@@ -34,6 +34,11 @@ pub fn db_path() -> PathBuf {
     tome_home().join("tome.duckdb")
 }
 
+/// The latest release the daemon has seen, for update notices.
+pub fn update_path() -> PathBuf {
+    tome_home().join("update.json")
+}
+
 pub fn runs_dir() -> PathBuf {
     tome_home().join("runs")
 }

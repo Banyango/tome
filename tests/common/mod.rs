@@ -139,6 +139,7 @@ impl Env {
         cmd.args(args)
             .env("TOME_HOME", self.home())
             .env("HOME", self.dir.path())
+            .env("TOME_NO_UPDATE_CHECK", "1")
             .env_remove("TOME_OUTPUT")
             .env_remove("TOME_RUN_ID")
             .env_remove("TMUX")

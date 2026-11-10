@@ -24,6 +24,10 @@ If the daemon restarts, runs that were in progress fail with the reason `daemon_
 
 State and logs are in `~/.tome`: the DuckDB database, the daemon's log (`daemon.log`) and each run's logs (`runs/<id>/`). Set `TOME_HOME` to use another directory.
 
+### Update notices
+
+Once a day the daemon checks GitHub for a newer tome release. When one is out, commands run at a terminal end with a line on stderr saying so and how to update. Nothing is printed for `--json` output or when stderr isn't a terminal, and the CLI itself never goes to the network. Set `TOME_NO_UPDATE_CHECK=1` to turn the check off; it's also off whenever `CI` is set.
+
 With cmux, start the daemon from a terminal inside cmux; see [Sessions and backends](sessions.md).
 
 ## Starting and stopping runs

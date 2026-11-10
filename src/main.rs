@@ -39,6 +39,7 @@ mod text;
 mod topic;
 mod triggers;
 mod triggerscmd;
+mod update;
 mod validate;
 mod watch;
 mod workers;
@@ -1000,6 +1001,9 @@ fn main() {
         }
     }
     let code = emit(mode, dispatch(command, mode, provider));
+    if matches!(mode, Mode::Human) {
+        update::print_notice();
+    }
     std::process::exit(code);
 }
 
