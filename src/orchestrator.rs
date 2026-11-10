@@ -133,9 +133,20 @@ pub fn caller_anchor(
     caller: Option<&serde_json::Value>,
 ) -> Result<(Anchor, String), String> {
     if backend == Kind::Tmux {
-        return Err("`from: caller` needs cmux or herdr, and this session is on tmux".into());
+        return Err("`from: caller` needs cmux, herdr or Bulb, and this session is on tmux".into());
     }
     let caller = caller.ok_or("no caller was recorded")?;
+    if backend == Kind::Bulb {
+        let why = || {
+            caller["unknown"]
+                .as_str()
+                .unwrap_or("no Bulb caller was recorded")
+                .to_string()
+        };
+        let id = caller["bulb_session"].as_str().ok_or_else(why)?;
+        let project = caller["bulb_project"].as_str().ok_or_else(why)?;
+        return session::bulb_caller_anchor(project, id);
+    }
     if backend == Kind::Herdr {
         let pane = caller["herdr_pane"].as_str().ok_or_else(|| {
             caller["unknown"]
@@ -267,7 +278,7 @@ pub fn plan(run: &Run, resuming: Option<&resume::Context>) -> CliResult<Plan> {
             project,
             run.placement
                 .as_ref()
-                .is_some_and(|p| p["caller"]["herdr_pane"].is_string()),
+                .and_then(|p| session::caller_kind(&p["caller"])),
         )?,
         placement: placement(&wf.frontmatter(), mode, run_flags(run)?.as_ref(), project)?,
         session: session::run_session_name(run.id, &run.workflow_name, role),
@@ -475,8 +486,10 @@ pub fn notify(run: &Run, sessions: &[Session], cut: &[Worker]) {
         run.workflow_name,
         run.status.as_str()
     );
-    let backend = sessions.iter().find_map(|s| Kind::parse(&s.backend));
-    if let Some(backend) = backend.filter(|k| *k != Kind::Tmux) {
+    let found = sessions
+        .iter()
+        .find_map(|s| Some((Kind::parse(&s.backend)?, s.handle.as_deref())));
+    if let Some((backend, handle)) = found.filter(|(k, _)| *k != Kind::Tmux) {
         if std::env::var("TOME_NOTIFY").as_deref() == Ok("off") {
             return;
         }
@@ -486,16 +499,21 @@ pub fn notify(run: &Run, sessions: &[Session], cut: &[Worker]) {
             run.id,
             run.status.as_str()
         );
-        session::notify(backend, &title, &message);
+        session::notify_in(backend, handle, &title, &message);
     }
 }
 
-pub fn notify_blocked(run: &Run, who: &str) {
+pub fn notify_blocked(run: &Run, who: &str, s: &crate::store::Session) {
     let message = format!("run {}: {who} is waiting for input", run.id);
     eprintln!("tome daemon: notify: {message}");
     if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
-        session::notify(
-            Kind::Herdr,
+        let kind = match Kind::parse(&s.backend) {
+            Some(Kind::Bulb) => Kind::Bulb,
+            _ => Kind::Herdr,
+        };
+        session::notify_in(
+            kind,
+            s.handle.as_deref(),
             &format!("tome: {} #{} blocked", run.workflow_name, run.id),
             &message,
         );

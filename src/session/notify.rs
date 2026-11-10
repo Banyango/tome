@@ -1,5 +1,5 @@
 //! Daemon notifications that aren't tied to a run's pane: logged, and sent to
-//! cmux unless `TOME_NOTIFY=off`.
+//! cmux (and Bulb, when the daemon runs inside it) unless `TOME_NOTIFY=off`.
 
 use super::Cmux;
 
@@ -11,6 +11,9 @@ pub fn notify_trigger(what: &str, message: &str) {
     eprintln!("tome daemon: notify: trigger for {what} failed: {message}");
     if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
         Cmux.notify(&format!("tome: trigger for {what} failed"), message);
+        if super::bulb::inside() {
+            super::Bulb::from_env().notify(&format!("tome: trigger for {what} failed"), message);
+        }
     }
 }
 
@@ -20,5 +23,8 @@ pub fn notify_delivery(title: &str, message: &str) {
     eprintln!("tome daemon: notify: {title}: {message}");
     if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
         Cmux.notify(&format!("tome: {title}"), message);
+        if super::bulb::inside() {
+            super::Bulb::from_env().notify(&format!("tome: {title}"), message);
+        }
     }
 }

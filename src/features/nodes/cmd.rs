@@ -484,6 +484,15 @@ pub fn view(session_ref: &str, placement: &Settings) -> CliResult<Report> {
             _ => Report::new(att, format!("{label}: attach with\n  {command}")),
         });
     };
+    if backend == Some(Kind::Bulb) {
+        return Err(CliError::invalid(format!(
+            "{label} is a Bulb session; the Bulb backend is local only"
+        ))
+        .with_hint(format!(
+            "set `backend: tmux` in ~/.tome/config.yaml on {} for runs you want to watch from here",
+            node.name
+        )));
+    }
     if backend == Some(Kind::Herdr) {
         return Err(CliError::invalid(format!(
             "{label} is a herdr session, which can't be viewed over SSH"

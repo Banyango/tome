@@ -46,6 +46,13 @@ pub fn move_to(s: &Session, m: &Move) -> CliResult<(Session, Vec<String>)> {
         Some(Kind::Herdr) => {
             Herdr::from_socket(s.socket.as_deref())?.move_pane(s, pane, m, &mut warnings)?
         }
+        Some(Kind::Bulb) => {
+            return Err(CliError::invalid(format!(
+            "session `{}` is a Bulb session; Bulb's arrangement places it, so tome can't move it",
+            s.name
+        ))
+            .with_hint("move it in Bulb"))
+        }
         None => {
             return Err(CliError::invalid(format!(
                 "session `{}` has an unknown backend `{}`",

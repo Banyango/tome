@@ -5,10 +5,14 @@ launched in them.
 
 ## Files
 
-- `src/session.rs`: `Kind` (cmux/tmux/herdr), `Backend`, `Target`;
+- `src/session.rs`: `Kind` (cmux/tmux/herdr/bulb), `Backend`, `Target`;
   focus/caller detection, notify (`session/notify.rs`: daemon
   `notify_trigger`/`notify_delivery`), liveness, `send_line`, `kill`.
-- `src/session/herdr.rs`: herdr socket adapter. `session/workspace.rs`: per-project
+- `src/session/herdr.rs`: herdr socket adapter. `session/bulb.rs`: Bulb daemon
+  adapter (`open`/`session.*`/`notify` over `session/ws.rs`, a minimal std-only
+  WebSocket client); starts the daemon headless; pure `opening` maps placement
+  to `open` relations. Bulb sessions record the Bulb project as `handle` and
+  the Bulb session id as `pane`. `session/workspace.rs`: per-project
   workspaces (`<project>-orchestrator`). `session/split.rs`: split direction/size/
   `from`. `session/moves.rs`: `tome session move`.
 - `src/placement.rs`: pure placement rules: `Layout`, `Settings` (layout, split, from ...),
@@ -31,13 +35,14 @@ launched in them.
 - `session` depends on `placement` (settings, and `Layout`, which is defined in
   `placement.rs` and re-exported from `session`), never the other way round.
   Keep placement free of `session` imports.
-- Backends are `Backend::{Tmux, Cmux, Herdr}`; `TOME_BACKEND` selects one, unset
+- Backends are `Backend::{Tmux, Cmux, Herdr, Bulb}`; `TOME_BACKEND` selects one, unset
   means auto. Workspaces are cmux workspaces or tmux sessions
   (`session/workspace.rs`); cmux and herdr sessions open as tabs.
 
 ## Tests
 
 - Unit: `cargo test --bin tome placement::` (also `session::`, `harness::`)
+- Bulb e2e (ignored): `TOME_BULB_E2E=<bulb checkout> cargo test --bin tome session::bulb::e2e -- --ignored`
 - Integration: `layout` (tmux), `cmux` (needs cmux; skip with `TOME_SKIP_CMUX`)
 
 ## User docs

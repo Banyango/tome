@@ -49,7 +49,7 @@ const WATCH_RESYNC: Duration = Duration::from_secs(1);
 /// Events queued for one watch before it counts as fallen behind. A watch
 /// that falls behind is dropped and catches up from the store.
 const WATCH_QUEUE: usize = 256;
-/// How often herdr agents' statuses are read.
+/// How often herdr and Bulb agents' statuses are read.
 const STATUS_POLL: Duration = Duration::from_secs(2);
 
 /// How often the monitor checks that running runs' orchestrators are alive.
@@ -469,7 +469,9 @@ impl Engine {
                     self.sync(store, run.id);
                     failed
                 });
-                if let Some(kind) = backend.filter(|k| *k == session::Kind::Herdr) {
+                if let Some(kind) =
+                    backend.filter(|k| matches!(k, session::Kind::Herdr | session::Kind::Bulb))
+                {
                     if std::env::var("TOME_NOTIFY").as_deref() != Ok("off") {
                         session::notify(
                             kind,
@@ -758,11 +760,11 @@ impl Engine {
             let found = match (
                 s.role.as_str(),
                 p.get("cmux_caller")
-                    .filter(|c| c["surface"].is_string() || c["herdr_pane"].is_string()),
+                    .filter(|c| session::caller_kind(c).is_some()),
             ) {
-                (role, None) if orchestrator::is_main(role) => {
-                    Err("`tome session move` wasn't run from a cmux or herdr pane".to_string())
-                }
+                (role, None) if orchestrator::is_main(role) => Err(
+                    "`tome session move` wasn't run from a cmux, herdr or Bulb pane".to_string(),
+                ),
                 (role, Some(c)) if orchestrator::is_main(role) => {
                     let kind = session::Kind::parse(&s.backend).unwrap_or(session::Kind::Tmux);
                     orchestrator::caller_anchor(kind, Some(c)).and_then(|found| {
@@ -879,7 +881,7 @@ impl Engine {
         }
     }
 
-    /// Herdr's agent statuses, polled apart from `monitor` so a slow herdr
+    /// Herdr's and Bulb's agent statuses, polled apart from `monitor` so a slow herdr
     /// can't hold up liveness checks.
     pub fn status_monitor(self: Arc<Self>) {
         while self.stop.sleep(STATUS_POLL) {
@@ -914,8 +916,12 @@ impl Engine {
     /// Track a session's agent status: herdr's, polled, or else the one its
     /// agent reported (`tome worker blocked`), so a lasting block notifies.
     fn track_agent_status(&self, s: &store::Session) {
-        let status = if session::Kind::parse(&s.backend) == Some(session::Kind::Herdr) {
-            // Herdr isn't answering: keep what we know.
+        let polled = matches!(
+            session::Kind::parse(&s.backend),
+            Some(session::Kind::Herdr | session::Kind::Bulb)
+        );
+        let status = if polled {
+            // The backend isn't answering (or has no status): keep what we know.
             match session::agent_status(s) {
                 Some(status) => status,
                 None => return,
@@ -991,7 +997,7 @@ impl Engine {
             } else {
                 format!("worker {}", status_subject(self, s))
             };
-            orchestrator::notify_blocked(&run, &who);
+            orchestrator::notify_blocked(&run, &who, s);
         }
     }
 
@@ -1275,7 +1281,7 @@ fn launch_check(
     let kind = session::Kind::choose_with_caller(
         fm.defaults.backend.as_deref(),
         project,
-        cmux_caller.is_some_and(|c| c["herdr_pane"].is_string()),
+        cmux_caller.and_then(session::caller_kind),
     )?;
     if let Some(flags) = flags {
         placementcmd::check_flag_preset(flags, "`tome run` flags", project)?;
@@ -1295,18 +1301,23 @@ fn origin(kind: session::Kind, by_trigger: bool, cmux_caller: Option<&Value>) ->
     };
     let caller = match (
         by_trigger,
-        cmux_caller.filter(|c| c["surface"].is_string() || c["herdr_pane"].is_string()),
+        cmux_caller.filter(|c| session::caller_kind(c).is_some()),
     ) {
         (true, _) => json!({ "unknown": "the run was started by a trigger" }),
         (false, None) => {
-            json!({ "unknown": "`tome run` wasn't run from a cmux or herdr pane" })
+            json!({ "unknown": "`tome run` wasn't run from a cmux, herdr or Bulb pane" })
         }
         (false, Some(c)) => {
             let mut c = c.clone();
             let found = c["surface"]
                 .as_str()
                 .map(session::caller_anchor)
-                .or_else(|| c["herdr_pane"].as_str().map(session::herdr_caller_anchor));
+                .or_else(|| c["herdr_pane"].as_str().map(session::herdr_caller_anchor))
+                .or_else(|| {
+                    let id = c["bulb_session"].as_str()?;
+                    let project = c["bulb_project"].as_str()?;
+                    Some(session::bulb_caller_anchor(project, id))
+                });
             if let Some(Ok((anchor, pane))) = found {
                 c["workspace"] = json!(anchor.handle);
                 c["pane"] = json!(pane);

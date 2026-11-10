@@ -4,12 +4,12 @@ Every agent tome starts runs in a **session** on a **backend**. This guide cover
 
 ## Choosing a backend
 
-tome supports tmux, cmux and herdr. It picks one for a run in this order:
+tome supports tmux, cmux, herdr and Bulb. It picks one for a run in this order:
 
 1. `defaults.backend` in the workflow
 2. the `TOME_BACKEND` environment variable
 3. `backend:` in `.tome/config.yaml` (project) or `~/.tome/config.yaml` (global)
-4. cmux, if the daemon runs inside cmux; otherwise herdr, if the daemon or caller is inside herdr; otherwise tmux
+4. cmux, if the daemon runs inside cmux; otherwise herdr, if the daemon or caller is inside herdr; otherwise Bulb, if the daemon or caller is inside a Bulb terminal; otherwise tmux
 
 ### tmux
 
@@ -36,6 +36,24 @@ Things that differ from the other backends:
 - **Agent status.** The daemon reads each agent's status from herdr. On any backend, agents can also report it themselves with `tome worker blocked|unblocked` or `tome step blocked|unblocked`, which the [tome plugin](../agents/skill.md)'s hooks do for Claude Code, Codex, Cursor and Kimi Code. `tome runs show` and `tome worker status` list it in an `AGENT` column. When an agent is waiting for input it shows `blocked since <time>`.
 - **Blocked agents.** tome publishes `tome.run.<workflow>.blocked` (see [Triggers](triggers.md#chaining-workflows)) when an agent becomes blocked. If it stays blocked for 5 seconds you get a herdr notification, repeated at most once a minute. Notifications also announce a run's end. Set `TOME_NOTIFY=off` to turn them off.
 - **Attaching.** `tome session view` focuses the session's workspace in herdr. Herdr sessions on another node can't be viewed over SSH.
+
+### bulb
+
+Sessions open as terminals in Bulb, in the Bulb project of the run (or of the pane you ran `tome run` from). tome talks to the Bulb daemon directly over its local protocol, so `bulb` doesn't need to be on your `PATH`. Bulb is picked automatically when the daemon or `tome run` runs inside a Bulb terminal; elsewhere set `backend: bulb`.
+
+- **Starting Bulb.** If the Bulb daemon isn't running, tome starts it headless and the run goes on; open Bulb later to see the sessions. To find Bulb's install outside a Bulb terminal, set it in the global config (it isn't accepted in a project's config):
+
+  ```yaml
+  bulb:
+    app_root: ~/src/getbulb
+  ```
+
+  If tome can't reach or start the daemon, or it speaks a different protocol, the step fails with an error naming Bulb.
+- **Placement.** Tabs (and own workspaces, which Bulb hasn't got) open with relation `tab`; a split opens as a `child` of the caller's session (`from: caller`) or a `sibling` of an earlier session of the run, with its direction as the hint. Bulb's active arrangement decides the final geometry. `split.size` in cells and named or focused workspaces are skipped with a warning. Bulb sessions can't be moved with `tome session move`.
+- **Closing a tab.** Closing a worker's tab ends its session; tome treats that as the agent exiting, so the workflow's failure rules apply and the run can be resumed.
+- **Notifications.** Run notifications, including `backend_unavailable`, are Bulb notifications. `TOME_NOTIFY=off` turns them off.
+- **Agent status.** With Bulb's harness hooks installed (`bulb harness install claude`), tome reads each agent's status from Bulb. Bulb's `waiting` marks the session blocked, publishes `tome.run.<workflow>.blocked` and notifies after 5 seconds, as with herdr. Bulb's `idle` never completes a step. Without the hooks everything else still works.
+- **Local only.** Bulb can't host remote workers or be viewed from another node; use tmux, cmux or herdr there.
 
 ## Harnesses
 
@@ -124,7 +142,7 @@ Validation checks whether tome can forward a model, not whether the agent provid
 | `workspace` | `project` (the default: one shared workspace for the project), `focused` (whatever is focused when the run starts), `own` (a new workspace for each session), or a name, which becomes the workspace `<project>-<name>` |
 | `split.direction` | `right`, `left`, `down` or `up` |
 | `split.size` | a percentage like `30%`, or a number of cells |
-| `from` | the pane a new tab or split opens from: `orchestrator`, `last`, `first`, or `caller` (cmux or herdr, for the run's agent or orchestrator: the pane where you ran `tome run`) |
+| `from` | the pane a new tab or split opens from: `orchestrator`, `last`, `first`, or `caller` (cmux, herdr or Bulb, for the run's agent or orchestrator: the pane where you ran `tome run`) |
 | `preset` | the name of a preset to build on |
 
 `layout: workspace` still works and means `workspace: own`. In tmux, a workspace is a tmux session, and a tab is a window.

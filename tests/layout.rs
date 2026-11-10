@@ -1106,7 +1106,7 @@ fn from_caller_is_for_the_orchestrator_and_falls_back_off_cmux() {
     assert!(
         o["placement"]["warnings"]
             .to_string()
-            .contains("`from: caller` needs cmux or herdr"),
+            .contains("`from: caller` needs cmux, herdr or Bulb"),
         "{o}"
     );
     let human = String::from_utf8_lossy(&env.run(&["runs", "show", "1"]).stdout).into_owned();
@@ -1135,7 +1135,7 @@ fn from_caller_is_for_the_orchestrator_and_falls_back_off_cmux() {
     // Moves next to the caller fail, leaving the session where it was.
     let before = session_named(&env, "tome-1-build");
     for (session, message) in [
-        ("1/orchestrator", "`from: caller` needs cmux or herdr"),
+        ("1/orchestrator", "`from: caller` needs cmux, herdr or Bulb"),
         ("1/w1", "is for the run's agent or orchestrator only"),
     ] {
         let (code, err) = move_session(&env, session, &["--from", "caller"]);
@@ -1159,7 +1159,7 @@ fn from_caller_is_for_the_orchestrator_and_falls_back_off_cmux() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("wasn't run from a cmux or herdr pane"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("wasn't run from a cmux, herdr or Bulb pane"));
     let after = session_named(&env, "tome-1-build");
     assert_eq!(
         (&after["handle"], &after["pane"], &after["layout"]),
@@ -1180,7 +1180,7 @@ fn from_caller_is_for_the_orchestrator_and_falls_back_off_cmux() {
     let (_, shown) = env.json(&["runs", "show", "2"]);
     assert_eq!(
         shown["run"]["placement"]["caller"]["unknown"],
-        "`tome run` wasn't run from a cmux or herdr pane",
+        "`tome run` wasn't run from a cmux, herdr or Bulb pane",
         "{shown}"
     );
 }

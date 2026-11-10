@@ -20,14 +20,17 @@
 //! agent's environment, captures its output to a log and `exec`s it, so the
 //! session ends when the agent does.
 
+mod bulb;
 mod herdr;
 mod moves;
 mod notify;
 mod split;
 mod workspace;
+mod ws;
 pub use workspace::run_name as run_workspace_name;
 
 use crate::ids::RunId;
+use bulb::Bulb;
 use herdr::Herdr;
 pub use moves::{move_to, Move};
 pub use notify::{notify_delivery, notify_trigger};
@@ -55,6 +58,7 @@ pub enum Kind {
     Tmux,
     Cmux,
     Herdr,
+    Bulb,
 }
 
 impl Kind {
@@ -63,6 +67,7 @@ impl Kind {
             Kind::Tmux => "tmux",
             Kind::Cmux => "cmux",
             Kind::Herdr => "herdr",
+            Kind::Bulb => "bulb",
         }
     }
 
@@ -71,6 +76,7 @@ impl Kind {
             "tmux" => Some(Kind::Tmux),
             "cmux" => Some(Kind::Cmux),
             "herdr" => Some(Kind::Herdr),
+            "bulb" => Some(Kind::Bulb),
             _ => None,
         }
     }
@@ -78,13 +84,13 @@ impl Kind {
     /// The backend for a run whose workflow asks for `requested` (see the
     /// module docs for the order).
     pub fn choose(requested: Option<&str>, project: Option<&Path>) -> CliResult<Kind> {
-        Self::choose_with_caller(requested, project, false)
+        Self::choose_with_caller(requested, project, None)
     }
 
     pub fn choose_with_caller(
         requested: Option<&str>,
         project: Option<&Path>,
-        herdr_caller: bool,
+        caller: Option<Kind>,
     ) -> CliResult<Kind> {
         let env = std::env::var("TOME_BACKEND").ok().filter(|s| !s.is_empty());
         let (name, source) = match (requested, env) {
@@ -98,8 +104,10 @@ impl Kind {
                 None => {
                     return Ok(if Cmux::inside() {
                         Kind::Cmux
-                    } else if herdr_inside() || herdr_caller {
+                    } else if herdr_inside() || caller == Some(Kind::Herdr) {
                         Kind::Herdr
+                    } else if bulb::inside() || caller == Some(Kind::Bulb) {
+                        Kind::Bulb
                     } else {
                         Kind::Tmux
                     })
@@ -108,7 +116,7 @@ impl Kind {
         };
         Kind::parse(&name).ok_or_else(|| {
             CliError::invalid(format!("unknown session backend `{name}` (from {source})"))
-                .with_hint("use tmux, cmux or herdr")
+                .with_hint("use tmux, cmux, herdr or bulb")
         })
     }
 }
@@ -131,6 +139,7 @@ pub enum Backend {
     Tmux(Tmux),
     Cmux(Cmux),
     Herdr(herdr::Herdr),
+    Bulb,
 }
 
 impl Backend {
@@ -139,6 +148,7 @@ impl Backend {
             Kind::Tmux => Backend::Tmux(Tmux::from_env()),
             Kind::Cmux => Backend::Cmux(Cmux),
             Kind::Herdr => Backend::Herdr(herdr::Herdr::from_env()),
+            Kind::Bulb => Backend::Bulb,
         }
     }
 
@@ -147,6 +157,7 @@ impl Backend {
             Backend::Tmux(_) => Kind::Tmux,
             Backend::Cmux(_) => Kind::Cmux,
             Backend::Herdr(_) => Kind::Herdr,
+            Backend::Bulb => Kind::Bulb,
         }
     }
 
@@ -200,6 +211,11 @@ impl Backend {
                     Some(workspace),
                     pane,
                 )
+            }
+            (Backend::Bulb, _layout) => {
+                let project = bulb::project_of(launch);
+                let pane = Bulb::new(&project).launch(launch, &mut warnings)?;
+                (None, Some(project.to_string_lossy().into_owned()), pane)
             }
         };
         let session = Session {
@@ -307,6 +323,7 @@ pub fn focused(kind: Kind) -> Result<String, String> {
                 .ok_or_else(|| "cmux has no focused workspace".into())
         }
         Kind::Herdr => Herdr::focused(),
+        Kind::Bulb => Err("Bulb has no workspaces".into()),
     }
 }
 
@@ -318,6 +335,12 @@ pub fn caller_env() -> Option<Value> {
             .ok()
             .filter(|v: &String| !v.trim().is_empty())
     };
+    // Bulb's terminals may inherit another backend's variables, so it goes first.
+    if let Some(session) = var("BULB_SESSION") {
+        return Some(
+            serde_json::json!({"bulb_session": session, "bulb_project": var("BULB_PROJECT")}),
+        );
+    }
     if let Some(pane) = var("HERDR_PANE_ID") {
         return Some(
             serde_json::json!({"herdr_pane": pane, "herdr_workspace": var("HERDR_WORKSPACE_ID")}),
@@ -349,8 +372,36 @@ pub fn herdr_caller_anchor(pane: &str) -> Result<(split::Anchor, String), String
     Herdr::caller_anchor(pane)
 }
 
+/// Where the Bulb session `session` of `project` is, as a `from: caller` anchor.
+pub fn bulb_caller_anchor(project: &str, session: &str) -> Result<(split::Anchor, String), String> {
+    Bulb::caller_anchor(project, session)
+}
+
+/// Which backend a recorded caller (`caller_env`) is in.
+pub fn caller_kind(caller: &Value) -> Option<Kind> {
+    if caller["bulb_session"].is_string() {
+        Some(Kind::Bulb)
+    } else if caller["herdr_pane"].is_string() {
+        Some(Kind::Herdr)
+    } else if caller["surface"].is_string() {
+        Some(Kind::Cmux)
+    } else {
+        None
+    }
+}
+
 pub fn notify(kind: Kind, title: &str, body: &str) {
+    notify_in(kind, None, title, body)
+}
+
+/// Notify on `kind`; for Bulb, in the project `handle` (a Bulb session's
+/// recorded handle), else the one tome runs in.
+pub fn notify_in(kind: Kind, handle: Option<&str>, title: &str, body: &str) {
     match kind {
+        Kind::Bulb => match handle {
+            Some(project) => Bulb::new(project).notify(title, body),
+            None => Bulb::from_env().notify(title, body),
+        },
         Kind::Cmux => {
             Cmux.notify(title, body);
         }
@@ -360,6 +411,20 @@ pub fn notify(kind: Kind, title: &str, body: &str) {
 }
 
 pub fn agent_status(s: &Session) -> Option<String> {
+    if Kind::parse(&s.backend) == Some(Kind::Bulb) {
+        let bulb = Bulb::new(s.handle.as_deref()?);
+        let pane = s.pane.as_deref()?;
+        return match bulb.agent_status(pane) {
+            Some(status) => Some(status),
+            // The agent stopped reporting (it ended) while marked blocked.
+            None if s.agent_status.as_deref() == Some("blocked")
+                && bulb.alive(pane) == Some(true) =>
+            {
+                Some("idle".into())
+            }
+            None => None,
+        };
+    }
     if Kind::parse(&s.backend) != Some(Kind::Herdr) {
         return None;
     }
@@ -393,6 +458,7 @@ pub fn is_alive(s: &Session) -> Option<bool> {
         Some(Kind::Herdr) => Herdr::from_socket(s.socket.as_deref())
             .ok()?
             .alive(s.pane.as_deref()?),
+        Some(Kind::Bulb) => Bulb::new(s.handle.as_deref()?).alive(s.pane.as_deref()?),
         None => Some(false),
     }
 }
@@ -424,6 +490,10 @@ pub fn kill(s: &Session) -> bool {
             .pane
             .as_deref()
             .is_some_and(|p| Herdr::from_socket(s.socket.as_deref()).is_ok_and(|h| h.close(p))),
+        Some(Kind::Bulb) => match (&s.handle, &s.pane) {
+            (Some(project), Some(pane)) => Bulb::new(project).close(pane),
+            _ => false,
+        },
         None => false,
     }
 }
@@ -448,6 +518,10 @@ pub fn send_line(s: &Session, text: &str) -> bool {
         Some(Kind::Herdr) => s.pane.as_deref().is_some_and(|p| {
             Herdr::from_socket(s.socket.as_deref()).is_ok_and(|h| h.send_line(p, text))
         }),
+        Some(Kind::Bulb) => match (&s.handle, &s.pane) {
+            (Some(project), Some(pane)) => Bulb::new(project).send_line(pane, text),
+            _ => false,
+        },
         None => false,
     }
 }
@@ -465,6 +539,11 @@ pub fn attach_command(s: &Session) -> String {
             "HERDR_SOCKET_PATH={} herdr workspace focus {}",
             shell_quote(&s.socket.clone().unwrap_or_default()),
             shell_quote(id)
+        ),
+        (Some(Kind::Bulb), Some(project), Some(session)) => format!(
+            "bulb --project {} read {}",
+            shell_quote(project),
+            shell_quote(session)
         ),
         _ => {
             let tmux = match &s.socket {

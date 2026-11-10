@@ -361,6 +361,14 @@ impl Engine {
         flags: Option<&Settings>,
     ) -> CliResult<store::Session> {
         let kind = Kind::choose(None, project)?;
+        if kind == Kind::Bulb {
+            return Err(CliError::invalid(
+                "the Bulb backend is local only, so it can't host a remote worker",
+            )
+            .with_hint(
+                "set `backend: tmux` (or cmux or herdr) in ~/.tome/config.yaml on this node",
+            ));
+        }
         let placement = placementcmd::resolve(
             &Inputs {
                 role: Role::Worker(name),

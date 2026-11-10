@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 pub const KEYS: &[&str] = &[
     "backend",
     "herdr",
+    "bulb",
     "harnesses",
     "layout",
     "layout_presets",
@@ -239,6 +240,26 @@ fn parse(scope: Scope, path: PathBuf, text: &str) -> CliResult<File> {
                     }
                     if !value.is_string() {
                         return Err(bad("`herdr.session` must be a string".into()));
+                    }
+                }
+            }
+            ("bulb", Scope::Project | Scope::Hub) => {
+                return Err(bad("`bulb` settings go in the global config".into())
+                    .with_hint(format!("move it to {}", global_path().display())))
+            }
+            ("bulb", Scope::Global) => {
+                let map = doc
+                    .get("bulb")
+                    .and_then(Yaml::as_mapping)
+                    .ok_or_else(|| bad("`bulb` must be a mapping".into()))?;
+                for (key, value) in map {
+                    if key.as_str() != Some("app_root") {
+                        return Err(
+                            bad("unknown bulb setting".into()).with_hint("known setting: app_root")
+                        );
+                    }
+                    if !value.is_string() {
+                        return Err(bad("`bulb.app_root` must be a string".into()));
                     }
                 }
             }
