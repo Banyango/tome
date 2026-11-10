@@ -51,3 +51,5 @@
 - [020 - Plugin system](features/020-plugin-system/feature.md)
 - [021 - Hubs: shared buses, queues, workflows and config](features/021-hubs/feature.md)
 - [022 - Remove a run](features/022-runs-rm/feature.md)
+- [023 - Remote workers](features/023-remote-workers/feature.md)
+- [024 - Bulb backend](features/024-bulb-backend/feature.md)
